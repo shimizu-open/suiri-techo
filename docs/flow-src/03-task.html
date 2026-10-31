@@ -1,38 +1,44 @@
 <section class="story" id="s3">
-  <h2><span class="no">3</span>タスクを足す・済ませる</h2>
-  <p class="userstory">手帳を使う人として、思いついたやることをすぐ書きとめ、済んだら印を付けたい。だから、「何をする？」の欄に題名を入れて「書く」を押し、済んだら行の左の丸を1回押す。</p>
-  <p class="summary">この章で追う道筋：<code>POST /tasks</code> → 見張り役（<code>auth</code> → <code>throttle:writes</code> → <code>agreed</code>）→ 形の検証 <code>StoreTaskRequest</code> → 受付 <code>TaskController::store</code> → 用事 <code>CreateTask</code> → <code>tasks</code> に1行 → 見張る係 <code>TaskObserver</code> がカレンダーへの書き出しの仕事を <code>jobs</code> に予約 → 今日の画面へ転送。続けて「日にちや時間も決める」（<code>POST /tasks/draft</code>）・一覧（<code>GET /tasks?view=</code>）・済ませる（<code>POST /tasks/{task}/done</code>：権限 <code>TaskPolicy</code> → <code>CompleteTaskRequest</code> → <code>CompleteTask</code>）・戻す・直す・消す</p>
+  <h2><span class="no">3</span>タスクを足す・済ませる・直す</h2>
+  <p class="userstory">手帳を使う人として、思いついたやることをすぐ書きとめ、済んだら印を付けたい。だから、きょうの画面の「何をする？」の欄に題名を入れて「今日」「明日」「いつか」のどれかを押し、済んだら行の左の丸を1回押す。直したいときは、その行を押して開く。</p>
+  <p class="summary">この章で追う道筋：<code>POST /tasks</code>（押したボタンの <code>due_on</code> つき）→ 見張り役（<code>auth</code> → <code>throttle:writes</code> → <code>agreed</code>）→ 形の検証 <code>StoreTaskRequest</code> → 受付 <code>TaskController::store</code> → 用事 <code>CreateTask</code> → <code>tasks</code> に1行 → 見張る係 <code>TaskObserver</code> がカレンダーへの書き出しの仕事を <code>jobs</code> に予約 → きょうの画面のそのタスクが見える枠へ転送（<code>TaskListQuery::openOf</code> → <code>/today?open=…</code>）。続けて「くわしく」（<code>POST /tasks/draft</code>）・前の一覧の住所（<code>GET /tasks?view=</code> → <code>/today?open=</code>）・済ませる（<code>POST /tasks/{task}/done</code>：権限 <code>TaskPolicy</code> → <code>CompleteTaskRequest</code> → <code>CompleteTask</code>）・戻す・行を開いて直す・消す・気になる</p>
 
   <h3>3-1　タスクを足す</h3>
   <ol class="steps">
     <li class="step">
       <span class="who browser">ブラウザ</span>
-      <h4>「何をする？」に題名を入れて「書く」を押す</h4>
-      <p>すばやく書く欄は、今日の画面（<a href="#s2">2章</a>。「＋ 書く」を押すと開く）とタスクの一覧のいちばん上にある部品 <code>&lt;x-task.quick-add&gt;</code> です。見える欄は「何をする？」の1つだけ。Enter か「書く」で送ります。</p>
-      <div class="code"><div class="file">src/resources/views/components/task/quick-add.blade.php</div><pre><code>@props(['due' =&gt; null, 'back' =&gt; null])
-@php($words = config('suiri.tasks.words'))
-&lt;form method="POST" action="{{ route('tasks.store') }}" {{ $attributes-&gt;class(['space-y-2']) }}&gt;
+      <h4>「何をする？」に題名を入れて「今日」「明日」「いつか」のどれかを押す</h4>
+      <p>1行で書く欄は、きょうの画面の「きょうの予定とやること」の見出しのすぐ下に、いつも開いて置いてある部品 <code>&lt;x-task.quick-add&gt;</code> です（<a href="#s2">2章</a>）。題名を書いて、いつやるかのボタンを1つ押すだけで作れます。</p>
+      <div class="code"><div class="file">src/resources/views/components/task/quick-add.blade.php</div><pre><code>@props(['dates' =&gt; null])
+@php($words = config('suiri.tasks.quick'))
+@php($dates = $dates ?? ['today' =&gt; today()-&gt;toDateString(), 'tomorrow' =&gt; today()-&gt;addDay()-&gt;toDateString()])
+@php($buttons = ['today' =&gt; $dates['today'], 'tomorrow' =&gt; $dates['tomorrow'], 'someday' =&gt; ''])
+&lt;form method="POST" action="{{ route('tasks.store') }}" aria-label="{{ config('suiri.today.agenda.add_label') }}" {{ $attributes-&gt;class(['space-y-2']) }}&gt;
   @csrf
-  {{-- 戻り先が決まっていれば、一緒に送る --}}
-  @if ($back)
-    &lt;input type="hidden" name="back" value="{{ $back }}"&gt;
-  @endif
-  &lt;input type="hidden" name="due_on" value="{{ old('due_on', $due) }}"&gt;
-  &lt;label for="quick-title" class="block text-base font-semibold"&gt;{{ $words['title'] }}&lt;/label&gt;
+  &lt;label for="quick-title" class="block text-base font-semibold"&gt;{{ $words['label'] }}&lt;/label&gt;
+  &lt;input id="quick-title" name="title" value="{{ old('title') }}" required maxlength="{{ config('suiri.limits.task_title') }}"
   {{-- …（省略）… --}}
-    &lt;input id="quick-title" name="title" value="{{ old('title') }}" required maxlength="{{ config('suiri.limits.task_title') }}"
-  {{-- …（省略）… --}}
-      &lt;x-ui.icon name="plus" class="size-5" /&gt;{{ $words['add'] }}</code></pre></div>
+    {{-- 今日・明日・いつか を1つずつ取り出し、押すとその期日で作る送信ボタンにする（今日だけ塗って、いちばん使うものを目立たせる） --}}
+    @foreach ($buttons as $key =&gt; $value)
+      &lt;button type="submit" name="due_on" value="{{ $value }}" @class([
+      {{-- …（省略）… --}}
+        &lt;x-ui.icon name="plus" class="size-5 shrink-0" /&gt;{{ $words[$key] }}&lt;span class="sr-only"&gt;{{ $words['add_to'] }}&lt;/span&gt;
+      &lt;/button&gt;
+    @endforeach
+    &lt;button type="submit" formaction="{{ route('tasks.draft') }}" formnovalidate</code></pre></div>
       <ul>
         <li><code>action="{{ route('tasks.store') }}"</code>：送り先は <code>/tasks</code>、頼み方は <code>POST</code>（記録を作って）。</li>
         <li><code>@csrf</code>：隠し欄 <code>_token</code>（合言葉）を入れます。ほかのサイトから勝手に送られたものでないことを示すためです（<a href="#s11">11章</a>）。</li>
-        <li>今日の画面では <code>back="today"</code> を渡しているので、隠し欄 <code>back=today</code> も一緒に送ります。作ったあと今日の画面へ戻すための印です。</li>
-        <li>期日は見える欄にせず、隠し欄 <code>due_on</code> で送ります。今日の画面と一覧の「きょう」「これから」のタブでは今日の日付、「いつか」のタブでは空（＝期日なし）です。入れる欄を1つにしぼって、思いついたらすぐ書けるようにするためです。日にちを決めたいときは、次の 3-2 の「日にちや時間も決める」を使います。</li>
+        <li><b>3つのボタンは、どれもこのフォームの送信ボタン</b>です。どれも名前は <code>name="due_on"</code> で、値（<code>value</code>）だけが違います。HTML のフォームは、押された送信ボタンの名前と値だけを一緒に送るので、押したボタンで期日が決まります：「今日」なら今日の日付（<code>2026-10-31</code>）、「明日」なら明日の日付（<code>2026-11-01</code>）、「いつか」なら空（期日なし）。日付は受付が渡した <code>$dates</code>（<a href="#s2">2章</a> の <code>forToday</code> の <code>dates</code>）です。</li>
+        <li>空の値は、全体の見張り役 <code>ConvertEmptyStringsToNull</code>（空の文字を <code>null</code> にそろえる Laravel の係）が <code>null</code> にするので、「いつか」で作ったタスクは期日なしになります。</li>
+        <li><b>題名の欄で Enter を押したとき</b>は、フォームの最初の送信ボタン（「今日」）を押したのと同じに扱われます（HTML の決まり）。いちばん使う「今日」を先頭に置き、塗りつぶして目立たせているのはそのためです。</li>
+        <li><code>&lt;span class="sr-only"&gt;</code>：画面には出さず、読み上げのときだけ「今日に書く」のように読ませる言葉（<code>tasks.quick.add_to</code> の「に書く」）。</li>
         <li><code>required maxlength="…"</code>：題名が空、または 100 文字（<code>config('suiri.limits.task_title')</code>）より長いと、ブラウザが送る前に止めます。ただしブラウザの確かめは書きかえれば外せるので、サーバーでもう一度確かめます（ステップ4）。</li>
-        <li>見出し「何をする？」やボタンの「書く」は、<code>config/suiri.php</code> の <code>tasks.words</code> から引きます（<code>$words['title']</code>・<code>$words['add']</code>）。</li>
+        <li>戻り先を知らせる隠し欄はありません。どこから作っても、戻り先は受付が同じ決まりで決めるからです（ステップ5）。</li>
+        <li>見出し「何をする？」・例「例：牛乳を買う」・ボタンの「今日」「明日」「いつか」「くわしく」は、<code>config/suiri.php</code> の <code>tasks.quick</code> から引きます。最後の「くわしく」は 3-2 で追います。</li>
       </ul>
-      <figure class="shot"><img data-img="screen-today-quickadd.png" alt="今日の画面で「＋ 書く」を押したところ。「何をする？」の欄と「＋ 書く」「日にちや時間も決める」が開く"><figcaption>今日の画面で「＋ 書く」を押したところ（スマホ）。「何をする？」の欄と「書く」、その下に「日にちや時間も決める」</figcaption></figure>
-      <div class="data"><b>このとき動くデータ</b><ul><li>送る：<code>POST /tasks</code>、中身は <code>_token</code>・<code>back=today</code>・<code>title=夕食の買い物</code>・<code>due_on=2026-10-31</code></li></ul></div>
+      <figure class="shot"><img data-img="screen-today-answer.png" alt="きょうの画面を開いてすぐの所（スマホ）。上に「答え合わせしよう」のカード、その下の「きょうの予定とやること」に「何をする？」の欄（例：牛乳を買う）と、紺に塗った「＋今日」、枠だけの「＋明日」「＋いつか」、文字だけの「くわしく›」"><figcaption>1行で書く欄（スマホ）。いまやることのカードのすぐ下にいつも出ていて、題名を書いてボタンを1つ押すだけ</figcaption></figure>
+      <div class="data"><b>このとき動くデータ</b><ul><li>送る：<code>POST /tasks</code>、中身は <code>_token</code>・<code>title=夕食の買い物</code>・<code>due_on=2026-10-31</code>（「今日」を押したとき。「明日」なら <code>2026-11-01</code>、「いつか」なら空）</li></ul></div>
     </li>
 
     <li class="step">
@@ -56,7 +62,7 @@
       <div class="table-wrap"><table>
         <thead><tr><th>動作</th><th>頼み方と住所</th><th>ルート名</th><th>付く見張り役（全部に <code>auth</code>・<code>agreed</code>）</th></tr></thead>
         <tbody>
-          <tr><td>index</td><td><code>GET /tasks</code></td><td><code>tasks.index</code></td><td>—</td></tr>
+          <tr><td>index</td><td><code>GET /tasks</code>（前の一覧の住所。いまは <code>/today</code> へ移すだけ。3-3）</td><td><code>tasks.index</code></td><td>—</td></tr>
           <tr><td>create</td><td><code>GET /tasks/create</code></td><td><code>tasks.create</code></td><td>—</td></tr>
           <tr><td>store</td><td><code>POST /tasks</code></td><td><code>tasks.store</code></td><td><code>throttle:writes</code></td></tr>
           <tr><td>edit</td><td><code>GET /tasks/{task}/edit</code></td><td><code>tasks.edit</code></td><td><code>can:update,task</code></td></tr>
@@ -146,31 +152,61 @@ public function rules(): array
         -&gt;errorBag($this-&gt;errorBag)
         -&gt;redirectTo($this-&gt;getRedirectUrl());
 }</code></pre></div>
-      <p>戻った画面では、すばやく書く欄の <code>value="{{ old('title') }}"</code> が入れた題名を戻し、<code>@error('title')</code> が間違いの文を赤で出します（<code>ShareErrorsFromSession</code> が間違いを画面で使えるようにしている）。</p>
+      <p>戻った画面では、1行で書く欄の <code>value="{{ old('title') }}"</code> が入れた題名を戻し、<code>@error('title')</code>・<code>@error('due_on')</code> が間違いの文を赤で出します（<code>ShareErrorsFromSession</code> が間違いを画面で使えるようにしている）。</p>
     </li>
 
     <li class="step">
       <span class="who server">サーバー</span>
-      <h4>受付 <code>TaskController::store</code>：用事に頼んで、戻り先を決める</h4>
-      <div class="code"><div class="file">src/app/Http/Controllers/Tasks/TaskController.php</div><pre><code>/** タスクを作り、そのタスクが見える一覧（今日の画面から足したなら今日の画面）へ戻す */
+      <h4>受付 <code>TaskController::store</code>：用事に頼んで、きょうの画面のどの枠へ戻すかを決める</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Tasks/TaskController.php</div><pre><code>/** タスクを作り、きょうの画面のそのタスクが見える枠へ戻す（1行で足す欄からでも、くわしく作る画面からでも同じ） */
 public function store(StoreTaskRequest $request, CreateTask $createTask): RedirectResponse
 {
     $task = $createTask-&gt;handle($request-&gt;user(), $request-&gt;validated());
-    $to = $request-&gt;input('back') === 'today' ? route('today') : $this-&gt;listUrl($task);
 
-    return redirect($to)-&gt;with('status', __(config('suiri.tasks.flash.created'), ['title' =&gt; $task-&gt;title]));
+    return redirect($this-&gt;listUrl($task))-&gt;with('status', __(config('suiri.tasks.flash.created'), ['title' =&gt; $task-&gt;title]));
 }</code></pre></div>
       <ul>
-        <li><code>$request-&gt;validated()</code>：決まり（<code>rules</code>）に書いた項目だけを取り出します。<code>back</code> や、勝手に足された <code>user_id</code> のような項目は入りません。</li>
+        <li><code>$request-&gt;validated()</code>：決まり（<code>rules</code>）に書いた項目だけを取り出します。勝手に足された <code>user_id</code> のような、決まりにない項目は入りません。</li>
         <li><code>CreateTask</code>：タスクを作る<dfn>用事（Action）</dfn>。「1つの用事を1つのクラスに」という決まりで、受付からも、ほかの場所からも同じ作り方で呼べます。</li>
-        <li>戻り先：<code>back</code> が <code>today</code> なら今日の画面、そうでなければ「そのタスクが入る一覧のタブ」です。</li>
+        <li>戻り先：<code>listUrl($task)</code> が、作ったタスクが見える、きょうの画面の住所を作ります（下）。1行で書く欄から作っても、くわしく作る画面から作っても同じ決まりです。</li>
         <li>お知らせの文は <code>config('suiri.tasks.flash.created')</code> の「「:title」を書いておいたよ。」で、<code>__()</code> が <code>:title</code> に題名を入れます。</li>
       </ul>
-      <div class="code"><div class="file">src/app/Http/Controllers/Tasks/TaskController.php</div><pre><code>/** そのタスクが入る一覧（タブ）の URL を返す */
+      <div class="code"><div class="file">src/app/Http/Controllers/Tasks/TaskController.php</div><pre><code>/** そのタスクが入る、きょうの画面の枠を開く URL を返す（今日までのものは上に出るので、枠は開かない） */
 private function listUrl(Task $task): string
 {
-    return route('tasks.index', ['view' =&gt; TaskListQuery::viewOf($task, today()-&gt;toDateString())]);
+    return $this-&gt;todayUrl(TaskListQuery::openOf($task, today()-&gt;toDateString()));
+}
+
+/** きょうの画面の URL を返す（開く枠があれば ?open= を付ける） */
+private function todayUrl(?string $open): string
+{
+    return route('today', array_filter(['open' =&gt; $open]));
 }</code></pre></div>
+      <p>どの枠に入るかを決めるのは、タスクを振り分ける係 <code>TaskListQuery</code> の <code>openOf</code> です。</p>
+      <div class="code"><div class="file">src/app/Queries/Tasks/TaskListQuery.php</div><pre><code>public static function openOf(Task $task, string $today): ?string
+{
+    // 済んでいれば「済み」、期日がなければ「いつか」、期日が明日より先なら「これから」、今日まで（今日の並び・期日を過ぎた）なら開く枠なし
+    return match (true) {
+        $task-&gt;isDone() =&gt; 'done',
+        $task-&gt;due_on === null =&gt; 'someday',
+        $task-&gt;due_on &gt; $today =&gt; 'upcoming',
+        default =&gt; null,
+    };
+}</code></pre></div>
+      <ul>
+        <li><code>match (true)</code>：上から順に条件を確かめ、最初に真になった行の値を返す書き方です。済んでいれば <code>'done'</code>、期日がなければ <code>'someday'</code>、期日が明日以降なら <code>'upcoming'</code>、どれでもなければ（期日が今日か、もう過ぎている）<code>null</code>。</li>
+        <li><code>null</code> のときに枠を開かないのは、今日までのものは、たたんだ枠ではなく「きょうの予定とやること」の並びに出るからです（<a href="#s2">2章</a>）。</li>
+        <li><code>array_filter(['open' =&gt; $open])</code>：値が <code>null</code> の項目を取り除きます。なので <code>route('today', …)</code> は、開く枠があれば <code>/today?open=upcoming</code>、なければただの <code>/today</code> になります。</li>
+      </ul>
+      <div class="table-wrap"><table>
+        <thead><tr><th>押したボタン</th><th>作ったタスクの期日</th><th>戻り先</th></tr></thead>
+        <tbody>
+          <tr><td>今日</td><td>今日</td><td><code>/today</code>（「きょうの予定とやること」に並ぶ）</td></tr>
+          <tr><td>明日</td><td>明日</td><td><code>/today?open=upcoming</code>（「これから」の枠が開く）</td></tr>
+          <tr><td>いつか</td><td>なし</td><td><code>/today?open=someday</code>（「いつか」の枠が開く）</td></tr>
+        </tbody>
+      </table></div>
+      <p>どこから来たかで戻り先を分ける道はありません（戻り先を知らせる隠し欄もありません）。どこから作っても「作ったタスクが見える所へ」の1つの決まりだけです。直す・消すのあとも、同じ <code>listUrl</code> で戻ります（3-4）。</p>
     </li>
 
     <li class="step">
@@ -310,7 +346,7 @@ private function connected(Task $task): bool
     <li class="step">
       <span class="who db">データベース</span>
       <h4>仕事が <code>jobs</code> 表に予約される（<code>afterCommit</code> と「1つにまとめる」）</h4>
-      <p>Google への書き込みは時間がかかり、失敗することもあります。それを待っていると「書く」を押してから画面が戻るまでが遅くなるので、その場ではせず、<dfn>後回しの仕事（ジョブ）</dfn>として予約だけします。このアプリの予約の置き場は <code>database</code>（<code>jobs</code> 表）で、worker の箱の <code>queue:work</code> があとで取り出して片づけます（<a href="#s9">9章</a>）。</p>
+      <p>Google への書き込みは時間がかかり、失敗することもあります。それを待っていると「今日」などのボタンを押してから画面が戻るまでが遅くなるので、その場ではせず、<dfn>後回しの仕事（ジョブ）</dfn>として予約だけします。このアプリの予約の置き場は <code>database</code>（<code>jobs</code> 表）で、worker の箱の <code>queue:work</code> があとで取り出して片づけます（<a href="#s9">9章</a>）。</p>
       <p><code>dispatch(...)</code> が返すのは「出す予定の仕事」（<code>PendingDispatch</code>）で、実際に出すのは、それが使い終わって片づけられるとき（<code>__destruct</code>）です。</p>
       <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Foundation/Bus/PendingDispatch.php</div><pre><code>public function __destruct()
 {
@@ -348,21 +384,27 @@ private function connected(Task $task): bool
 
     <li class="step">
       <span class="who browser">ブラウザ</span>
-      <h4>今日の画面へ戻る（転送とお知らせ）</h4>
-      <p>受付の <code>redirect($to)-&gt;with('status', …)</code> は、「302（別の住所へ）」の返事と、一度だけのお知らせ「「夕食の買い物」を書いておいたよ。」をセッションに入れます。ブラウザは自動で <code>GET /today</code> をもう一度頼み、<a href="#s2">2章</a> の流れで今日の画面が作り直されます。骨組みの <code>&lt;x-ui.flash /&gt;</code> がお知らせを出し、書いたタスクが「きょうの予定とやること」に並びます。</p>
-      <div class="analogy"><b>たとえると</b>窓口で用紙を出したら「受け付けました。では、あちらの掲示板をご覧ください」と案内されるようなものです。掲示板（今日の画面）には、いま出した用紙の内容がもう貼ってあります。</div>
+      <h4>きょうの画面へ戻る（転送とお知らせ）</h4>
+      <p>受付の <code>redirect(…)-&gt;with('status', …)</code> は、「302（別の住所へ）」の返事と、一度だけのお知らせ「「夕食の買い物」を書いておいたよ。」をセッションに入れます。ブラウザは自動で <code>GET /today</code>（明日やいつかで作ったなら <code>GET /today?open=upcoming</code> などの住所）をもう一度頼み、<a href="#s2">2章</a> の流れできょうの画面が作り直されます。骨組みの <code>&lt;x-ui.flash /&gt;</code> がお知らせを出し、書いたタスクは、今日なら「きょうの予定とやること」の並びに、明日やいつかなら最初から開いた「これから」「いつか」の枠の中に見えます。</p>
+      <div class="analogy"><b>たとえると</b>窓口で用紙を出したら「受け付けました。では、あちらの掲示板の、この欄をご覧ください」と案内されるようなものです。掲示板（きょうの画面）には、いま出した用紙の内容がもう貼ってあり、その欄のカバーもめくってあります。</div>
       <p>POST の返事で画面を直接返さず、いつも転送するのは、ブラウザの「再読み込み」で同じ送信がもう一度送られて、タスクが2つできてしまうのを防ぐためです。</p>
     </li>
   </ol>
 
-  <h3>3-2　「日にちや時間も決める」から書く</h3>
+  <h3>3-2　「くわしく」から書く</h3>
   <ol class="steps">
     <li class="step">
       <span class="who browser">ブラウザ</span>
-      <h4>「日にちや時間も決める」を押す：同じフォームを、別の送り先へ</h4>
-      <div class="code"><div class="file">src/resources/views/components/task/quick-add.blade.php</div><pre><code>&lt;button type="submit" formaction="{{ route('tasks.draft') }}" formnovalidate</code></pre></div>
-      <p>すばやく書く欄の「日にちや時間も決める」は、同じフォームの中の別のボタンです。<code>formaction</code> は「このボタンで送るときだけ、送り先をこちらにする」、<code>formnovalidate</code> は「ブラウザの確かめ（題名が必須など）をしない」という意味です。題名が空のままでも、くわしく書く画面へ移れます。</p>
-      <div class="data"><b>このとき動くデータ</b><ul><li>送る：<code>POST /tasks/draft</code>、中身は <code>title</code>・<code>due_on</code>・（今日の画面なら）<code>back</code></li></ul></div>
+      <h4>「くわしく」を押す：同じフォームを、別の送り先へ</h4>
+      <div class="code"><div class="file">src/resources/views/components/task/quick-add.blade.php</div><pre><code>&lt;button type="submit" formaction="{{ route('tasks.draft') }}" formnovalidate
+  class="inline-flex min-h-12 cursor-pointer items-center gap-0.5 rounded-xl px-1 text-sm font-semibold whitespace-nowrap text-muted hover:text-ink"&gt;{{ $words['more'] }}&lt;span aria-hidden="true"&gt;›&lt;/span&gt;&lt;/button&gt;</code></pre></div>
+      <p>1行で書く欄の右はしの「くわしく›」は、同じフォームの中の4つめの送信ボタンです。日にちや時間・何分かかりそうかも決めたいときに使います。</p>
+      <ul>
+        <li><code>formaction</code>：「このボタンで送るときだけ、送り先をこちらにする」という印。送り先は <code>/tasks</code> ではなく <code>/tasks/draft</code> になります。</li>
+        <li><code>formnovalidate</code>：「ブラウザの確かめ（題名が必須など）をしない」という印。題名が空のままでも、くわしく書く画面へ移れます。</li>
+        <li>このボタンには <code>name</code> がないので、押しても <code>due_on</code> は送られません（送られるのは押したボタンの値だけで、「今日」「明日」「いつか」は押していないため）。くわしく書く画面の期日は、その画面の初めの値（今日）から選び直します。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul><li>送る：<code>POST /tasks/draft</code>、中身は <code>_token</code>・<code>title</code></li></ul></div>
     </li>
 
     <li class="step">
@@ -371,7 +413,7 @@ private function connected(Task $task): bool
       <div class="code"><div class="file">src/app/Http/Controllers/Tasks/DraftTaskController.php</div><pre><code>/** 入力を持って、くわしく作る画面へ移る（確かめるのは、作るときの StoreTaskRequest） */
 public function __invoke(Request $request): RedirectResponse
 {
-    return redirect()-&gt;route('tasks.create')-&gt;withInput($request-&gt;only(['title', 'due_on', 'back']));
+    return redirect()-&gt;route('tasks.create')-&gt;withInput($request-&gt;only(['title', 'due_on']));
 }</code></pre></div>
       <p><code>withInput</code> は、渡した値を「前の入力」としてセッションに一度だけ入れます。</p>
       <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Http/RedirectResponse.php</div><pre><code>public function withInput(?array $input = null)
@@ -401,10 +443,10 @@ public function __invoke(Request $request): RedirectResponse
       </ul>
       <p>画面 <code>tasks/create</code> は、入力のまとまり <code>&lt;x-task.form&gt;</code> を置くだけです。</p>
       <div class="code"><div class="file">src/resources/views/tasks/create.blade.php</div><pre><code>&lt;x-task.form :task="$task" :similar="$similar" :action="route('tasks.store')" :submit="config('suiri.tasks.words.create')"
-  :back="old('back')" :open="old('title') !== null" /&gt;</code></pre></div>
-      <p>この画面も、まず「何をする？」だけを大きく出します。いつやる？・何時から？・何分かかりそう？・メモは「くわしく決める」の <code>&lt;details&gt;</code> の中にたたんであり、すばやく書く欄から来たとき（<code>old('title') !== null</code>）は最初から開いておきます。入力欄の部品 <code>&lt;x-ui.field&gt;</code> は、前の入力があればそれを、なければタスクの値を入れます。だから、すばやく書く欄で入れた題名と期日が、くわしい画面の欄にそのまま入っています。</p>
+  :open="old('title') !== null" /&gt;</code></pre></div>
+      <p>この画面も、まず「何をする？」だけを大きく出します。いつやる？・何時から？・何分かかりそう？・メモは「くわしく決める」の <code>&lt;details&gt;</code> の中にたたんであり、1行で書く欄から来たとき（<code>old('title') !== null</code>）は最初から開いておきます。入力欄の部品 <code>&lt;x-ui.field&gt;</code> は、前の入力があればそれを、なければタスクの値を入れます。だから、1行で書く欄で入れた題名がくわしい画面の欄にそのまま入り、期日の欄には前の入力がないので、タスクの初めの値の今日が入ります。</p>
       <div class="code"><div class="file">src/resources/views/components/ui/field.blade.php</div><pre><code>&lt;input id="{{ $id }}" name="{{ $name }}" type="{{ $type }}" value="{{ old($name, $value) }}" @required($required)</code></pre></div>
-      <p>フォームは、さっきと同じ <code>POST /tasks</code> に送ります（3-1 と同じ流れ）。<code>back</code> も <code>old('back')</code> から隠し欄で引き継ぐので、今日の画面から来たなら今日の画面へ戻ります。</p>
+      <p>フォームは、さっきと同じ <code>POST /tasks</code> に送ります（3-1 と同じ流れ）。保存したあとも 3-1 と同じく、<code>listUrl</code> がきょうの画面のそのタスクが見える枠へ戻します（たとえば期日を来週にしたなら <code>/today?open=upcoming</code>）。画面の下の「きょうにもどる」リンクの行き先も、きょうの画面（<code>route('today')</code>）です。</p>
       <figure class="shot"><img data-img="screen-task-create.png" alt="やることを書く画面。大きな「何をする？」の欄、たたんだ「くわしく決める」、注意書き、横いっぱいの「これで書いておく」"><figcaption>やることを書く画面（スマホ）。「くわしく決める」はたたんであり、その下に他人のことを書かないための注意書きがある</figcaption></figure>
     </li>
 
@@ -466,39 +508,32 @@ document.querySelectorAll('[data-minute-chips]').forEach(setupChips);</code></pr
     </li>
   </ol>
 
-  <h3>3-3　一覧で見る・済ませる・戻す</h3>
+  <h3>3-3　前の一覧の住所・済ませる・戻す</h3>
   <ol class="steps">
     <li class="step">
       <span class="who server">サーバー</span>
-      <h4>タスクの一覧（<code>GET /tasks?view=…</code>）：きょう／これから／いつか／済んだ</h4>
-      <div class="code"><div class="file">src/app/Http/Controllers/Tasks/TaskController.php</div><pre><code>public function index(Request $request, TaskListQuery $query): View
+      <h4>前の一覧の住所（<code>GET /tasks?view=…</code>）：きょうの画面の同じ枠へ移すだけ</h4>
+      <p>タスクを見る画面は、きょうの画面1つにまとまっています（<a href="#s2">2章</a>）。前はタスクの一覧の画面がこの住所にあり、<code>?view=upcoming</code> のようなクエリ文字列でタブを選んでいました。ブックマークや前のリンクから来た人が迷わないよう、住所は受け皿として残し、きょうの画面へ移しています。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Tasks/TaskController.php</div><pre><code>public function index(Request $request): RedirectResponse
 {
-    $user = $request-&gt;user();
-    $view = TaskListQuery::normalize($request-&gt;query('view'));
-    $today = today()-&gt;toDateString();
-
-    return view('tasks.index', [
-        'view' =&gt; $view,
-        'today' =&gt; $today,
-        'tasks' =&gt; $query-&gt;list($user, $view, $today),
-        'counts' =&gt; $query-&gt;counts($user, $today),
-        'justDone' =&gt; $query-&gt;justDone($user, session('task_done')),
-    ]);
+    return redirect($this-&gt;todayUrl(TaskListQuery::normalizeOpen($request-&gt;query('view'))));
 }</code></pre></div>
-      <p>住所の後ろの <code>?view=upcoming</code> のような部分（<dfn>クエリ文字列</dfn>）で、どのタブを見るかを決めます。知らない値なら「きょう」にそろえます（<code>normalize</code>）。振り分けは <code>TaskListQuery::list</code> です。</p>
-      <div class="code"><div class="file">src/app/Queries/Tasks/TaskListQuery.php</div><pre><code>return match ($view) {
-    'done' =&gt; $tasks-&gt;done()-&gt;latest('done_at')-&gt;latest('id')-&gt;limit(config('suiri.tasks.done_limit'))-&gt;get(),
-    'someday' =&gt; $tasks-&gt;open()-&gt;whereNull('due_on')-&gt;orderBy('id')-&gt;get(),
-    'upcoming' =&gt; $this-&gt;byDate($tasks-&gt;open()-&gt;where('due_on', '&gt;', $today))-&gt;get(),
-    default =&gt; $this-&gt;byDate($tasks-&gt;open()-&gt;where('due_on', '&lt;=', $today))-&gt;get(),
-};</code></pre></div>
       <ul>
-        <li><b>きょう</b>：期日が今日まで（過ぎたものも、忘れないよう古い順に上へ）で、まだ済んでいないもの。</li>
-        <li><b>これから</b>：期日が明日より先。<b>いつか</b>：期日なし。<b>済んだ</b>：済んだものを新しい順に 50 件まで（一覧の下に「新しいものから50件まで見せているよ。」と添える）。</li>
-        <li><code>$tasks</code> は <code>$user-&gt;tasks()</code> なので、どのタブもこの人のタスクだけです。</li>
+        <li><code>$request-&gt;query('view')</code>：住所の <code>?view=</code> の値。</li>
+        <li><code>TaskListQuery::normalizeOpen</code>：きょうの画面が <code>?open=</code> を読むときと同じ関数です（<a href="#s2">2章</a> のステップ4）。たたんだ枠の名前 <code>upcoming</code>・<code>someday</code>・<code>done</code> ならそのまま、それ以外（<code>today</code>・知らない値・なし）は <code>null</code>。前のタブの名前と枠の名前をそろえてあるので、そのまま使えます。</li>
+        <li><code>todayUrl</code>：3-1 のステップ5 と同じ。<code>null</code> なら <code>?open=</code> を付けません。</li>
       </ul>
-      <p>画面 <code>tasks/index</code> は、上から「できたね！」の枠（済ませた直後だけ）→ すばやく書く欄 → タブと大きな行の一覧、の順です。この画面ですることを「書く」と「済ませる」の2つにしぼっています。タブ（<code>&lt;x-task.tabs&gt;</code>）には、きょう・これから・いつかの件数を添えます（済んだものは増え続けるので数えません）。タブの言葉と順番は <code>config('suiri.tasks.views')</code> です。</p>
-      <figure class="shot"><img data-img="screen-tasks.png" alt="タスクの一覧・きょう。いちばん上に「何をする？」の欄と「＋ 書く」、その下に4つのタブと大きな行の一覧。期日を過ぎたやることは赤で「10/30（金）までだったよ」"><figcaption>タスクの一覧（きょうのタブ）。期日を過ぎたやることは赤で「◯/◯までだったよ」、予想から作った確かめるタスクは丸の代わりに点線の虫めがねと「答え合わせ」</figcaption></figure>
+      <div class="table-wrap"><table>
+        <thead><tr><th>来た住所</th><th>移る先</th></tr></thead>
+        <tbody>
+          <tr><td><code>/tasks?view=upcoming</code></td><td><code>/today?open=upcoming</code>（「これから」が開く）</td></tr>
+          <tr><td><code>/tasks?view=someday</code></td><td><code>/today?open=someday</code>（「いつか」が開く）</td></tr>
+          <tr><td><code>/tasks?view=done</code></td><td><code>/today?open=done</code>（「済み」が開く）</td></tr>
+          <tr><td><code>/tasks</code>・<code>/tasks?view=today</code>・知らない値</td><td><code>/today</code>（どの枠も開かない）</td></tr>
+        </tbody>
+      </table></div>
+      <p>テスト <code>tests/Feature/Tasks/TaskListTest.php</code> が、それぞれの移り先と、ログインしていない人はトップへ送られることを確かめています。</p>
+      <figure class="shot"><img data-img="screen-today-later-upcoming.png" alt="きょうの画面で「これから 3件」の枠を開いたところ（スマホ）。「明日・11月1日（日）」「11月3日（火）」「11月5日（木）」の小見出しの下にやることの行。確かめるタスクは左に点線の虫めがね、右に「答え合わせ」"><figcaption><code>/today?open=upcoming</code> で来たときの「これから」の枠。日付ごとの小見出しの下に行が並び、予想から作った確かめるタスクは丸の代わりに点線の虫めがねと「答え合わせ」</figcaption></figure>
     </li>
 
     <li class="step">
@@ -581,7 +616,7 @@ public function rules(): array
 {
     $completeTask-&gt;handle($task, $request-&gt;validated('actual_minutes'));
 
-    return redirect()-&gt;back(fallback: route('tasks.index'))-&gt;with('task_done', $task-&gt;id);
+    return redirect()-&gt;back(fallback: route('today'))-&gt;with('task_done', $task-&gt;id);
 }</code></pre></div>
       <div class="code"><div class="file">src/app/Actions/Tasks/CompleteTask.php</div><pre><code>public function handle(Task $task, ?int $actualMinutes = null): Task
 {
@@ -596,7 +631,7 @@ public function rules(): array
 }</code></pre></div>
       <ul>
         <li><code>$task-&gt;done_at ??= now()</code>：済んだ日時が空のときだけ、いまの日時を入れます。もう済んでいるタスク（済んだあとにかかった時間を足すとき）なら、済んだ日時は変えません。</li>
-        <li><code>redirect()-&gt;back(fallback: …)</code>：元の画面（今日の画面か一覧）へ戻します。元の画面は、ブラウザが送ってくる「前にいたページ」（<code>Referer</code> ヘッダ）か、セッションに覚えた前の住所で分かります。どちらもなければ一覧へ。</li>
+        <li><code>redirect()-&gt;back(fallback: …)</code>：元の画面へ戻します。元の画面は、ブラウザが送ってくる「前にいたページ」（<code>Referer</code> ヘッダ）か、セッションに覚えた前の住所で分かります。住所は <code>?open=done</code> のような後ろの部分ごと戻るので、「済み」の枠を開いて丸を押したなら、また「済み」が開いた形で戻ります。どちらも分からなければ <code>fallback</code> のきょうの画面（<code>route('today')</code>）へ。</li>
         <li><code>-&gt;with('task_done', $task-&gt;id)</code>：済ませたタスクの番号を一度だけのお知らせに入れます。戻った画面がこれを見て、さそう枠を出します（このあとのステップ7）。</li>
       </ul>
       <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Routing/UrlGenerator.php</div><pre><code>public function previous($fallback = false)
@@ -631,7 +666,7 @@ public function updated(Task $task): void
     <li class="step">
       <span class="who browser">ブラウザ</span>
       <h4>戻った画面に「かかった時間・気になる」をさそう枠（<code>&lt;x-task.done-followup&gt;</code>）</h4>
-      <p>戻った今日の画面（または一覧）は、お知らせ <code>task_done</code> の番号で「この人の、済んだタスク」を探し（<code>TaskListQuery::justDone</code>。<a href="#s2">2章</a>）、見つかればいちばん上に枠を出します。</p>
+      <p>戻ったきょうの画面は、お知らせ <code>task_done</code> の番号で「この人の、済んだタスク」を探し（<code>TaskListQuery::justDone</code>。<a href="#s2">2章</a>）、見つかればいちばん上に枠を出します。済ませたタスクは、行の丸が緑のチェックになり、題名に線が引かれます。済んだものは、どの日のものも「済み」の枠に入ります。今日が期日のものは、今日やったことが分かるよう「きょうの予定とやること」の並びにも残ります。</p>
       <div class="code"><div class="file">src/resources/views/components/task/done-followup.blade.php</div><pre><code>&lt;span class="min-w-0 break-words"&gt;{{ __($words['title'], ['title' =&gt; $task-&gt;title]) }}&lt;/span&gt;
 {{-- …（省略）… --}}
     {{-- かかった時間がまだなら聞く。書いてあれば予定とくらべて見せる --}}
@@ -653,8 +688,8 @@ public function updated(Task $task): void
         <li>「気になる」は、そのタスクを出発点にした事件を作る画面へ（<a href="#s4">4章</a>）。</li>
         <li>どちらも任意で、何もしなくてかまいません。お知らせは一度きりなので、次に画面を開いたときには枠は消えています。</li>
       </ul>
-      <figure class="shot"><img data-img="screen-today-done.png" alt="今日の画面・やることを済ませた直後。緑の枠「『牛乳を買う』、できたね！」に、15分・30分・1時間のボタンと「気になる」"><figcaption>済ませた直後の今日の画面。緑の枠に、1回押すだけで書ける分のボタンと「気になる」</figcaption></figure>
-      <figure class="shot"><img data-img="screen-tasks-done.png" alt="タスクの一覧・済んだ。緑のチェックの行に「15分の予定 → 25分かかった」などが並ぶ"><figcaption>済んだのタブ。かかった時間を入れたタスクには「15分の予定 → 25分かかった」のように出る</figcaption></figure>
+      <figure class="shot"><img data-img="screen-today-done.png" alt="きょうの画面・やることを済ませた直後。緑の枠「『牛乳を買う』、できたね！」に、15分・30分・1時間のボタン、ほかの分を書く欄と「書く」、「気になる」"><figcaption>済ませた直後のきょうの画面。いちばん上の緑の枠に、1回押すだけで書ける分のボタンと「気になる」</figcaption></figure>
+      <figure class="shot"><img data-img="screen-today-later-done.png" alt="きょうの画面で「済み 5件」の枠を開いたところ（スマホ）。この7日に済んだ5件が、緑のチェックと線を引いた題名で新しい順に並び、「15分の予定 → 25分かかった」「10/30（金）」「30分の予定 → 45分かかった」などが出る"><figcaption>「済み」の枠（この7日に済んだもの）。かかった時間を入れたタスクには「15分の予定 → 25分かかった」のように出る。丸を押すと、まだに戻せる</figcaption></figure>
     </li>
 
     <li class="step">
@@ -669,16 +704,61 @@ public function handle(Task $task): Task
 
     return $task;
 }</code></pre></div>
-      <p>済んだ日時を空に戻すだけで、かかった時間は残します（まちがえて戻したときに入れ直さなくてよいように）。<code>done_at</code> が変わるので、<code>TaskObserver::updated</code> が書き出しの仕事を出し、予定の題名の「✓ 」が外れます。受付は元の画面へ戻し、「「…」を、まだに戻したよ。」とお知らせします（<code>config('suiri.tasks.flash.reopened')</code>）。</p>
+      <p>済んだ日時を空に戻すだけで、かかった時間は残します（まちがえて戻したときに入れ直さなくてよいように）。<code>done_at</code> が変わるので、<code>TaskObserver::updated</code> が書き出しの仕事を出し、予定の題名の「✓ 」が外れます。受付は、済ませるときと同じ <code>redirect()-&gt;back(fallback: route('today'))</code> で元の画面へ戻し、「「…」を、まだに戻したよ。」とお知らせします（<code>config('suiri.tasks.flash.reopened')</code>）。</p>
     </li>
   </ol>
 
-  <h3>3-4　直す・消す</h3>
+  <h3>3-4　行を開いて直す・消す・気になる</h3>
   <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>行の題名を押す：その場で開いて「直す」「気になる」「消す」が出る（<code>&lt;x-task.item&gt;</code>）</h4>
+      <p>やることの行は、左の丸のほかに、題名の所が押せるようになっています（<a href="#s2">2章</a> のステップ19）。押すと、画面を移らずにその行だけが開き、そのやることでできることが並びます。ふだんは操作を丸の1つにしぼって行をすっきり見せ、何かしたいときだけ開く、という作りです。</p>
+      <div class="code"><div class="file">src/resources/views/components/task/item.blade.php</div><pre><code>&lt;details class="group/row min-w-0 flex-1"&gt;
+  &lt;summary class="flex min-h-16 cursor-pointer items-center gap-2 py-3"&gt;
+  {{-- …（省略）… --}}
+  &lt;/summary&gt;
+
+  &lt;div role="group" aria-label="{{ __($row['actions_label'], ['title' =&gt; $task-&gt;title]) }}" class="-ml-13 flex flex-wrap items-start gap-2 pb-3"&gt;
+    &lt;a href="{{ route('tasks.edit', $task) }}" class="inline-flex min-h-12 items-center rounded-full border-2 border-ink/60 px-4 text-base font-semibold text-ink no-underline hover:border-ink"&gt;{{ $row['edit'] }}&lt;/a&gt;
+    {{-- ふつうのやることなら「気になる」も出す（確かめるタスクは、もとの事件があるので出さない） --}}
+    @unless ($byPrediction)
+      &lt;x-task.curious origin="task" :label="$task-&gt;title" pill /&gt;
+    @endunless
+    {{-- 答え合わせ待ちの予想を確かめるタスクは消せないので、「消す」を出さない（やめるときは直す画面で予想を取り下げる） --}}
+    @unless ($task-&gt;checksPendingPrediction())
+      &lt;x-ui.confirm :action="route('tasks.destroy', $task)" :label="$row['delete']" :confirm-label="$words['delete_confirm']"
+        :message="$words['delete_message']" class="ml-auto open:basis-full" /&gt;
+    @endunless
+  &lt;/div&gt;
+&lt;/details&gt;</code></pre></div>
+      <ul>
+        <li><code>&lt;details&gt;</code> の <code>&lt;summary&gt;</code>（題名と、日にち・時刻・何分の小さな1行）を押すと、その下の <code>role="group"</code> のまとまりが開きます。JavaScript は使いません。<code>aria-label</code> は、読み上げで「『夕食の買い物』でできること」と伝えるための名前です。</li>
+        <li><b>直す</b>：直す画面 <code>/tasks/{task}/edit</code> へのリンク（次のステップ）。</li>
+        <li><b>気になる</b>：そのやることを出発点にした事件を作る画面へ（<code>&lt;x-task.curious&gt;</code>。題名を住所に載せないよう <code>POST /cases/draft</code> を通る。<a href="#s4">4章</a>）。<code>pill</code> を付けると、直す・消すと同じ横長の形になります。予想から作った確かめるタスク（<code>$byPrediction</code>）には出しません。もとの事件がもうあるからです。</li>
+        <li><b>消す</b>：押すとすぐ消すのではなく、確かめの文が開く部品 <code>&lt;x-ui.confirm&gt;</code> です（下）。答え合わせ待ちの予想を確かめるタスク（<code>checksPendingPrediction()</code>）には出しません（このステップの2つあと）。</li>
+        <li><code>-ml-13</code>：操作の並びを左の丸の下まで広げます。スマホの狭い幅でも、3つが1行に入るようにするためです。</li>
+      </ul>
+      <div class="code"><div class="file">src/resources/views/components/ui/confirm.blade.php</div><pre><code>&lt;details {{ $attributes-&gt;class(['group']) }}&gt;
+  &lt;summary class="inline-flex min-h-12 cursor-pointer items-center rounded-xl px-3 text-base font-semibold text-accent hover:bg-accent-soft"&gt;{{ $label }}&lt;/summary&gt;
+  &lt;div class="mt-2 rounded-xl border border-accent/40 bg-accent-soft p-4 text-base leading-relaxed"&gt;
+    &lt;p&gt;{{ $message }}&lt;/p&gt;
+    &lt;form method="POST" action="{{ $action }}" class="mt-3"&gt;
+      @csrf
+      @method($method)
+      {{ $slot }}
+      &lt;x-ui.button variant="danger"&gt;{{ $confirmLabel }}&lt;/x-ui.button&gt;
+    &lt;/form&gt;
+  &lt;/div&gt;
+&lt;/details&gt;</code></pre></div>
+      <p>これも <code>&lt;details&gt;</code> の箱で、「消す」の文字を押すと「消すと、もとに戻せないよ。消していい？」（<code>tasks.words.delete_message</code>）と赤い「消す」のボタンが開きます。そのボタンで初めて <code>DELETE /tasks/{task}</code> が送られます（<code>@method($method)</code> の既定は <code>DELETE</code>）。1回押しただけで消えてしまわないよう、2回押す形にしています。</p>
+      <figure class="shot"><img data-img="screen-today-row-open.png" alt="きょうの画面で、やり残しの行「歯医者に予約の電話」を押して開いたところ（スマホ）。「直す」「気になる」「消す」が並び、「消す」を押すと「消すと、もとに戻せないよ。消していい？」の文と赤い「消す」のボタン。下の済んだ行も開いていて「直す」「気になる」「消す」"><figcaption>行を押すと、その場で開く（スマホ）。消すときは、確かめの文が開いてから</figcaption></figure>
+    </li>
+
     <li class="step">
       <span class="who server">サーバー</span>
       <h4>直す（<code>GET /tasks/{task}/edit</code> → <code>PATCH /tasks/{task}</code>）</h4>
-      <p>行の題名を押すと直す画面です。直す画面も「何をする？」を大きく出し、日にち・時間・何分・メモは「くわしく決める」の中です。予想から作った確かめるタスクなら、題名は文字で見せるだけ（「予想の文から作ったので、直せないよ。」）にし、上に答え合わせへのボタンを出します。住所に <code>can:update,task</code> が付いているので、他人のタスクは画面さえ開けません。送るときは <code>@method('PATCH')</code> で <code>PATCH</code> になります。形の検証は <code>UpdateTaskRequest</code> で、作るときの決まりを受け継ぎ、確かめるタスクのときだけ決まりを変えます。</p>
+      <p>開いた行の「直す」を押すと直す画面です。直す画面も「何をする？」を大きく出し、日にち・時間・何分・メモは「くわしく決める」の中です。予想から作った確かめるタスクなら、題名は文字で見せるだけ（「予想の文から作ったので、直せないよ。」）にし、上に答え合わせへのボタンを出します。住所に <code>can:update,task</code> が付いているので、他人のタスクは画面さえ開けません。送るときは <code>@method('PATCH')</code> で <code>PATCH</code> になります。形の検証は <code>UpdateTaskRequest</code> で、作るときの決まりを受け継ぎ、確かめるタスクのときだけ決まりを変えます。</p>
       <div class="code"><div class="file">src/app/Http/Requests/Tasks/UpdateTaskRequest.php</div><pre><code>$rules = parent::rules() + [
     'actual_minutes' =&gt; ['nullable', 'integer', 'min:1', 'max:'.config('suiri.tasks.max_minutes')],
 ];
@@ -709,12 +789,13 @@ if ($task-&gt;checksPendingPrediction()) {
         <li><code>SyncPredictionCheck</code>：答え合わせ待ちの予想を確かめるタスクなら、期日・開始時刻を予想の確かめる日・時刻にも写します。写すのは日時だけで、予想の文と確かさには触りません（<a href="#s6">6章</a>）。</li>
         <li>トランザクションの中で保存しているので、<code>TaskObserver::updated</code> が出す仕事（<code>afterCommit</code>）は、タスクと予想の両方の保存が確定してから <code>jobs</code> 表に入ります（3-1 のステップ10 の <code>addCallback</code>）。途中で失敗して取り消されたら、仕事も出ません。</li>
       </ul>
+      <p>直したあとの戻り先は、作るときと同じ <code>listUrl</code> です（3-1 のステップ5）。期日を明日より先に変えたなら <code>/today?open=upcoming</code>、期日を消したなら <code>/today?open=someday</code> へ戻り、直したタスクがその枠の中に見えます。直す画面の下の「もどる」リンクも、受付が同じ <code>listUrl</code> で作って渡しています（<code>backUrl</code>）。</p>
     </li>
 
     <li class="step">
       <span class="who server">サーバー</span>
       <h4>消す（<code>DELETE /tasks/{task}</code>）：答え合わせ待ちの確かめるタスクは消せない</h4>
-      <p>直す画面の下の「このやることを消す」は、押すと確認の文が開く部品 <code>&lt;x-ui.confirm&gt;</code>（JavaScript なしの <code>&lt;details&gt;</code>）です。確認の「消す」で <code>DELETE</code> を送ります。住所には <code>can:delete,task</code> が付いています。</p>
+      <p>消すボタンは、開いた行の「消す」と、直す画面の下の「このやることを消す」の2か所にあります。どちらも、押すと確かめの文が開く部品 <code>&lt;x-ui.confirm&gt;</code>（JavaScript なしの <code>&lt;details&gt;</code>）で、確かめの「消す」で <code>DELETE</code> を送ります。住所には <code>can:delete,task</code> が付いています。</p>
       <div class="code"><div class="file">src/app/Http/Requests/Tasks/DeleteTaskRequest.php</div><pre><code>/** 答え合わせ待ちの予想を確かめるタスクでなければ、消してよい */
 public function authorize(): bool
 {
@@ -726,7 +807,7 @@ protected function failedAuthorization(): void
 {
     throw new AuthorizationException('このタスクは予想を確かめるためのものなので、消せません。確かめるのをやめるときは、予想を取り下げてください。');
 }</code></pre></div>
-      <p>答え合わせ待ちの予想を確かめるタスクを消すと、確かめる手立てのない予想だけが残ってしまいます。なので、そういうタスクの直す画面では消すボタンの代わりに「予想を取り下げる」を出し、受付でも断ります。用事 <code>DeleteTask</code> も念のため同じことを確かめてから、モデルの <code>delete()</code> で消します。</p>
+      <p>答え合わせ待ちの予想を確かめるタスクを消すと、確かめる手立てのない予想だけが残ってしまいます。なので、そういうタスクは開いた行に「消す」を出さず、直す画面では消すボタンの代わりに「予想を取り下げる」を出し、受付でも断ります。用事 <code>DeleteTask</code> も念のため同じことを確かめてから、モデルの <code>delete()</code> で消します。</p>
       <div class="code"><div class="file">src/app/Actions/Tasks/DeleteTask.php</div><pre><code>public function handle(Task $task): void
 {
     // 答え合わせ待ちの予想を確かめるタスクなら止める（答え合わせ待ちの予想だけが残ってしまうため）
@@ -746,16 +827,17 @@ protected function failedAuthorization(): void
 
     $this-&gt;safely($task, fn () =&gt; RemoveTaskFromCalendar::dispatch($task-&gt;user_id, $task-&gt;calendar_event_id)-&gt;afterCommit());
 }</code></pre></div>
-      <p>タスクの行はもう消えているので、仕事には「持ち主の番号」と「予定の ID」を渡します（ID は保存の直前に決めておいたもの。3-1 のステップ7）。仕事の中身は <a href="#s9">9章</a>。受付は、そのタスクがいた一覧へ戻して「「…」を消したよ。」とお知らせします。</p>
+      <p>タスクの行はもう消えているので、仕事には「持ち主の番号」と「予定の ID」を渡します（ID は保存の直前に決めておいたもの。3-1 のステップ7）。仕事の中身は <a href="#s9">9章</a>。受付は、消す前に <code>listUrl</code> で決めておいた住所（そのタスクがいた枠を開いたきょうの画面）へ戻して「「…」を消したよ。」とお知らせします。</p>
       <div class="data"><b>このとき動くデータ</b><ul><li>消す：<code>tasks</code> のこの行</li><li>書く：<code>jobs</code> 表に <code>RemoveTaskFromCalendar</code> の1行（つないでいて、予定にしていた場合だけ）</li></ul></div>
     </li>
   </ol>
 
   <div class="recap"><b>この章のまとめ</b><ol>
-    <li>タスクの住所は <code>Route::resource</code> の6つと、「日にちや時間も決める」・済ませる・戻すの3つ。書く住所には回数制限 <code>throttle:writes</code>（1人1分60回）、<code>{task}</code> のある住所には持ち主の確認 <code>can</code> が付く。</li>
-    <li>送られた中身は FormRequest が先に確かめ、受付は用事（<code>CreateTask</code>・<code>CompleteTask</code> …）に頼んで転送するだけ。持ち主の <code>user_id</code> はいつもログイン中の人から決まる。</li>
-    <li>すばやく書く欄は「何をする？」の1つだけ。「日にちや時間も決める」は題名を住所に載せず、POST とセッションの「前の入力」で、くわしく書く画面へ持っていく。分の欄は、よく使う分のボタンを押すと欄に入る（<code>minute-chips.js</code>。保存は本人が押したとき）。</li>
-    <li>済ませると <code>done_at</code> に日時が入り、お知らせ <code>task_done</code> で元の画面に「できたね！」の枠（1回押すだけの分のボタン・気になる）が出る。確かめるタスクは答え合わせで済む（丸では済ませられない・消せない）。</li>
+    <li>タスクの住所は <code>Route::resource</code> の6つと、「くわしく」・済ませる・戻すの3つ。書く住所には回数制限 <code>throttle:writes</code>（1人1分60回）、<code>{task}</code> のある住所には持ち主の確認 <code>can</code> が付く。前の一覧の住所 <code>GET /tasks?view=…</code> は画面を返さず、<code>/today?open=…</code> へ移すだけ。</li>
+    <li>1行で書く欄は、題名と「今日」「明日」「いつか」の3つの送信ボタン。押したボタンの <code>name="due_on"</code> の値（今日の日付・明日の日付・空）で期日が決まり、Enter は「今日」。「くわしく」は <code>formaction</code> で <code>/tasks/draft</code> へ送り、題名を住所に載せずに、セッションの「前の入力」でくわしく書く画面へ持っていく。分の欄は、よく使う分のボタンを押すと欄に入る（<code>minute-chips.js</code>。保存は本人が押したとき）。</li>
+    <li>送られた中身は FormRequest が先に確かめ、受付は用事（<code>CreateTask</code>・<code>CompleteTask</code> …）に頼んで転送するだけ。持ち主の <code>user_id</code> はいつもログイン中の人から決まる。作る・直す・消すのあとは、<code>openOf</code> が決めた、きょうの画面のそのタスクが見える枠へ戻る（今日までなら <code>/today</code>、明日より先なら <code>?open=upcoming</code>、期日なしなら <code>?open=someday</code>）。</li>
+    <li>済ませると <code>done_at</code> に日時が入り、<code>back(fallback: route('today'))</code> で元の画面（開いていた枠ごと）へ戻り、お知らせ <code>task_done</code> で「できたね！」の枠（1回押すだけの分のボタン・気になる）が出る。確かめるタスクは答え合わせで済む（丸では済ませられない・消せない）。</li>
+    <li>行の題名を押すと、その場で開いて「直す」「気になる」「消す」が出る。消すのは確かめの文が開いてから（<code>&lt;x-ui.confirm&gt;</code>）。</li>
     <li>タスクの担当は Google を知らない。保存のたびに <code>TaskObserver</code> が、つないでいる人のタスクだけ、書き出し・消す仕事を <code>jobs</code> 表に予約する（確定してから・同じタスクは1つにまとめて）。その先は <a href="#s9">9章</a>。</li>
   </ol></div>
 </section>

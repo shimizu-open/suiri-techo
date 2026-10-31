@@ -33,10 +33,10 @@
 | 見せ合う | 見せ合う | 隠して書いた見立てを並べて見ること | `case_files.revealed_at` |
 | ワトソンのひとこと | ワトソンのひとこと | 決まった規則で出す問いかけ（AI ではない） | `App\Services\Watson`／`config/watson.php` |
 | 提案・書き出し | 提案・書き出し | 決まった型と本人の記録（屋根裏の棚・カレンダーの予定）から出す入力の書き出し（AI ではない）。押すと入力欄に入るだけで、保存は本人がする。手がかりの問いかけ・別の説明の型・予想の穴埋め（＿＿）・確かめる日の候補・前にわかったこと・さっき終わった予定 | `App\Queries\Cases\SuggestionsQuery`（`StarterSuggestions`・`AtticSuggestionsQuery`・`CheckDateSuggestionsQuery`）・言葉の重なり `App\Support\WordOverlap`／`config/suiri.php` の `suggest` |
-| タスク | やること | やることの単位 | `Task`／`tasks`／`/tasks` |
+| タスク | やること | やることの単位。画面では「やること」と呼ぶ | `Task`／`tasks`／`/tasks`（作る・直す画面と送り先。`/tasks` だけを開くと、きょうの画面へ移す） |
 | ふつう・確かめる | ふつう・見に行く | タスクの種類 | `TaskKind`（`normal`／`verify`） |
 | 予定 | 予定 | Google カレンダーの予定（読むだけ） | `App\Services\Google\CalendarAgenda` |
-| 今日 | 今日 | 最初の画面 | `/today` |
+| きょう（今日の画面） | きょう | 最初の画面。今日の予定とやることに、これから・いつか・済み のやることもまとめた画面。ナビと上の帯の名前は「きょう」 | `/today`（`?open=upcoming`・`someday`・`done` でその枠を開く） |
 | 手引き | 手引き | ホームズの方法を学ぶ画面 | `/guide` |
 | 技能 | わざ | ホームズの思考の10の技能（S1〜S10） | `database/data/guide/skills.json` |
 | 名推理カード | 名推理カード | 原作の場面のカード。手がかりを見て推理してから裏返す | `database/data/guide/scenes.json`／`scene_attempts` |
@@ -61,6 +61,10 @@
 | 事件 No.12 | 同じ | 事件の番号（URL の番号と同じ）。一覧の1件・上の帯・答え合わせの「もどる」に出す | `case_board.page_title`・`case_list.case_no`・`resolve.back`／`case_files.id` |
 | No.3（荷札） | 同じ | 手がかりの札の番号（その事件の中の順番） | `ui.tag_no`／`<x-ui.evidence-tag>` |
 | 提案のチップ（書き出し・ほかの説明の型・候補） | 同じ | 押すと入力欄に書き出しが入るボタン（上の「提案・書き出し」。保存は本人） | `suggest.captions`／`<x-case.suggest-chips>` |
+| 今日・明日・いつか（1行で書く欄のボタン） | 同じ | きょうの画面でやることを1行で書いて、押すとその日で作るボタン（今日の日付・明日の日付・日にちなし）。日にちや時間も決めたいときは「くわしく」 | `tasks.quick`／`<x-task.quick-add>` |
+| 前からのやり残し | 同じ | 期日を過ぎた、まだ済んでいないやること。きょうの予定とやることの上に、赤でもとの期日を付けて出す | `today.agenda.overdue`／`<x-today.agenda>` の `overdue` |
+| これから・いつか・済み | 同じ | きょうの画面のたたんだ枠の名前。これから＝明日から先のやること（日付ごと）、いつか＝日にちを決めていないやること、済み＝この7日に済んだこと | `today.later`／`<x-today.later-tasks>`・`<x-today.fold>` |
+| 直す・気になる・消す（やることの行） | 同じ | やることの行を押すと、その場で開いて出る操作。消すときは「消すと、もとに戻せないよ。消していい？」と確かめる | `tasks.row`・`today.curious`／`<x-task.item>` |
 | ◯◯にスマホを渡してね・受け取った！はじめる | 同じ | 相棒モードで、次に書く人へ1台のスマホを渡す画面（見せ合うまで、相手の見立ては見ない） | `ui.handoff_title`・`ui.handoff_button`／`<x-ui.handoff>` |
 
 ## 1-3. ChatGPT・Claude とつなぐ（読むだけの窓口）

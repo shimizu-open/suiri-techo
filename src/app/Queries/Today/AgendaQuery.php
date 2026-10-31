@@ -56,19 +56,6 @@ class AgendaQuery
             ->values();
     }
 
-    /**
-     * 期日を過ぎた、まだ済んでいないタスクの数を返す（今日の画面で「一覧で見る」とさそうため）。
-     * 上の「答え合わせ待ち」に出ている予想の確かめるタスクは数えない（二重に知らせない）
-     *
-     * @param  list<int>  $skipPredictionIds
-     */
-    public function overdueCount(User $user, string $date, array $skipPredictionIds = []): int
-    {
-        return $user->tasks()->open()->where('due_on', '<', $date)
-            ->where(fn ($query) => $query->whereNull('prediction_id')->orWhereNotIn('prediction_id', $skipPredictionIds))
-            ->count();
-    }
-
     /** 予定が、終わった時刻を過ぎて決まった時間（config('suiri.suggest.just_ended_hours')）以内なら true を返す */
     private static function justEnded(string $date, array $item): bool
     {

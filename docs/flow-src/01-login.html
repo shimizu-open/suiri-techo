@@ -15,7 +15,7 @@ Route::get('/', HomeController::class)-&gt;name('home');</code></pre></div>
 
     <li class="step">
       <span class="who server">サーバー</span>
-      <h4>受付 <code>HomeController</code>：ログイン前ならトップ、ログイン済みなら今日の画面へ</h4>
+      <h4>受付 <code>HomeController</code>：ログイン前ならトップ、ログイン済みならきょうの画面へ</h4>
       <div class="code"><div class="file">src/app/Http/Controllers/HomeController.php</div><pre><code>/** トップを返す。ログイン済みなら最初の画面（いつも今日の画面。行き先は App\Support\Landing が決める）へ送る */
 public function __invoke(Request $request): View|RedirectResponse
 {
@@ -157,7 +157,7 @@ Route::middleware(['guest', 'throttle:auth'])-&gt;group(function () {
 
     <li class="step">
       <span class="who mw">見張り役</span>
-      <h4><code>guest</code>：ログイン済みの人は今日の画面へ追い返す</h4>
+      <h4><code>guest</code>：ログイン済みの人はきょうの画面へ追い返す</h4>
       <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Auth/Middleware/RedirectIfAuthenticated.php</div><pre><code>public function handle(Request $request, Closure $next, string ...$guards): Response
 {
     $guards = empty($guards) ? [null] : $guards;
@@ -491,7 +491,7 @@ protected function updateSession($id)
 
     <li class="step">
       <span class="who server">サーバー</span>
-      <h4>同意がまだなら同意の画面へ、済んでいれば元の画面か今日の画面へ</h4>
+      <h4>同意がまだなら同意の画面へ、済んでいれば元の画面かきょうの画面へ</h4>
       <div class="code"><div class="file">src/app/Http/Controllers/Auth/GoogleLoginController.php</div><pre><code>// まだ同意していない人（初めての人）は、同意の画面へ。済んでいる人は元の画面か最初の画面へ
 if (! $user-&gt;hasAgreed()) {
     return redirect()-&gt;route('agree.show');
@@ -503,7 +503,7 @@ public function hasAgreed(): bool
 {
     return $this-&gt;agreed_at !== null;
 }</code></pre></div>
-      <p>初めての人は <code>agreed_at</code> が空なので、<code>/agree</code> へ転送します。前から使っている人は <code>redirect()-&gt;intended(…)</code> です。<dfn>intended（行きたかった所）</dfn>は、「ログインしていないのに <code>/cases/12</code> を開こうとしてトップへ回された」ようなとき、預かり箱に覚えておいた元の住所 <code>url.intended</code> です。あればそこへ、なければ今日の画面（<code>Landing::url()</code>）へ送ります。</p>
+      <p>初めての人は <code>agreed_at</code> が空なので、<code>/agree</code> へ転送します。前から使っている人は <code>redirect()-&gt;intended(…)</code> です。<dfn>intended（行きたかった所）</dfn>は、「ログインしていないのに <code>/cases/12</code> を開こうとしてトップへ回された」ようなとき、預かり箱に覚えておいた元の住所 <code>url.intended</code> です。あればそこへ、なければきょうの画面（<code>Landing::url()</code>）へ送ります。</p>
       <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Routing/Redirector.php</div><pre><code>public function intended($default = '/', $status = 302, $headers = [], $secure = null)
 {
     $path = $this-&gt;session-&gt;pull('url.intended', $default);
@@ -641,14 +641,14 @@ public function handle(User $user): void
         $user-&gt;forceFill(['agreed_at' =&gt; now()])-&gt;save();
     }
 }</code></pre></div>
-      <p>受付は薄く、用事を呼んで転送するだけです。用事は、まだ同意していなければ <code>agreed_at</code> に今の日時を入れます。2回送られても、最初に同意した日時は変えません。そのあと、行きたかった所（なければ今日の画面）へ「ようこそ、推理手帳へ。」の緑のお知らせつきで転送します。</p>
+      <p>受付は薄く、用事を呼んで転送するだけです。用事は、まだ同意していなければ <code>agreed_at</code> に今の日時を入れます。2回送られても、最初に同意した日時は変えません。そのあと、行きたかった所（なければきょうの画面）へ「ようこそ、推理手帳へ。」の緑のお知らせつきで転送します。</p>
       <div class="data"><b>このとき動くデータ</b><ul><li>書く：<code>users</code> のこの人の行の <code>agreed_at</code></li></ul></div>
     </li>
 
     <li class="step">
       <span class="who mw">見張り役</span>
       <h4>ほかの画面には <code>agreed</code>：同意の前の人を同意の画面へ回す</h4>
-      <p>今日・タスク・事件・手引き・ふりかえり・設定・カレンダー・ChatGPT とつなぐ同意の画面の住所には、どれも <code>['auth', 'agreed']</code> が付いています（<a href="#s0">0章</a>）。<code>agreed</code> は、このアプリが自分で足した見張り役 <code>EnsureAgreed</code> の呼び名です（<code>bootstrap/app.php</code> の <code>alias</code>）。</p>
+      <p>きょうの画面・タスク・事件・手引き・ふりかえり・設定・カレンダー・ChatGPT とつなぐ同意の画面の住所には、どれも <code>['auth', 'agreed']</code> が付いています（<a href="#s0">0章</a>）。<code>agreed</code> は、このアプリが自分で足した見張り役 <code>EnsureAgreed</code> の呼び名です（<code>bootstrap/app.php</code> の <code>alias</code>）。</p>
       <div class="code"><div class="file">src/app/Http/Middleware/EnsureAgreed.php</div><pre><code>/** 同意済みならそのまま進め、まだなら同意の画面へ送る */
 public function handle(Request $request, Closure $next): Response
 {

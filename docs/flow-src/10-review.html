@@ -8,7 +8,7 @@
     <li class="step">
       <span class="who browser">ブラウザ</span>
       <h4>下のナビの「ふりかえり」を押す</h4>
-      <p>どの画面にもある下のナビ（パソコンでは横のナビ）の項目は、設定ファイルに並べてあります。</p>
+      <p>どの画面にもある下のナビ（パソコンでは左の縦のナビ）の項目は、設定ファイルに並べてあります。</p>
       <div class="code"><div class="file">src/config/suiri.php</div><pre><code>['route' =&gt; 'review.show', 'match' =&gt; ['review.*', 'norbury.*', 'attic.*'], 'label' =&gt; 'ふりかえり', 'icon' =&gt; 'loop'],</code></pre></div>
       <p><code>route</code> はリンク先のルート名、<code>match</code> は「いまの画面」に印を付けるかの判定に使うルート名です。ふりかえり・ノーベリ帳・屋根裏の棚の3つの画面のどれにいても「ふりかえり」が光ります。<code>route('review.show')</code> は、住所の <code>{week?}</code> を省いた <code>/review</code> になります。</p>
       <div class="data"><b>このとき動くデータ</b><ul><li>送る：<code>GET /review</code>（クッキーの番号札だけ）</li></ul></div>

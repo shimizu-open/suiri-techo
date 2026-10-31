@@ -136,7 +136,7 @@ public static function configured(): bool
       <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'send' =&gt; 'タスクの題名と日時、推理手帳に戻るリンク、どのタスクの予定かを見分ける番号だけ。番号はアプリの中の通し番号で、あなたの記録の中身ではありません。確かめるタスクの題名は「推理手帳：答え合わせの日」です。',
 'not_send' =&gt; 'メモ、事件のなぞ・手がかり・見立て・予想の文などの本文。',
 'receive' =&gt; '今日から2週間の予定の題名と時刻だけ（今日の画面と、事件の画面の「確かめる日」の候補に出すため。説明・場所・参加者は受け取らず、保存もしません。5分だけ覚えます）。専用カレンダーで動かした日時は、タスクに写します。',</code></pre></div>
-      <p>「読むもの」には、受け取るのが予定の題名と時刻だけで、保存せずに5分だけ覚えることまで書いています。今日の画面の予定と、予想を立てるときの「確かめる日」の候補（これからの予定のうち、事件のなぞ・手がかり・見立てと言葉が重なる予定を「次の『◯◯』の日」として出す）に使うためです。</p>
+      <p>「読むもの」には、受け取るのが予定の題名と時刻だけで、保存せずに5分だけ覚えることまで書いています。きょうの画面の予定と、予想を立てるときの「確かめる日」の候補（これからの予定のうち、事件のなぞ・手がかり・見立てと言葉が重なる予定を「次の『◯◯』の日」として出す）に使うためです。</p>
       <p>ボタンは <code>&lt;form method="POST"&gt;</code> の中にあります。<code>@csrf</code> は、フォームに合言葉の隠し欄（<code>_token</code>）を入れる Blade の命令です（<a href="#s11">11章</a>）。ボタンは横いっぱいの主なボタン <code>x-ui.big-button</code>（高さ 56px）で、すでに連携の行がある人（切れた人など）には、文字が「同意して、つなぎ直す」に変わります。ボタンの下には、Google の画面で「このアプリは Google で確認されていません」という注意が出ることがある、と小さく書いています。</p>
       <figure class="shot"><img data-img="screen-google-connect.png" alt="カレンダーとつなぐ前の説明の画面。どうなる？・送るもの・送らないもの・読むもの・Google・やめるとき、と同意して Google へ進むボタン"><figcaption>つなぐ前の説明の画面（スマホ）</figcaption></figure>
       <div class="analogy"><b>たとえると</b>銀行の口座振替の申込書です。「どこに、何を、どこまで伝えるか」を書いた紙を先に見せ、納得した人だけが判を押して（同意して）窓口に出します。</div>
@@ -185,7 +185,7 @@ public static function configured(): bool
     ],</code></pre></div>
       <ul>
         <li><code>calendar.app.created</code>：<b>このアプリが作ったカレンダーだけ</b>を読み書きできる許可。ふだんのカレンダーの予定は書き換えられません。</li>
-        <li><code>calendar.events.owned.readonly</code>：自分のカレンダーの予定を<b>読むだけ</b>の許可。今日の画面に予定を出すのに使います（<a href="#s2">2章</a>）。</li>
+        <li><code>calendar.events.owned.readonly</code>：自分のカレンダーの予定を<b>読むだけ</b>の許可。きょうの画面に予定を出すのに使います（<a href="#s2">2章</a>）。</li>
       </ul>
       <p>カレンダーのすべてを読み書きできる大きな許可（<code>calendar</code>）は求めません。許可は、使う分だけの最小にします。</p>
     </li>
@@ -1331,7 +1331,7 @@ return ['due_on' =&gt; $start-&gt;toDateString(), 'starts_at' =&gt; $start-&gt;f
 
     return true;
 }</code></pre></div>
-      <p>「推理手帳：答え合わせの日」の予定をカレンダーで次の日に動かしたら、予想（<a href="#s6">6章</a>）の確かめる日（<code>check_on</code>）と時刻（<code>check_at</code>）も次の日にします。今日の画面の「答え合わせ待ち」（<a href="#s2">2章</a>）に出る日がずれないようにするためです。この用事は、手帳の画面でタスクを直したとき（<a href="#s3">3章</a> の <code>UpdateTask</code>）にも使われます。</p>
+      <p>「推理手帳：答え合わせの日」の予定をカレンダーで次の日に動かしたら、予想（<a href="#s6">6章</a>）の確かめる日（<code>check_on</code>）と時刻（<code>check_at</code>）も次の日にします。きょうの画面の「答え合わせ待ち」（<a href="#s2">2章</a>）に出る日がずれないようにするためです。この用事は、手帳の画面でタスクを直したとき（<a href="#s3">3章</a> の <code>UpdateTask</code>）にも使われます。</p>
       <div class="point"><b>ここが大事</b>写すのは確かめる日と時刻だけで、<b>予想の文と確かさには触りません</b>。予想の文と確かさは、保存したあとに書き換えない決まりだからです（<a href="#s6">6章</a>）。また、答え合わせがもう済んだ予想（<code>checksPendingPrediction()</code> が偽）なら、何もしません。</div>
       <div class="data"><b>このとき動くデータ</b><ul>
         <li>書く：<code>tasks</code> の1行（<code>due_on</code>・<code>starts_at</code>・<code>duration_minutes</code>）</li>
@@ -1534,7 +1534,7 @@ if ($this-&gt;app-&gt;runningUnitTests()) {
     <li class="step">
       <span class="who server">サーバー</span>
       <h4>予定を読む窓口 <code>CalendarAgenda</code> の偽物 <code>FakeCalendarAgenda</code></h4>
-      <p>予定を<b>読むだけ</b>の窓口 <code>CalendarAgenda</code> は、書き出しの窓口とは別の約束です。返すのは2つで、今日の画面の予定（<code>eventsOn</code>）と、確かめる日の候補に使うこれからの予定（<code>upcoming</code>）です。本物は <code>GoogleCalendarAgenda</code>（ふだんのカレンダーから題名と時刻だけを1回で読み、表に保存せず数分だけ覚える）で、<code>CalendarServiceProvider</code> がこれに結びつけます。</p>
+      <p>予定を<b>読むだけ</b>の窓口 <code>CalendarAgenda</code> は、書き出しの窓口とは別の約束です。返すのは2つで、きょうの画面の予定（<code>eventsOn</code>）と、確かめる日の候補に使うこれからの予定（<code>upcoming</code>）です。本物は <code>GoogleCalendarAgenda</code>（ふだんのカレンダーから題名と時刻だけを1回で読み、表に保存せず数分だけ覚える）で、<code>CalendarServiceProvider</code> がこれに結びつけます。</p>
       <div class="code"><div class="file">src/app/Providers/CalendarServiceProvider.php</div><pre><code>$this-&gt;app-&gt;bind(CalendarAgenda::class, GoogleCalendarAgenda::class);</code></pre></div>
       <p>テストでは、偽物 <code>FakeCalendarAgenda</code> に、そのテストに要る予定を渡して差し替えます。Google にはつながず、渡された予定をそのまま返すだけです。</p>
       <div class="code"><div class="file">src/app/Services/Google/FakeCalendarAgenda.php</div><pre><code>class FakeCalendarAgenda implements CalendarAgenda

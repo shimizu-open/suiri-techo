@@ -14,7 +14,7 @@ use App\Support\Landing;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
-/** 今日の画面（D-1〜D-4）：いまやることのカード（答え合わせか、記録のきっかけと書くボタン）・きょうの予定とやること・すばやく書く欄・練習・捜査中の事件 */
+/** 今日の画面（D-1〜D-4）：いまやることのカード（答え合わせか、記録のきっかけと書くボタン）・きょうの予定とやること・1行で書く欄・練習・捜査中の事件 */
 class TodayPageTest extends TestCase
 {
     use RefreshDatabase;
@@ -92,8 +92,8 @@ class TodayPageTest extends TestCase
 
         $this->actingAs($user)->get(route('today'))->assertOk()
             ->assertSeeInOrder(['祖母の誕生日', '牛乳を買う', '08:15', '朝に植木へ水をやる', '09:00', '歯医者', '〜10:00', '12:30', '昼に銀行へ行く', '17:00', '夕方の会議'])
-            ->assertDontSee('明日のタスク')
-            ->assertViewHas('items', fn ($items) => $items->pluck('type')->all() === ['event', 'task', 'task', 'event', 'task', 'event']);
+            ->assertViewHas('items', fn ($items) => $items->pluck('type')->all() === ['event', 'task', 'task', 'event', 'task', 'event']
+                && ! $items->pluck('title')->contains('明日のタスク')); // 明日のものは並びに入れない（下の「これから」の枠に入る）
     }
 
     /** 今日済ませたタスクも、消えずに済みの印つきで並び、そこから未完了に戻せて、「気になる」で事件にできる（まだのタスクには出ない）ことを確かめる */
@@ -105,7 +105,7 @@ class TodayPageTest extends TestCase
 
         $this->actingAs($user)->get(route('today'))->assertOk()
             ->assertSee('済んだ買い物')->assertSee('「済んだ買い物」をまだに戻す')
-            ->assertSee('name="label" value="済んだ買い物"', false)->assertDontSee('name="label" value="まだの買い物"', false);
+            ->assertSee('name="label" value="済んだ買い物"', false)->assertSee('まだの買い物'); // 行を開くと、まだのタスクにも「気になる」が出る（まとめた画面の作り）
     }
 
     /** 答え合わせ待ちに出ている予想の確かめるタスクは、予定とタスクの並びに二重に出さないことを確かめる */
@@ -119,26 +119,26 @@ class TodayPageTest extends TestCase
             ->assertSee('時間割を見れば忘れないはず');
     }
 
-    /** 期日を過ぎた済んでいないタスクがあれば、その数と一覧へのリンクが出ることを確かめる */
-    public function test_overdue_tasks_are_pointed_out(): void
+    /** 期日を過ぎた済んでいないタスクは、きょうの画面に渡り（overdue とその件数）、済んだものは入らないことを確かめる（見た目は TodayMergedLayoutTest） */
+    public function test_overdue_tasks_are_passed_to_the_page(): void
     {
         $user = User::factory()->create();
         Task::factory()->for($user)->count(2)->create(['due_on' => today()->subDay()->toDateString()]);
         Task::factory()->for($user)->done()->create(['due_on' => today()->subDay()->toDateString()]);
 
         $this->actingAs($user)->get(route('today'))->assertOk()
-            ->assertSee('前からのやり残しが2件あるよ')
-            ->assertSee(route('tasks.index', ['view' => 'today']), false);
+            ->assertViewHas('overdue', fn ($tasks) => $tasks->count() === 2 && $tasks->every(fn ($task) => ! $task->isDone()))
+            ->assertViewHas('counts', fn ($counts) => $counts['overdue'] === 2);
     }
 
-    /** 見出しの横の「＋ 書く」で開くすばやく書く欄があり、期日が今日で、書いたあと今日の画面へ戻る印（back=today）を送ることを確かめる */
+    /** 1行で書く欄があり、「今日」のボタンの期日が今日で、もう効かない戻り先の印（back）は送らないことを確かめる（戻り先は受付が決める） */
     public function test_the_quick_add_form(): void
     {
         $this->actingAs(User::factory()->create())->get(route('today'))->assertOk()
             ->assertSee(config('suiri.today.agenda.add_label'))
             ->assertSee('action="'.route('tasks.store').'"', false)
             ->assertSee('name="due_on" value="'.today()->toDateString().'"', false)
-            ->assertSee('name="back" value="today"', false);
+            ->assertDontSee('name="back"', false);
     }
 
     /** 今日の練習（DailyPractice）と、捜査中の事件の最近の数件が部品に渡されることを確かめる */

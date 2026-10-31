@@ -327,7 +327,7 @@ protected function owns(User $user, Model $record): bool
           <tr><td><code>GET /agree</code></td><td><code>agree.show</code> → <code>Auth\AgreementController@show</code></td><td>auth</td><td><a href="#s1">1</a></td></tr>
           <tr><td><code>POST /agree</code></td><td><code>agree.store</code> → <code>Auth\AgreementController@store</code></td><td>auth・throttle:writes</td><td><a href="#s1">1</a></td></tr>
           <tr><td><code>today.php</code></td><td><code>GET /today</code></td><td><code>today</code> → <code>Today\TodayController</code></td><td>auth・agreed</td><td><a href="#s2">2</a></td></tr>
-          <tr><td rowspan="9"><code>tasks.php</code></td><td><code>GET /tasks</code></td><td><code>tasks.index</code> → <code>Tasks\TaskController@index</code></td><td>auth・agreed</td><td><a href="#s3">3</a></td></tr>
+          <tr><td rowspan="9"><code>tasks.php</code></td><td><code>GET /tasks</code></td><td><code>tasks.index</code> → <code>Tasks\TaskController@index</code>（画面は返さず、<code>/today?open=…</code> へ移すだけ）</td><td>auth・agreed</td><td><a href="#s3">3</a></td></tr>
           <tr><td><code>GET /tasks/create</code></td><td><code>tasks.create</code> → <code>Tasks\TaskController@create</code></td><td>auth・agreed</td><td><a href="#s3">3</a></td></tr>
           <tr><td><code>POST /tasks</code></td><td><code>tasks.store</code> → <code>Tasks\TaskController@store</code></td><td>auth・agreed・throttle:writes</td><td><a href="#s3">3</a></td></tr>
           <tr><td><code>POST /tasks/draft</code></td><td><code>tasks.draft</code> → <code>Tasks\DraftTaskController</code></td><td>auth・agreed</td><td><a href="#s3">3</a></td></tr>
@@ -463,7 +463,7 @@ public function label(?Scene $scene = null): string
     <li class="step">
       <span class="who browser">ブラウザ</span>
       <h4>画面の骨組みと、JavaScript は「使いやすくする」ためだけに足すこと</h4>
-      <p>ログインしたあとの画面は、どれも同じ骨組み（レイアウト）<code>&lt;x-layouts.app&gt;</code> の中に中身をはめこんで作ります。上に画面の名前と設定のアイコンの帯、スマホでは下に固定のナビ（今日・タスク・事件・手引き・ふりかえり）、パソコンでは左に縦のナビが付きます。</p>
+      <p>ログインしたあとの画面は、どれも同じ骨組み（レイアウト）<code>&lt;x-layouts.app&gt;</code> の中に中身をはめこんで作ります。上に画面の名前と設定のアイコンの帯、スマホでは下に固定のナビ（きょう・事件・手引き・ふりかえり の4つ）、パソコンでは左に縦のナビが付きます。</p>
       <div class="code"><div class="file">src/resources/views/components/layouts/app.blade.php</div><pre><code>&lt;meta name="csrf-token" content="{{ csrf_token() }}"&gt;
 &lt;title&gt;{{ $title }}｜{{ config('app.name') }}&lt;/title&gt;
 {{-- …（省略）… --}}

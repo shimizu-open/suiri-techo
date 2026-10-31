@@ -9,7 +9,7 @@
 
 **役目を一言でいうと：** この章は、部品説明書の「ファイル版」です。画面を組み立てる部品（Blade コンポーネント）の説明は [部品説明書](../design/components.md) にあるので、ここではそれ以外のファイルを全部並べます。
 
-**たとえると：** 大きな建物の「館内案内図」です。全部の部屋を覚える必要はありません。用があるときに「タスクの一覧を作っている部屋はどこ？」と引ければ十分です。
+**たとえると：** 大きな建物の「館内案内図」です。全部の部屋を覚える必要はありません。用があるときに「きょうの画面を作っている部屋はどこ？」と引ければ十分です。
 
 **読み方：** パスはすべてプロジェクト直下（`suiri-techo/`）からの位置です。表の「何のためにあるか」は一言の説明で、くわしい中身はファイルの先頭のコメントに書いてあります（このプロジェクトでは、クラスや関数の手前に必ず「何をするか」のコメントがあります）。`(C-6)` のような記号は、[要件定義書](../design/requirements.md) の要件の番号です。
 
@@ -136,8 +136,8 @@
 | 機能の名前 | 日本語 | 画面 |
 |---|---|---|
 | Auth | ログイン・同意 | トップ・同意 |
-| Today | 今日 | 今日の画面 |
-| Tasks | タスク | タスクの一覧・作る・直す |
+| Today | きょう | きょうの画面（今日の予定とやることを1つにまとめた最初の画面） |
+| Tasks | タスク | きょうの画面の中のやること（1行で書く・済ませる・直す・消す）・くわしく作る画面・直す画面 |
 | Cases | 事件（手がかり・見立て・予想・入力の提案） | 事件の一覧・作る（1問ずつ）・事件の画面・答え合わせ |
 | Guide | 手引き | 手引きの入口・技能・推論の説明・名推理カード・練習メニュー |
 | Review・Attic | ふりかえり・屋根裏の棚 | 週のふりかえり・ノーベリ帳・屋根裏の棚 |
@@ -152,14 +152,14 @@
 | ファイル | 何のためにあるか |
 |---|---|
 | `Controller.php` | すべての受付の親。いまは共通の処理を持たない |
-| `HomeController.php` | トップ（GET `/`）。ログイン前の人にアプリの説明とログインのボタン、ログイン済みの人は今日の画面へ |
+| `HomeController.php` | トップ（GET `/`）。ログイン前の人にアプリの説明とログインのボタン、ログイン済みの人はきょうの画面へ |
 | `LegalController.php` | 公開ページ（このアプリについて・プライバシーポリシー・利用規約）。ログインなしで見られる |
 | `Auth/GoogleLoginController.php` | Google へ送り出す（`redirect`）・Google から戻る（`callback`）。戻ったら `LoginWithGoogle` で利用者を探すか、新しく登録（招待制のときだけ名簿を確かめる） |
 | `Auth/AgreementController.php` | 同意の画面（GET/POST `/agree`）。利用規約・プライバシーポリシーと年齢の確認 |
 | `Auth/LogoutController.php` | ログアウト（POST `/logout`） |
-| `Today/TodayController.php` | 今日の画面（GET `/today`）。答え合わせ待ち・予定とタスク・今日の練習・捜査中の事件のデータを Query から集めて渡す |
-| `Tasks/TaskController.php` | タスクの一覧・くわしく作る画面・作る・直す画面・直す・消す |
-| `Tasks/DraftTaskController.php` | すばやく足す欄の「くわしく」（POST `/tasks/draft`）。題名を URL に載せないよう POST で受けて、作る画面へ持っていく |
+| `Today/TodayController.php` | きょうの画面（GET `/today`。`?open=` で、たたんだ枠のどれかを開いて出す）。答え合わせ待ち・きょうの予定とやること・期日を過ぎたやること・これから・いつか・済みのタスク・今日の練習・捜査中の事件のデータを Query から集めて渡す |
+| `Tasks/TaskController.php` | 前の一覧の住所（GET `/tasks`。画面は返さず、`/today?open=…` へ移すだけ）・くわしく作る画面・作る・直す画面・直す・消す。保存したあとは、きょうの画面の、そのタスクが見える枠を開いて戻す |
+| `Tasks/DraftTaskController.php` | 1行で書く欄の「くわしく」（POST `/tasks/draft`）。題名を URL に載せないよう POST で受けて、作る画面へ持っていく |
 | `Tasks/CompleteTaskController.php` | タスクを済みにする（POST `/tasks/{task}/done`）。かかった時間も受け取れる |
 | `Tasks/ReopenTaskController.php` | 済んだタスクを戻す（DELETE `/tasks/{task}/done`） |
 | `Cases/CaseController.php` | 事件の一覧・作る画面（1問ずつ。`cases/create-steps`）・作る・事件の画面（いまやることのカード1枚。`cases/board`）・なぞと場面を直す・消す |
@@ -293,10 +293,10 @@
 |---|---|
 | `Today/DuePredictionsQuery.php` | 答え合わせ待ち（確かめる日が今日までに来た、結果のない予想） |
 | `Today/AgendaQuery.php` | 今日の予定（Google）と今日が期日のタスクを1つの並びに（終日が上、あとは時刻順） |
-| `Tasks/TaskListQuery.php` | タスクを今日／これから／いつか／済みに振り分ける |
+| `Tasks/TaskListQuery.php` | きょうの画面のタスクを、期日を過ぎた・これから（日付ごと）・いつか・済み（この7日）に振り分け、件数と1行で書く欄のボタンの日付も返す（`forToday`）。保存したあとに開く枠も決める（`openOf`） |
 | `Tasks/SimilarTasksQuery.php` | 題名の似た過去のタスクの実績（見積もりの答え合わせ）。2文字ずつの組の重なりで似ているかを測る |
 | `Cases/CaseListQuery.php` | 事件の一覧（状態と場面で絞る・数を数える） |
-| `Cases/OpenCasesQuery.php` | 今日の画面の捜査中の事件（最近の3件） |
+| `Cases/OpenCasesQuery.php` | きょうの画面の捜査中の事件（最近の3件） |
 | `Cases/NewCaseDraft.php` | 事件を作る画面の初めの値（練習メニューから来たら問いかけを入れる） |
 | `Cases/CaseBoardQuery.php` | 事件の画面に出すものをまとめて組み立てる（いまの一手・ワトソン・見せ合いの表・選べる屋根裏の知識・入力の提案） |
 | `Cases/NextStep.php` | 「いまの一手」を決める（上から順に確かめ、最初に当てはまったもの） |
@@ -322,7 +322,7 @@
 | ファイル | 何のためにあるか |
 |---|---|
 | `Contracts/CalendarApi.php` | Google カレンダーの API の窓口の約束 |
-| `Contracts/CalendarAgenda.php` | 自分の予定を読む窓口の約束（今日の画面の予定と、確かめる日の候補に使うこれからの予定。失敗しても空を返して画面を止めない） |
+| `Contracts/CalendarAgenda.php` | 自分の予定を読む窓口の約束（きょうの画面の予定と、確かめる日の候補に使うこれからの予定。失敗しても空を返して画面を止めない） |
 | `Services/Google/CalendarApi.php` | Google カレンダーの REST API を Laravel の HTTP クライアントで直接呼ぶ本物 |
 | `Services/Google/FakeCalendarApi.php` | テスト用の偽物（メモリに書くだけ） |
 | `Services/Google/GoogleTokens.php` | Google の鍵（トークン）の係：期限が近ければ取り直す・期限切れにする・許可を取り消す |
@@ -409,7 +409,7 @@
 | `Providers/CalendarServiceProvider.php` | カレンダー連携の準備：今日の予定の窓口を本物に差し替える、カレンダーの窓口を結ぶ（テストでは偽物）、`TaskObserver` を結ぶ |
 | `Providers/AiConnectServiceProvider.php` | ChatGPT・Claude とつなぐ準備：Passport の住所を自分で置く、同意の画面は自前、通行証は1時間・更新の札は30日、回数制限（`mcp`・`oauth`・`oauth-register`） |
 | `Support/Label.php` | 画面の言葉を `config/suiri.php` の `labels` から引く（場面ごとの出し分け・子ども向け） |
-| `Support/Landing.php` | ログインしている人の最初の画面（今日の画面）を決める |
+| `Support/Landing.php` | ログインしている人の最初の画面（きょうの画面）を決める |
 | `Support/WordOverlap.php` | 2つの文の言葉が重なるかを決まった規則で数える（漢字は2文字・カタカナと英数字は3文字のかけら。提案 S-4・S-5 で使う。AI ではない） |
 | `Support/Ai/ConsultText.php` | 事件の画面の「AI に相談する用に写す」で写す文を組み立てる（端末に写すだけで、アプリからは送らない） |
 | `Support/Ai/ConsentView.php` | 同意の画面（`views/oauth/authorize`）に渡す値を、Passport が渡す値から詰め替える |
@@ -431,7 +431,7 @@
 
 | ファイル | 何のためにあるか |
 |---|---|
-| `suiri.php` | 推理手帳の設定の中心。`labels`（列挙ごとの言葉・場面ごとの出し分け・子ども向け）・`confidence`（確かさの選択肢）・`nav`（ナビの項目）・`invite_only`（招待制にするか。`.env` の `SUIRI_INVITE_ONLY`、既定 false＝一般公開）・`limits`（入力の長さの上限）・`cue_examples`・`today`・`tasks`・`cases`・`calibration_min_count`・`review`・`calendar`（スコープ・取り込みの間隔・送る題名・つなぐ前の説明）・`notes`（いつも出す注意書き） |
+| `suiri.php` | 推理手帳の設定の中心。`labels`（列挙ごとの言葉・場面ごとの出し分け・子ども向け）・`confidence`（確かさの選択肢）・`nav`（ナビの項目4つ：きょう・事件・手引き・ふりかえり）・`invite_only`（招待制にするか。`.env` の `SUIRI_INVITE_ONLY`、既定 false＝一般公開）・`limits`（入力の長さの上限）・`cue_examples`・`today`（きょうの画面の言葉）・`today_tasks`（「済み」に出す日数と件数）・`tasks`（1行で書く欄・行の操作・作る・直す画面の言葉）・`cases`・`calibration_min_count`・`review`・`calendar`（スコープ・取り込みの間隔・送る題名・つなぐ前の説明）・`notes`（いつも出す注意書き） |
 | `watson.php` | ワトソンのひとこと。`rules`（規則の一覧。上ほど優先）と `detect`（探す言葉と形） |
 | `legal.php` | プライバシーポリシー・利用規約に出す運営者の情報と日付（【】は仮の値。運営者が書き込む）、記録の消え方の数字（バックアップ7日など） |
 | `ai_connect.php` | ChatGPT・Claude とつなぐ設定と言葉：窓口と道具の説明文（AI が読む文）・通行証の期限・同意の画面・設定の枠・「AI に相談する用に写す」 |
@@ -535,8 +535,7 @@
 | `legal/about.blade.php` | このアプリについて（言えること・言わないこと・注意書き） |
 | `legal/privacy.blade.php` | プライバシーポリシー |
 | `legal/terms.blade.php` | 利用規約 |
-| `today/index.blade.php` | 今日の画面 |
-| `tasks/index.blade.php` | タスクの一覧（今日／これから／いつか／済み） |
+| `today/index.blade.php` | きょうの画面（いまやることのカード・きょうの予定とやること・これから・いつか・済みのたたんだ枠・今日の練習・捜査中の事件） |
 | `tasks/create.blade.php` | タスクをくわしく作る |
 | `tasks/edit.blade.php` | タスクを直す |
 | `cases/index.blade.php` | 事件の一覧 |
@@ -561,7 +560,7 @@
 
 ### 部品（`src/resources/views/components/`）
 
-部品は13の分類・144個あります（`ui`・`layouts`・`today`・`task`・`case`・`case-new`（事件を作る1問ずつの問い）・`case-step`（事件の画面のいまやることのカード）・`case-partner`（相棒モードの渡し合い）・`guide`・`review`・`settings`・`auth`・`legal`）。1つずつの役目・受け取る値・使っている画面は [部品説明書](../design/components.md) にまとめてあるので、ここには並べません。画面の中では `<x-case-step.clue-card>` のように書き、ファイルは `components/case-step/clue-card.blade.php` です。
+部品は13の分類・146個あります（`ui`・`layouts`・`today`（きょうの画面：いまやることのカード `next-step`・きょうの予定とやること `agenda`・これから・いつか・済みの3つのたたんだ枠 `later-tasks`、枠1つ `fold`、枠の中の行の並び `task-rows` など）・`task`（やることの開ける行 `item`・1行で書く欄 `quick-add`・作る・直すフォーム `form` など）・`case`・`case-new`（事件を作る1問ずつの問い）・`case-step`（事件の画面のいまやることのカード）・`case-partner`（相棒モードの渡し合い）・`guide`・`review`・`settings`・`auth`・`legal`）。1つずつの役目・受け取る値・使っている画面は [部品説明書](../design/components.md) にまとめてあるので、ここには並べません。画面の中では `<x-case-step.clue-card>` のように書き、ファイルは `components/case-step/clue-card.blade.php` です。
 
 ### 見た目と動き（`src/resources/css/`・`src/resources/js/`）
 
@@ -585,8 +584,8 @@
 | `web.php` | 入口。中身は書かず、`routes/web/` の `.php` を名前の順に読み込むだけ |
 | `web/auth.php` | トップ・Google へ送り出す／戻る・同意・ログアウト |
 | `web/legal.php` | このアプリについて・プライバシーポリシー・利用規約 |
-| `web/today.php` | 今日の画面 |
-| `web/tasks.php` | タスク |
+| `web/today.php` | きょうの画面（`?open=` で、たたんだ枠を開く） |
+| `web/tasks.php` | タスク（作る・直す・消す・済ませる・戻す。前の一覧の住所 `/tasks` は `/today` へ移すだけ） |
 | `web/cases.php` | 事件・手がかり・見立て・○×・予想・答え合わせ・ワトソンのひとこと |
 | `web/guide.php` | 手引き |
 | `web/review.php` | 週のふりかえり・ノーベリ帳・屋根裏の棚 |
@@ -600,7 +599,7 @@
 
 ## 7-8. `src/tests/`（自動テスト）
 
-**役目：** アプリが決まりどおりに動くかを、機械で確かめるプログラムです。530件ほど（2026-10-31 に数えて 536 件。機能を足すと増えます）。Feature は画面や住所を実際に開いて確かめるテスト、Unit は1つの係だけを確かめるテストです。動かし方は [8章](08-operations.md) の 8-4。
+**役目：** アプリが決まりどおりに動くかを、機械で確かめるプログラムです。550件ほど（2026-10-31 に数えて 552 件。機能を足すと増えます）。Feature は画面や住所を実際に開いて確かめるテスト、Unit は1つの係だけを確かめるテストです。動かし方は [8章](08-operations.md) の 8-4。
 
 | ファイル | 確かめること |
 |---|---|
@@ -609,10 +608,13 @@
 | `Feature/Auth/AgreementTest.php` | 同意の画面とログアウト |
 | `Feature/Auth/InviteCommandTest.php` | 招待のコマンド3つ |
 | `Feature/Legal/PublicPagesTest.php` | 公開ページと守りの札 |
-| `Feature/Today/TodayPageTest.php` | 今日の画面の並び |
+| `Feature/Today/TodayPageTest.php` | きょうの画面に渡すもの（記録のきっかけ・答え合わせ待ち・予定とタスクの混ぜ方・二重に出さない・期日を過ぎたやること） |
+| `Feature/Today/TodayMergedLayoutTest.php` | きょうの画面の並びと言葉（いまやることのカード → きょうの予定とやること → たたんだ枠 → 練習・事件、1行で書く欄の3つのボタン、`?open=` の枠だけ開く、行を開くと直す・気になる・消す） |
+| `Feature/Today/TodayNavTest.php` | ナビが4つ（きょう・事件・手引き・ふりかえり）で、作る・直す画面でも「きょう」がいまここになる |
+| `Feature/Today/TodayTaskListsTest.php` | きょうの画面のタスクの枠（期日を過ぎた・これから・いつか・済み）の振り分けと件数・本人のタスクだけ |
 | `Feature/Today/JustEndedEventTest.php` | さっき終わった予定への声かけ（S-6） |
 | `Feature/Tasks/ManageTasksTest.php` | タスクを作る・直す・消す、「くわしく」 |
-| `Feature/Tasks/TaskListTest.php` | 今日／これから／いつか／済みの振り分け |
+| `Feature/Tasks/TaskListTest.php` | 前の一覧の住所（`/tasks?view=…`）が、きょうの画面の同じ枠（`/today?open=…`）へ移る |
 | `Feature/Tasks/CompleteTaskTest.php` | 済み・戻す・かかった時間・確かめるタスク |
 | `Feature/Tasks/SimilarTasksTest.php` | 題名の似た過去のタスクの実績 |
 | `Feature/Tasks/TaskOwnershipTest.php` | 他人のタスクに触れない |
@@ -728,4 +730,4 @@
 - [8. 動かし方と運用](08-operations.md)：ここに出てきたコマンドの使い方と、困ったとき
 - [9. 用語集](09-glossary.md)：わからない言葉を引く
 - [3. しくみ](03-architecture.md)：層どうしがどうつながって1回の頼みを片づけるか
-- [部品説明書](../design/components.md)：画面の部品144個
+- [部品説明書](../design/components.md)：画面の部品146個

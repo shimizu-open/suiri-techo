@@ -36,9 +36,9 @@ paths:
 | 相棒・見せ合う | `users.partner_name`・`HypothesisAuthor::Partner`・`case_files.revealed_at` |
 | ワトソンのひとこと | `App\Services\Watson`・`config/watson.php`（AI ではない。決まった規則で一度に1つ） |
 | 提案・書き出し（AI なし） | まとめ役 `App\Queries\Cases\SuggestionsQuery`（決まった型 `StarterSuggestions`・屋根裏の棚 `AtticSuggestionsQuery`・確かめる日 `CheckDateSuggestionsQuery`）・`config/suiri.php` の `suggest`・言葉の重なり `App\Support\WordOverlap`（押すと入力欄に入るだけ。保存は本人） |
-| タスク（ふつう・確かめる） | `Task`／`tasks`／`/tasks`・`TaskKind`（`normal`／`verify`） |
+| タスク（ふつう・確かめる。画面の言葉は「やること」） | `Task`／`tasks`／`/tasks/create`・`/tasks/{task}/edit`（一覧はきょうの画面 `/today` にまとめ、`/tasks` は `/today` へ移すだけ）・`TaskKind`（`normal`／`verify`） |
 | 予定（読むだけ） | `App\Services\Google\CalendarAgenda` |
-| 今日・手引き・ふりかえり | `/today`・`/guide`・`/review`／`weekly_reflections` |
+| きょう（今日の予定とタスクを1つにまとめた画面）・手引き・ふりかえり | `/today`（`?open=upcoming`・`someday`・`done` でその枠を開く）・`/guide`・`/review`／`weekly_reflections` |
 | 技能・名推理カード・練習メニュー | `database/data/guide/skills.json`・`scenes.json`（`scene_attempts`）・`practices.json` |
 | 確かさの答え合わせ | `App\Services\Review\Calibration` |
 | カレンダーとつなぐ | `CalendarConnection`／`calendar_connections`／`/calendar` |
@@ -101,7 +101,7 @@ paths:
 ## 壊さない決まり
 
 1. **予想の文（`statement`）と確かさ（`confidence`）は保存後に書き換えない**（後知恵を防ぐ）。直す画面・ルート・Action を作らない。考えが変わったら新しい予想を立てる。取り下げ（`withdrawn_at`）は答え合わせ待ち（`isPending()`）の予想だけできる（答え合わせ済み・取り下げ済みは受付が 403、Action は何もしない）。答え合わせの画面では最初の予想の文と書いた日時（`created_at`）を必ず見せる。
-   - 答え合わせ待ちの予想の**確かめるタスク**（`Task::checksPendingPrediction()`）：期日・時刻を直す（タスクの画面・専用カレンダー）と、予想の `check_on`・`check_at` も同じ値にする（`Tasks\SyncPredictionCheck`。同じトランザクション）。期日は空にできない。題名（予想の文の写し）は直せない。消せない（403）ので、やめるときは予想を取り下げる（直す画面に取り下げのボタン）。
+   - 答え合わせ待ちの予想の**確かめるタスク**（`Task::checksPendingPrediction()`）：期日・時刻を直す（タスクを直す画面・専用カレンダー）と、予想の `check_on`・`check_at` も同じ値にする（`Tasks\SyncPredictionCheck`。同じトランザクション）。期日は空にできない。題名（予想の文の写し）は直せない。消せない（403）ので、やめるときは予想を取り下げる（直す画面に取り下げのボタン）。
 2. **他人を表す表・列を作らない。** すべての記録は `user_id` を持ち、取り出すときは必ず持ち主で絞る（Policy で強制し、機能ごとに「他人の記録が見えない」テスト）。親を消したら子も消える（`cascadeOnDelete`）。
 3. **カレンダーに本文を送らない。** 送るのはタスクの題名・日時・アプリに戻るリンクと、どのタスクの予定かを見分ける番号（`suiri_task_id`）だけ（番号はアプリの中の通し番号で、利用者の記録の中身ではない。`rules/google.md`）。
 4. **ワトソンのひとことは保存を止めない。** 一度に1つ、閉じられる（`dismissed_hints`）。言葉と文は `config/watson.php` に集め、コードに直書きしない。

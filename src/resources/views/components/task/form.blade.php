@@ -5,9 +5,9 @@
   予想から作った確かめるタスクは、題名（予想の文の写し）を直せない。答え合わせ待ちの予想のものは、期日が必須で、予想の確かめる日も一緒に変わる。
   使い方：<x-task.form :task="$task" :similar="$similar" :action="route('tasks.update', $task)" method="PATCH" :submit="…" />
   task：Task（新しく作るときは保存前の Task）。similar：似たタスク（SimilarTasksQuery）。action・method：送り先。
-  submit：送るボタンの文字。back：'today' なら作ったあと今日の画面へ戻す。open：「くわしく決める」を最初から開くか
+  submit：送るボタンの文字。open：「くわしく決める」を最初から開くか（保存したあとの戻り先は、受付がきょうの画面に決める）
 --}}
-@props(['task', 'similar' => [], 'action', 'method' => 'POST', 'submit', 'back' => null, 'open' => false])
+@props(['task', 'similar' => [], 'action', 'method' => 'POST', 'submit', 'open' => false])
 @php($words = config('suiri.tasks.words'))
 @php($checksPrediction = $task->checksPendingPrediction())
 @php($open = $open || $errors->hasAny(['due_on', 'starts_at', 'duration_minutes', 'actual_minutes', 'memo']))
@@ -17,10 +17,6 @@
   {{-- 直すときは PATCH で送る --}}
   @if ($method !== 'POST')
     @method($method)
-  @endif
-  {{-- 戻り先が決まっていれば、一緒に送る --}}
-  @if ($back)
-    <input type="hidden" name="back" value="{{ $back }}">
   @endif
 
   {{-- 予想から作った確かめるタスクなら、題名は文字で見せるだけ（予想の文の写しなので直せない）。ほかは大きな入力欄 --}}

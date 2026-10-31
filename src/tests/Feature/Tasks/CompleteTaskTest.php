@@ -14,17 +14,17 @@ class CompleteTaskTest extends TestCase
 {
     use RefreshDatabase;
 
-    /** 済みにすると済んだ日時が入り、元の画面へ戻って、「実際は何分だった？」（15・30・60分のボタンつき）と「気になる」をさそう枠が出ることを確かめる */
+    /** 済みにすると済んだ日時が入り、元の画面（開いていた枠ごと）へ戻って、きょうの画面に「実際は何分だった？」と「気になる」をさそう枠が出ることを確かめる */
     public function test_a_task_can_be_completed_and_the_follow_up_is_shown(): void
     {
         $user = User::factory()->create();
         $task = Task::factory()->for($user)->create(['title' => '買い物', 'duration_minutes' => 30]);
 
-        $this->actingAs($user)->from(route('tasks.index'))->post(route('tasks.done', $task))
-            ->assertRedirect(route('tasks.index'))->assertSessionHas('task_done', $task->id);
+        $this->actingAs($user)->from(route('today', ['open' => 'upcoming']))->post(route('tasks.done', $task))
+            ->assertRedirect(route('today', ['open' => 'upcoming']))->assertSessionHas('task_done', $task->id);
         $this->assertTrue($task->refresh()->isDone());
 
-        $page = $this->get(route('tasks.index', ['view' => 'done']))->assertOk()
+        $page = $this->get(route('today'))->assertOk()->assertViewHas('justDone', fn ($done) => $done?->is($task))
             ->assertSee('「買い物」、できたね！')->assertSee('実際は何分だった？')->assertSee('name="actual_minutes"', false)
             ->assertSee('name="actual_minutes" value="30"', false);
         // 事件を作る画面があれば、このタスクを出発点にした事件を作るボタンも出る（題名は URL ではなく POST の隠し項目で送る）
@@ -82,12 +82,22 @@ class CompleteTaskTest extends TestCase
         $user = User::factory()->create();
         $task = Task::factory()->for($user)->done()->create(['actual_minutes' => 25]);
 
-        $this->actingAs($user)->from(route('tasks.index', ['view' => 'done']))->delete(route('tasks.undone', $task))
-            ->assertRedirect(route('tasks.index', ['view' => 'done']))->assertSessionHas('status');
+        $this->actingAs($user)->from(route('today', ['open' => 'done']))->delete(route('tasks.undone', $task))
+            ->assertRedirect(route('today', ['open' => 'done']))->assertSessionHas('status');
 
         $task->refresh();
         $this->assertFalse($task->isDone());
         $this->assertSame(25, $task->actual_minutes);
+    }
+
+    /** 元の画面がわからない（前の住所がない）ときは、済ませても戻しても、きょうの画面へ戻ることを確かめる */
+    public function test_without_a_previous_page_it_returns_to_the_today_page(): void
+    {
+        $user = User::factory()->create();
+        $task = Task::factory()->for($user)->create();
+
+        $this->actingAs($user)->post(route('tasks.done', $task))->assertRedirect(route('today'));
+        $this->delete(route('tasks.undone', $task))->assertRedirect(route('today'));
     }
 
     /** 予想から作った確かめるタスクは、チェックで済みにも未完了にもできない（答え合わせで済みになる）ことを確かめる */
@@ -116,14 +126,14 @@ class CompleteTaskTest extends TestCase
         $this->assertTrue($task->refresh()->isDone());
     }
 
-    /** 一覧の確かめるタスクの行には、済みのボタンの代わりに予想の画面の「答え合わせ」へのリンクが出ることを確かめる */
+    /** きょうの画面の「これから」の確かめるタスクの行には、済みのボタンの代わりに予想の画面の「答え合わせ」へのリンクが出ることを確かめる */
     public function test_verify_tasks_link_to_the_prediction(): void
     {
         $this->ensurePredictionRoute();
-        $prediction = Prediction::factory()->due()->create();
+        $prediction = Prediction::factory()->create(['check_on' => today()->addDay()->toDateString()]);
         $task = Task::factory()->verify($prediction)->create();
 
-        $this->actingAs(User::find($prediction->user_id))->get(route('tasks.index'))->assertOk()
+        $this->actingAs(User::find($prediction->user_id))->get(route('today', ['open' => 'upcoming']))->assertOk()
             ->assertSee('確かめる')
             ->assertSee(route('predictions.show', $prediction->id), false)
             ->assertDontSee(route('tasks.done', $task), false);
