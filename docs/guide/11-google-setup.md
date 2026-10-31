@@ -175,7 +175,7 @@ gcloud services list --enabled --filter="config.name=calendar-json.googleapis.co
 | `https://www.googleapis.com/auth/calendar.app.created` | アプリが作った専用カレンダーだけを作る・読む・書く | 「カレンダーとつなぐ」を押した人だけ |
 | `https://www.googleapis.com/auth/calendar.events.owned.readonly` | 自分のカレンダーの予定を読むだけ | 同上 |
 
-**なぜこの5つか：** 許可は最小にします（[`.claude/rules/google.md`](../../.claude/rules/google.md)）。カレンダー全部を読み書きできる許可（`calendar`・`calendar.events`）は求めません。推理手帳は、つないだ人のために専用カレンダー「推理手帳」を作り、そこにタスクの題名と日時とリンクだけを書きます。メインのカレンダーには書きません。今日の予定は、今日の画面に出すために読むだけで、保存しません。ログインとカレンダー連携は別々に許可をもらう（段階的な許可）ので、カレンダーをつながない人には、カレンダーの許可を求めません。
+**なぜこの5つか：** 許可は最小にします（[`.claude/rules/google.md`](../../.claude/rules/google.md)）。カレンダー全部を読み書きできる許可（`calendar`・`calendar.events`）は求めません。推理手帳は、つないだ人のために専用カレンダー「推理手帳」を作り、そこにタスクの題名と日時とリンクだけを書きます。メインのカレンダーには書きません。今日の予定は、きょうの画面に出すために読むだけで、保存しません。ログインとカレンダー連携は別々に許可をもらう（段階的な許可）ので、カレンダーをつながない人には、カレンダーの許可を求めません。
 
 **記録しておくこと：** 保存したあと、画面でカレンダーの2つが **Your non-sensitive scopes**（機密でない）と **Your sensitive scopes**（機密）のどちらに入ったかを控えます（[調査 R4](../research/R4-google-integration.md) の未確認事項の1つめ）。機密に入ったものを求めると、未審査のあいだは利用者に確認画面が出ます（8章）。
 

@@ -6,7 +6,7 @@
 - 行番号は書かない（変わるため）。クラス名・メソッド名・ルート名・config のキーで `grep -rn` して引く。
 - 画面の言葉＝表＝コードの名前の対応は `.claude/rules/domain.md`（人間向けは `docs/design/words.md`）。表の列は `docs/design/data-model.md`、部品（Blade コンポーネント）の受け取る値は `docs/design/components.md`、層の決まりと行数の上限は `.claude/rules/architecture.md`。
 - 使わない言葉は `docs/design/words.md` の 3。この索引にも書かない。
-- この索引は 2026-10-31 の `src/`（コミット `fe3a4cd` の時点）から作り、そのあとの仕上げ（閉じた事件への書き込みを受付で断る `write` の能力・答え合わせの Action の鍵・残った予定の片づけ `DeleteOrphanEvents`・`tasks.update`／`tasks.destroy` の回数制限）と、そのあとの作り直し（`d3e1746`：1問ずつの画面 `cases.create-steps`・いまやることのカード1枚の事件の画面 `cases.board`・入力の提案・ChatGPT と Claude の読むだけの窓口）、古い画面と部品の片づけ（`cases/show`・`cases/create` と `components/case/*` の古い部品を消した）、一般公開と招待制の切り替え（`config('suiri.invite_only')`）も反映した。`src/` の決まりを変えたら、ここも直す（`.claude/rules/docs.md`）。
+- この索引は 2026-10-31 の `src/`（コミット `fe3a4cd` の時点）から作り、そのあとの仕上げ（閉じた事件への書き込みを受付で断る `write` の能力・答え合わせの Action の鍵・残った予定の片づけ `DeleteOrphanEvents`・`tasks.update`／`tasks.destroy` の回数制限）と、そのあとの作り直し（`d3e1746`：1問ずつの画面 `cases.create-steps`・いまやることのカード1枚の事件の画面 `cases.board`・入力の提案・ChatGPT と Claude の読むだけの窓口）、古い画面と部品の片づけ（`cases/show`・`cases/create` と `components/case/*` の古い部品を消した）、一般公開と招待制の切り替え（`config('suiri.invite_only')`）、今日とタスクを1つの画面「きょう」（`/today`）にまとめた変更（ナビは4つ・`/tasks` は `/today?open=` へ移すだけ・`TaskListQuery::forToday`）も反映した。`src/` の決まりを変えたら、ここも直す（`.claude/rules/docs.md`）。
 
 ---
 
@@ -48,25 +48,29 @@
 | GET | `/privacy` | `privacy` | `LegalController@privacy` | `legal.privacy`（`legal`＝`config('legal')`・`agendaMinutes`＝`suiri.calendar.agenda_cache_seconds`÷60） |
 | GET | `/terms` | `terms` | `LegalController@terms` | `legal.terms`（`legal`） |
 
-### 1-3. 今日（`routes/web/today.php`）
+### 1-3. きょう（`routes/web/today.php`。前は別だった今日の画面とタスクの一覧を、1つにまとめた画面）
 
 | メソッド | 住所 | ルート名 | 受付 | 組み立て | 画面 |
 |---|---|---|---|---|---|
-| GET | `/today` | `today` | `Today\TodayController`（`__invoke`） | `Today\DuePredictionsQuery::for`・`Today\AgendaQuery::for`／`overdueCount`（答え合わせ待ちに出した予想の id を渡して二重に出さない）・`Services\Guide\DailyPractice::for`・`Cases\OpenCasesQuery::get`・`Tasks\TaskListQuery::justDone(session('task_done'))` | `today.index` |
+| GET | `/today?open=upcoming\|someday\|done` | `today` | `Today\TodayController`（`__invoke`） | `Today\DuePredictionsQuery::for`・`Today\AgendaQuery::for`（答え合わせ待ちに出した予想の id を渡して二重に出さない）・`Tasks\TaskListQuery::forToday`（`overdue`・`upcoming`・`someday`・`done`・`counts`・`dates` を展開して渡す）・`TaskListQuery::normalizeOpen($request->query('open'))`（`open`。`OPENS` 以外は null）・`Services\Guide\DailyPractice::for`・`Cases\OpenCasesQuery::get`・`TaskListQuery::justDone(session('task_done'))` | `today.index` |
+
+渡すキーは `user`・`today`・`predictions`・`items`・`practice`・`cases`・`justDone`・`overdue`（Task の並び。前の数ではない）・`upcoming`・`someday`・`done`・`counts`・`dates`・`open`。`?open=` はたたんだ枠（これから・いつか・済み）のどれを最初から開くか。
 
 ### 1-4. タスク（`routes/web/tasks.php`。`Route::resource('tasks')->only([...])` と3本）
 
 | メソッド | 住所 | ルート名 | 受付 | 検証 | 能力 | 制限 | 用事・組み立て | 画面・戻り先 |
 |---|---|---|---|---|---|---|---|---|
-| GET | `/tasks?view=today\|upcoming\|someday\|done` | `tasks.index` | `Tasks\TaskController@index` | — | — | — | `TaskListQuery::normalize`・`list`・`counts`・`justDone` | `tasks.index` |
+| GET | `/tasks?view=today\|upcoming\|someday\|done` | `tasks.index` | `Tasks\TaskController@index`（`RedirectResponse`。画面は返さない） | — | — | — | `TaskListQuery::normalizeOpen($request->query('view'))` → `todayUrl` | `/today?open=upcoming\|someday\|done` へ移すだけ（`today`・知らない値・なしは `?open=` なしの `/today`） |
 | GET | `/tasks/create` | `tasks.create` | `TaskController@create` | — | — | — | `Tasks\SimilarTasksQuery::for($user, old('title'))` | `tasks.create` |
-| POST | `/tasks` | `tasks.store` | `TaskController@store` | `Tasks\StoreTaskRequest` | — | `writes` | `Actions\Tasks\CreateTask` | `back=today` なら `today`、ほかは `TaskListQuery::viewOf` のタブ |
-| POST | `/tasks/draft` | `tasks.draft` | `Tasks\DraftTaskController` | — | — | — | `withInput(title, due_on, back)` | `tasks.create`（題名を URL に載せない） |
-| GET | `/tasks/{task}/edit` | `tasks.edit` | `TaskController@edit` | — | `update,task` | — | `SimilarTasksQuery::for($user, $task->title, $task->id)` | `tasks.edit` |
-| PUT/PATCH | `/tasks/{task}` | `tasks.update` | `TaskController@update` | `Tasks\UpdateTaskRequest` | `update,task` | `writes` | `Actions\Tasks\UpdateTask`（→ `SyncPredictionCheck`） | そのタスクのタブ |
-| DELETE | `/tasks/{task}` | `tasks.destroy` | `TaskController@destroy` | `Tasks\DeleteTaskRequest`（答え合わせ待ちの予想の確かめるタスクは 403） | `delete,task` | `writes` | `Actions\Tasks\DeleteTask` | いたタブ |
-| POST | `/tasks/{task}/done` | `tasks.done` | `Tasks\CompleteTaskController` | `Tasks\CompleteTaskRequest`（`authorize`：`! answeredByPrediction()`・`actual_minutes`） | `update,task` | `writes` | `Actions\Tasks\CompleteTask` | `back()`＋`task_done`（さそう枠） |
-| DELETE | `/tasks/{task}/done` | `tasks.undone` | `Tasks\ReopenTaskController` | `Tasks\ReopenTaskRequest`（同上） | `update,task` | `writes` | `Actions\Tasks\ReopenTask` | `back()` |
+| POST | `/tasks` | `tasks.store` | `TaskController@store` | `Tasks\StoreTaskRequest` | — | `writes` | `Actions\Tasks\CreateTask` | `listUrl($task)`＝`todayUrl(TaskListQuery::openOf($task, 今日))`：そのタスクが見える枠を `?open=` で開いた `/today`（1行で書く欄からでも、くわしく作る画面からでも同じ。戻り先の隠し項目は送らない） |
+| POST | `/tasks/draft` | `tasks.draft` | `Tasks\DraftTaskController` | — | — | — | `withInput(title, due_on)` | `tasks.create`（題名を URL に載せない） |
+| GET | `/tasks/{task}/edit` | `tasks.edit` | `TaskController@edit` | — | `update,task` | — | `SimilarTasksQuery::for($user, $task->title, $task->id)`・`backUrl`＝`listUrl($task)` | `tasks.edit` |
+| PUT/PATCH | `/tasks/{task}` | `tasks.update` | `TaskController@update` | `Tasks\UpdateTaskRequest` | `update,task` | `writes` | `Actions\Tasks\UpdateTask`（→ `SyncPredictionCheck`） | `listUrl($task)`（直したあとの期日で決まる枠） |
+| DELETE | `/tasks/{task}` | `tasks.destroy` | `TaskController@destroy` | `Tasks\DeleteTaskRequest`（答え合わせ待ちの予想の確かめるタスクは 403） | `delete,task` | `writes` | `Actions\Tasks\DeleteTask` | `listUrl($task)`（消す前に決めた、いた枠） |
+| POST | `/tasks/{task}/done` | `tasks.done` | `Tasks\CompleteTaskController` | `Tasks\CompleteTaskRequest`（`authorize`：`! answeredByPrediction()`・`actual_minutes`） | `update,task` | `writes` | `Actions\Tasks\CompleteTask` | `back(fallback: route('today'))`＋`task_done`（さそう枠） |
+| DELETE | `/tasks/{task}/done` | `tasks.undone` | `Tasks\ReopenTaskController` | `Tasks\ReopenTaskRequest`（同上） | `update,task` | `writes` | `Actions\Tasks\ReopenTask` | `back(fallback: route('today'))` |
+
+`openOf` の枠：済み → `done`、期日なし → `someday`、期日が明日より先 → `upcoming`、今日まで（今日の並び・期日を過ぎた）→ null（枠を開かない＝上の並びに出る）。1行で書く欄の「今日」「明日」「いつか」は、どれも `name="due_on"` の送信ボタン（値は `dates` の今日・明日の日付と空）で、「くわしく」だけ `formaction` で `tasks.draft` へ送る。
 
 `Route::resource` の `->middlewareFor()` は同じ動作への指定をあとから書いたもので上書きするので、動作ごとに1回で配列にまとめて書いている（`tasks.update`・`tasks.destroy` に `throttle:writes` と `can:` の両方が付くことは `tests/Feature/Tasks/TaskRouteMiddlewareTest.php` が確かめる）。
 
@@ -182,7 +186,7 @@
 |---|---|---|
 | 作る画面の初めの値 | `app/Queries/Cases/NewCaseDraft.php` | `for($user, $query)`：`origin`（`OriginKind`）・`practice`（`GuideLibrary::practice`。なければきっかけなし）・`label`・`title`（練習の `prompts.title`）・`scene`（`default_scene`）・`firstWork`（仕事の場面の事件がまだないか）・`partner` |
 | 作る | `app/Http/Requests/Cases/StoreCaseRequest.php`・`app/Actions/Cases/CreateCase.php` | `prepareForValidation`：`partner_mode` は `hasPartner()` の人だけ、`practice_key` は `origin_kind=practice` のときだけ、`practice_key` は `GuideLibrary::practices()` のキーだけ。`CreateCase::handle`：最初の手がかり・見立てを同じトランザクションで（相棒モードは見立てを受け取らない） |
-| 一覧 | `app/Queries/Cases/CaseListQuery.php` | `handle($user, $status, $scene)`（既定は `CaseStatus::Open`・`latest('updated_at')`・`suiri.cases.per_page`）・`withCounts($query)`（`clues_count`・`hypotheses_count`・`pending_predictions_count`・`due_predictions_count`。今日の画面も使う） |
+| 一覧 | `app/Queries/Cases/CaseListQuery.php` | `handle($user, $status, $scene)`（既定は `CaseStatus::Open`・`latest('updated_at')`・`suiri.cases.per_page`）・`withCounts($query)`（`clues_count`・`hypotheses_count`・`pending_predictions_count`・`due_predictions_count`。きょうの画面も使う） |
 | 事件の画面を組み立てる | `app/Queries/Cases/CaseBoardQuery.php` | `handle($case, $user, $turn, $open, $alert)` → `case`・`hypotheses`（相棒の番で絞る）・`hiddenCount`・`turn`・`partnerName`・`selfName`・`kid`・`calendarConnected`・`step`・`watson`・`board`・`atticOptions`（`suiri.cases.attic_options`。提案した知識が外れていれば後ろに足す）・`suggest`（`SuggestionsQuery`。2-14）・`prompts`・`open`・`today`・`checkDefault`（`suiri.cases.check_after_days`） |
 | いまの一手 | `app/Queries/Cases/NextStep.php` | `for($case, $turn, $today)` の `key`：`closed`・`partner_turn`・`self_turn`・`resolve`（`prediction`）・`add_clue`・`add_hypothesis`・`all_eliminated`・`close`・`predict`（`hypothesis`）・`wait`。画面は `components/case-step/desk`（`?open=` と相棒の番を先に見て、出すカードを1つ決める）→ `now`（カード1枚）・`stages`（進み具合） |
 | なぞ・場面を直す | `CaseController::update`・`UpdateCaseRequest` | — |
@@ -253,7 +257,7 @@
 
 | やること | ファイル | シンボル・要点 |
 |---|---|---|
-| 一覧の振り分け | `app/Queries/Tasks/TaskListQuery.php` | `normalize($view)`（`suiri.tasks.views` のキー以外は `today`）・`viewOf($task, $today)`・`list`（today＝期日が今日まで、upcoming＝明日以降、someday＝期日なし、done＝`suiri.tasks.done_limit` 件）・`counts`・`justDone($user, $id)`・`byDate` |
+| きょうの画面の枠への振り分け | `app/Queries/Tasks/TaskListQuery.php` | `OPENS`（`upcoming`・`someday`・`done`）・`normalizeOpen($open)`（`OPENS` 以外・`today`・空は null）・`openOf($task, $today)`（済み → `done`、期日なし → `someday`、明日より先 → `upcoming`、今日まで → null）・`forToday($user, $today)`：`overdue`（期日が今日より前の未完了・古い順・確かめるタスクも含む。印は画面）・`upcoming`（期日が明日以降の未完了**全部**を `groupBy('due_on')`。日数で区切らない）・`someday`（期日なしの未完了・作った順）・`done`（今日を入れて `suiri.today_tasks.done_days` 日のあいだに済んだもの・新しい順・`done_limit` 件まで）・`counts`（`upcoming`・`someday`・`done`・`overdue` の数）・`dates`（`today`・`tomorrow`）。`justDone($user, $id)`・`byDate`。前の `normalize`・`viewOf`・`list`・`counts`（メソッド）は消した |
 | 作る | `app/Actions/Tasks/CreateTask.php`・`StoreTaskRequest` | 種類はいつも `TaskKind::Normal`。`starts_at` を入れるなら `due_on` 必須（`required_with`） |
 | 直す | `app/Actions/Tasks/UpdateTask.php`・`UpdateTaskRequest` | 期日を消したら `starts_at` も消す。保存のあと `SyncPredictionCheck::handle`（トランザクション）。確かめるタスクは題名を受け取らず、答え合わせ待ちなら `due_on` 必須 |
 | 消す | `app/Actions/Tasks/DeleteTask.php`・`DeleteTaskRequest` | `checksPendingPrediction()` なら消さない（受付は 403、Action は `LogicException`） |
@@ -261,18 +265,21 @@
 | 丸で済みにできないタスク | `Task::answeredByPrediction()` | `isVerify() && prediction_id !== null`。`CompleteTaskRequest`・`ReopenTaskRequest`・`components/task/item`・`tasks/edit` がこれ1つで判断 |
 | 題名の似た実績 | `app/Queries/Tasks/SimilarTasksQuery.php` | `for($user, $title, $exceptId)`：済み・`actual_minutes` あり・`suiri.tasks.similar.pool` 件から、`score`（同じ 1.0・含む `CONTAINS_SCORE` 0.8・2文字ずつのダイス係数）が `min_score` 以上を `limit` 件 |
 | 直す画面の確かめるタスク | `resources/views/tasks/edit.blade.php`・`components/task/form` | `answeredByPrediction()` なら題名は入力欄でなく文字だけ、`checksPendingPrediction()` なら消すボタンの代わりに `predictions.withdraw`（取り下げるとタスクも消える） |
-| 画面 | `resources/views/tasks/{index,create,edit}.blade.php`・`components/task/*`（`item`・`check`・`curious`（`cases.draft` へ POST）・`quick-add`（「くわしく」は `formaction=tasks.draft`）・`form`・`done-followup`・`minutes`・`similar-history`・`tabs`） | — |
+| 画面 | `resources/views/tasks/{create,edit}.blade.php`（一覧の画面 `tasks/index` と一覧のタブ `components/task/tabs` は消した。一覧はきょうの画面の中）・`components/task/*`：`item`（開ける行。左の丸 `check` で済み、題名の所が `<details class="group/row">` で、開くと「直す」「気になる」（`curious` の `pill`）「消す」（`x-ui.confirm` で確かめる）。確かめるタスクは「気になる」を出さず、答え合わせ待ちなら「消す」も出さず右に「答え合わせ」。props `task`・`date`・`time`）・`quick-add`（1行で書く欄：題名＋送信ボタン「今日」「明日」「いつか」＋「くわしく」（`formaction=tasks.draft`）。Enter は最初の「今日」。props `dates`・`back`）・`curious`（`cases.draft` へ POST。`strong`・`pill`）・`form`・`done-followup`・`minutes`・`minutes-field`・`similar-history` | — |
 
-### 2-8. 今日
+### 2-8. きょう（今日とタスクをまとめた画面）
 
 | やること | ファイル | シンボル・要点 |
 |---|---|---|
 | 受付 | `app/Http/Controllers/Today/TodayController.php` | 1-3 の表 |
-| 予定とタスクを混ぜる | `app/Queries/Today/AgendaQuery.php` | `for($user, $date, $skipPredictionIds)`：`CalendarAgenda::eventsOn` の予定＋期日が今日のタスク。終日 → 時刻 → 予定が先。1件に `just_ended`（`justEnded`：終わってから `suiri.suggest.just_ended_hours` 時間以内の予定。S-6）。`overdueCount`・`endOf` |
+| 予定とタスクを混ぜる | `app/Queries/Today/AgendaQuery.php` | `for($user, $date, $skipPredictionIds)`：`CalendarAgenda::eventsOn` の予定＋期日が今日のタスク。終日 → 時刻 → 予定が先。1件に `just_ended`（`justEnded`：終わってから `suiri.suggest.just_ended_hours` 時間以内の予定。S-6）。`endOf`。前の `overdueCount` は消した（期日を過ぎたものは `TaskListQuery::forToday` の `overdue`） |
+| やり残し・これから・いつか・済み | `app/Queries/Tasks/TaskListQuery.php` | `forToday`・`normalizeOpen`（2-7） |
 | 今日の練習 | `app/Services/Guide/DailyPractice.php` | `for($user, $date)`：`crc32(日付#user_id) % 件数`（同じ日は同じ。やらなくても何も減らない） |
 | 捜査中の事件 | `app/Queries/Cases/OpenCasesQuery.php` | `get($user)`：`suiri.today.open_cases` 件 |
-| 最初の画面 | `app/Support/Landing.php` | `url()` → `route('today')`（いつも今日の画面。`HomeController`・同意のあと・ログインのあとが使う） |
-| 画面 | `resources/views/today/index.blade.php` | 上から：記録のきっかけ（`users.cue`）と「気になることを記録」→ `task.done-followup` → `today.due-predictions` → `today.agenda`（中に `task.quick-add back="today"`）→ `today.practice-suggestion` → `today.open-cases` |
+| 最初の画面 | `app/Support/Landing.php` | `url()` → `route('today')`（いつもきょうの画面。`HomeController`・同意のあと・ログインのあとが使う） |
+| 画面 | `resources/views/today/index.blade.php` | 上から：`task.done-followup`（済ませた直後だけ）→ `today.next-step`（いまやることのカード1枚：答え合わせ待ちなら `today.due-prediction`、なければ記録のきっかけ `users.cue` と「気になったことを書こう」）→ `today.agenda`（`:items`・`:overdue`・`:skip`。中身の slot に `task.quick-add :dates back="today"`、並びはやり残し（赤い帯 `today.agenda.overdue`・左に赤いもとの期日 `overdue_date`）→ 予定と今日のやること（時刻順）、名前つき slot `later` に `today.later-tasks`）→ `today.practice-suggestion`・`today.open-cases`（md 以上で左右2列）→ 答え合わせのある日だけ「新しく気になったことを書く」 |
+| たたんだ枠 | `components/today/later-tasks`・`fold`・`task-rows` | `later-tasks`：これから・いつか・済み の3つの `today.fold`（`<details id="later-{name}">`。名前・件数・一言、`open` の枠だけ最初から開く）。これからは日付ごとの小見出し（明日なら「明日・」）の下に `task.item :date="false"`、いつか・済みは `today.task-rows`（空なら一言）。言葉は `suiri.today.later` |
+| ナビ | `config('suiri.nav')`・`components/layouts/nav` | 4つ（きょう・事件・手引き・ふりかえり。下のナビは `grid-cols-4`）。きょうの `match` は `['today', 'tasks.*']`（作る・直す画面でも「きょう」がいまここ） |
 
 ### 2-9. カレンダー連携
 
@@ -284,7 +291,7 @@
 | 予定の中身 | `app/Services/Google/TaskEvent.php` | `toEvent($task)`（summary・description＝`link_label`＋URL・start/end・transparency（確かめるタスクは transparent）・source・`extendedProperties.private.suiri_task_id`）・`times`・`timesFrom($event)`・`summary`（確かめるタスクは `verify_summary`、済みは `done_prefix`）・`link`（確かめるタスクは `predictions.show`、ほかは `tasks.edit`） |
 | 取り込み | `app/Jobs/PullCalendarChanges.php` → `app/Actions/Calendar/ApplyCalendarChanges.php` | `handle($connection)`：`listChangedEvents`（`SyncTokenExpired` なら全件）→ `apply`（cancelled は `unlink`、`suiri_task_id` なしは無視、自分のタスクで同じ予定 ID のものだけ `moveTask`）→ 全件のときは `unlinkMissing` と `sweepOrphans`（`DeleteOrphanEvents::handle($connection, $events)`。`GoogleApiFailed` は id とエラーの種類だけログして取り込みは続ける）→ `sync_token`・`last_synced_at` を保存。日時が動いた確かめるタスクは `moveTask` の中で `SyncPredictionCheck`（予想の `check_on`・`check_at` も同じトランザクションで動く）。タスクは `saveQuietly()`（書き戻さない） |
 | 残った予定の片づけ | `app/Actions/Calendar/DeleteOrphanEvents.php` | `handle($connection, ?$events = null): int`：`$events` がなければ `listChangedEvents(…, null)` で全件を読む → 印 `suiri_task_id` があり cancelled でない予定のうち、番号が本人の今あるタスクに当たらないものを `deleteEvent`。連携が切れている間に消したタスクの予定を消すため。呼ぶ所は `PushAllTasksToCalendar::handle` と `ApplyCalendarChanges::handle`（全件のとき） |
-| 予定（読むだけ） | `app/Contracts/CalendarAgenda.php`・`app/Services/Google/GoogleCalendarAgenda.php`・`NullCalendarAgenda.php`（いつも空）・`FakeCalendarAgenda.php`（テストの偽物） | `eventsOn($user, $date)`（今日の画面）と `upcoming($user, $days)`（確かめる日の提案 S-4：いまから `$days` 日先の終わりまでを `listEvents` 1回で読み、始まった時刻つきの予定とアプリの予定を除き、日付 → 終日 → 時刻の順）。どちらも `remember`（つながっていて `read_scope` があるときだけ。`Cache::remember("calendar-agenda:{id}:{date}")`・`"calendar-upcoming:{id}:{days}:{date}"`、`agenda_cache_seconds`、失敗は空）。`fetch`・`item`・`fetchUpcoming`・`upcomingItem`。題名は保存しない |
+| 予定（読むだけ） | `app/Contracts/CalendarAgenda.php`・`app/Services/Google/GoogleCalendarAgenda.php`・`NullCalendarAgenda.php`（いつも空）・`FakeCalendarAgenda.php`（テストの偽物） | `eventsOn($user, $date)`（きょうの画面）と `upcoming($user, $days)`（確かめる日の提案 S-4：いまから `$days` 日先の終わりまでを `listEvents` 1回で読み、始まった時刻つきの予定とアプリの予定を除き、日付 → 終日 → 時刻の順）。どちらも `remember`（つながっていて `read_scope` があるときだけ。`Cache::remember("calendar-agenda:{id}:{date}")`・`"calendar-upcoming:{id}:{days}:{date}"`、`agenda_cache_seconds`、失敗は空）。`fetch`・`item`・`fetchUpcoming`・`upcomingItem`。題名は保存しない |
 | 期限切れの覚えを消す | `app/Console/Commands/PruneExpiredCache.php` | `cache:prune-expired`（`cache.default` が database のときだけ）。5分ごと |
 | 解除 | `app/Actions/Calendar/DisconnectCalendar.php` | `handle($user, $deleteCalendar)`：選ばれ、つながっていれば `deleteCalendar` → `GoogleTokens::revoke` → タスクの `calendar_event_id` を外す → 行を消す。退会からも呼ぶ |
 | トークン | `app/Services/Google/GoogleTokens.php` | `configured()`・`accessToken()`（期限の `refresh_before_seconds` 前なら `refresh`）・`refresh()`（`invalid_grant` → `markBroken` → `GoogleAuthBroken`、そのほか → `GoogleApiFailed`）・`expire()`・`revoke()`（失敗しても false）・`saveIfStored()` |
@@ -452,13 +459,14 @@
 |---|---|---|
 | `labels` | 列挙の言葉（`scene`・`case_status`・`clue_kind`・`hypothesis_author`・`hypothesis_status`・`fit`・`prediction_result`・`miss_reason`・`task_kind`・`calendar_status`・`origin_kind`）・`words`（列挙ではない言葉）・`by_scene.work`・`kid` | `Support\Label`・`HasLabel` |
 | `confidence` | `min` 50・`max` 95・`step` 5・`choices`（50〜95 の各値に `hint`・`kid`） | `StorePredictionRequest`・`components/case-step/confidence`・`components/case/prediction-original` |
-| `nav` | 下のナビの項目（`route`・`match`・`label`・`icon`） | `components/layouts/nav` |
+| `nav` | ナビの項目4つ（`route`・`match`・`label`・`icon`）：きょう（`today`。`match` に `tasks.*` も）・事件・手引き・ふりかえり | `components/layouts/nav` |
 | `ui` | 作り直しの共通部品の決まった言葉（`step`「ステップ n / m」・`now`・`done`・`later`・`tag_no`・`stamp_top`・`handoff_title`・`handoff_button`・`summary_edit` など） | `components/ui/*`・`case/summary`・`case-step/now`・`clue-pile` |
 | `invite_only` | 招待制にするか（`.env` の `SUIRI_INVITE_ONLY`。既定 false＝一般公開） | `LoginWithGoogle::register`・`home`・`legal/terms` |
 | `limits` | 入力の長さの上限（user_name 50（表の `users.name` は 100 だが、設定の画面と Google から受け取る名前は 50 にそろえる）・partner_name 30・cue 100・task_title 100・task_memo 500・case_title 120・origin_label 150・clue_body 500・hypothesis_body 300・prediction_statement 300・result_note 300・attic_rule 300・attic_examples 500・reflection_text 500・scene_answer 500・invitation_note 100） | 各 FormRequest・`MakePrediction`・`LoginWithGoogle`・`InviteAdd` |
 | `cue_examples` | 記録のきっかけの例文 | `SettingsController::show` |
-| `today.open_cases` | 今日の画面の捜査中の事件の数（3） | `OpenCasesQuery` |
-| `tasks` | `views`（タブ）・`empty`（空の一言）・`done_limit` 50・`max_minutes` 1440・`minute_choices`・`similar`（`limit`・`min_score`・`pool`） | `TaskListQuery`・`SimilarTasksQuery`・タスクの FormRequest・`components/task/*` |
+| `today_tasks` | きょうの画面の「済み」の範囲：`done_days` 7（今日を入れてこの日数）・`done_limit` 30 | `TaskListQuery::forToday`・`today.later-tasks`（一言の `:days`） |
+| `today` | `open_cases`（捜査中の事件の数 3）・`heading`・`date_format`・`answer`・`record`・`agenda`（`title`・`add_label`・`empty`・`empty_hint`・`all_day`・`anytime`・`overdue`・`overdue_date`）・`later`（`count`・`upcoming`／`someday`／`done` の `label`・`lead`・`empty`・`tomorrow`）・`curious`・`practice`・`cases` | `OpenCasesQuery`・`today/index`・`components/today/*`・`task/curious` |
+| `tasks` | `quick`（1行で書く欄：`label`・`placeholder`・`today`・`tomorrow`・`someday`・`add_to`・`more`）・`row`（開いた行：`edit`・`delete`・`actions_label`）・`words`（作る・直す画面と行の言葉）・`max_minutes` 1440・`minute_choices`・`similar`（`limit`・`min_score`・`pool`）・`done_followup`・`flash` | `SimilarTasksQuery`・タスクの FormRequest・`TaskController`・`components/task/*` |
 | `cases` | `per_page` 20・`verify_task_title`（`確かめる：:statement`）・`check_after_days` 1・`conclusion_max` 1000・`attic_options` 50・`closed_message`（閉じた事件に書き込もうとしたときの 403 の文。`WritesOpenCase`）・`work_caution`（仕事の場面の最初の注意） | `CaseListQuery`・`MakePrediction`・`CaseBoardQuery`・`CloseCaseRequest`・`components/case/work-caution`（`case-step.clue-card` の中） |
 | `case_list` | 事件の一覧の言葉（つまみ `tabs`・`tabs_kid`・一言 `leads`・段の名前 `steps`・空のとき `empty`・`case_no`） | `cases/index`・`case/list-filter`・`case/summary`・`case-step/stages`・`now` |
 | `case_new` | 事件を作る画面（1問ずつ）の言葉（`page_title`・4つの問い `steps`・場面と種類の札・相棒モード・確かめの札） | `cases/create-steps`・`components/case-new/*` |
@@ -518,13 +526,13 @@ worker の箱（`docker-compose.yml` の `worker`）が `php artisan schedule:wo
 | 決まり | 守っているコード | テスト・チェック |
 |---|---|---|
 | 1. 予想の文と確かさは保存後に書き換えない。答え合わせの画面で最初の文と書いた日時を見せる | `Prediction::FROZEN`・`Prediction::booted`（updating で `LogicException`）・`routes/web/cases.php` に直すルートなし・`prediction-card` に直すボタンなし・`components/case/prediction-original`・`ResolvePrediction`／`SyncPredictionCheck` は FROZEN 以外だけ書く | `tests/Feature/Models/ModelRulesTest.php`・`tests/Feature/Cases/PredictionTest.php`・`ResolvePredictionTest.php`・`tests/Feature/Tasks/VerifyTaskTest.php`（期日を写しても文と確かさは変わらない） |
-| 2. 他人の記録を持たない・見せない（全記録が `user_id` を持ち、持ち主で絞る） | `Policies\Concerns\OwnerOnly`＋ルートの `->can()`・Query は全部 `$user->…()` から・FormRequest の `Rule::exists(...)->where('user_id', …)`（`attic_note_id`・`case_file_id`・`changed_case_file_id`）・`UpdateFitRequest::authorize`・`CopiesOwnerFromCase`・`Prediction::booted`・`SceneAttemptReader`・`ApplyCalendarChanges`（`where('user_id')`）・`TaskListQuery::justDone`・他人を表す名前は `bin/check`（コードの名前の決まり） | `tests/Feature/Policies/OwnerOnlyTest.php`・`Cases/OwnershipTest.php`・`Tasks/TaskOwnershipTest.php`・`Review/AtticNoteTest.php`・`WeeklyReflectionTest.php`・`ReviewPageTest.php`・`NorburyTest.php`・`CalibrationTest.php`・`Guide/SceneCardTest.php`・`Calendar/PullCalendarChangesTest.php`・`PullRemovedEventsTest.php`・`DisconnectCalendarTest.php`・`Account/ExportUserDataTest.php` |
+| 2. 他人の記録を持たない・見せない（全記録が `user_id` を持ち、持ち主で絞る） | `Policies\Concerns\OwnerOnly`＋ルートの `->can()`・Query は全部 `$user->…()` から・FormRequest の `Rule::exists(...)->where('user_id', …)`（`attic_note_id`・`case_file_id`・`changed_case_file_id`）・`UpdateFitRequest::authorize`・`CopiesOwnerFromCase`・`Prediction::booted`・`SceneAttemptReader`・`ApplyCalendarChanges`（`where('user_id')`）・`TaskListQuery::forToday`／`justDone`・他人を表す名前は `bin/check`（コードの名前の決まり） | `tests/Feature/Policies/OwnerOnlyTest.php`・`Cases/OwnershipTest.php`・`Tasks/TaskOwnershipTest.php`・`Today/TodayTaskListsTest.php`・`TodayMergedLayoutTest.php`・`Review/AtticNoteTest.php`・`WeeklyReflectionTest.php`・`ReviewPageTest.php`・`NorburyTest.php`・`CalibrationTest.php`・`Guide/SceneCardTest.php`・`Calendar/PullCalendarChangesTest.php`・`PullRemovedEventsTest.php`・`DisconnectCalendarTest.php`・`Account/ExportUserDataTest.php` |
 | 3. カレンダーに本文を送らない（タスクの題名・日時・戻るリンクと、見分けるための番号 `suiri_task_id` だけ。確かめるタスクは決まった題名） | `TaskEvent::toEvent`・`summary`・`link`・`CalendarApi::insertCalendar`（名前とタイムゾーンだけ）・`listEvents` の `fields`（受け取る項目も絞る）・`bin/check`「Google カレンダーに本文を送らない」（`Services/Google`・`Jobs` で本文の列を止める） | `tests/Feature/Calendar/PushTaskToCalendarTest.php`（送る鍵の一覧）・`tests/Unit/Google/TaskEventTest.php`・`CalendarApiTest.php` |
 | 4. ログ・応答に本文を出さない（id・種類・件数・エラーの種類だけ） | `Log::` を使う所は全部 id と `class_basename($e)` だけ：`GoogleLoginController::callback`・`ConnectCalendarController::callback`・`DisconnectCalendar::handle`・`GoogleTokens::revoke`・`markBroken`・`GoogleCalendarAgenda::remember`・`TaskObserver::safely`・`PushTaskToCalendar::failed`・`RemoveTaskFromCalendar::failed`。題名を GET の URL に載せない：`tasks.draft`・`cases.draft`（POST → `withInput`）・`CaseController::create` は URL の `origin`・`practice` だけ受け取る | `bin/check`「ログに入力の本文を出さない」（専用のテストはない）・`tests/Feature/Cases/CreateCaseTest.php`・`Tasks/ManageTasksTest.php`（draft） |
 | 5. 休んでも何も減らない（日数の続き・得点・順位を作らない。言葉は words.md の 3） | 表に該当の列がない・`DailyPractice`（提案だけ）・`WeeklyStats::percent`（分母 0 は null）・`suiri.review.empty_week` | `tests/Feature/Review/ReviewPageTest.php`（その言葉が出ない）・`WeeklyStatsTest.php`・`bin/check`「画面で使わない言葉」 |
 | 6. ワトソンのひとことは保存を止めない・一度に1つ・閉じられる | `RedirectsToCase::backToCase`（保存のあとに警告）・`WatsonNotes::forCase`（1つだけ）・`DismissHint` | `tests/Feature/Cases/WatsonNoteTest.php`・`ClueAndHypothesisTest.php`・`CreateCaseTest.php`・`tests/Unit/Watson/*` |
 | 7. 相棒モードは見せ合うまで互いの見立てを隠す | `CaseFile::hidesHypotheses`・`CaseBoardQuery::handle`・`StorePredictionRequest::authorize`・`RevealHypotheses` | `tests/Feature/Cases/PartnerModeTest.php` |
-| 8. 日付だけの列は `Y-m-d` の文字列で比べる | `Prediction`・`Task`・`WeeklyReflection` は日付の列をキャストしない・`Prediction::isDue`・`TaskListQuery`・`DuePredictionsQuery`・`ReviewWeek::param` | `tests/Feature/Tasks/TaskListTest.php`・`Today/TodayPageTest.php`・`Models/ModelRulesTest.php` |
+| 8. 日付だけの列は `Y-m-d` の文字列で比べる | `Prediction`・`Task`・`WeeklyReflection` は日付の列をキャストしない・`Prediction::isDue`・`TaskListQuery`・`DuePredictionsQuery`・`ReviewWeek::param` | `tests/Feature/Today/TodayTaskListsTest.php`・`TodayPageTest.php`・`Models/ModelRulesTest.php` |
 | 9. 回数制限は名前つき | `AppServiceProvider::boot` の `RateLimiter::for` | `bin/check`「回数制限は名前つきで」（1-4 の※も見る） |
 | 10. 運営者が記録を読む管理画面を作らない | 招待はコマンド（`invite:*`） | `tests/Feature/Auth/InviteCommandTest.php` |
 | 11. ログイン後の応答は取り置かせない・守りの札 | `SecurityHeaders::handle` | `tests/Feature/Legal/PublicPagesTest.php` |
@@ -543,7 +551,7 @@ worker の箱（`docker-compose.yml` の `worker`）が `php artisan schedule:wo
 
 ## 8. テストの地図
 
-`src/tests/`。sqlite in-memory・`withoutVite()`（`tests/TestCase.php`）。テストのメソッドは 458（データの組を数えると 536 件。2026-10-31）。動かし方は `docker compose exec -T app php artisan test --compact`（1つだけは `--filter=名前`）。
+`src/tests/`。sqlite in-memory・`withoutVite()`（`tests/TestCase.php`）。テストのメソッドは 474（データの組を数えると 552 件。2026-10-31）。動かし方は `docker compose exec -T app php artisan test --compact`（1つだけは `--filter=名前`）。
 
 偽物：Google ログインは `Socialite::fake('google', GoogleUser::fake([...]))`、カレンダーは `FakeCalendarApi`（テストでは singleton。`tests/Feature/Calendar/CalendarHelpers.php` の `fakeApi()`・`connectedUser()`・`configureGoogle()`）、HTTP は `Http::fake()`（`Http::preventStrayRequests()` で偽物にしていない外への問い合わせは失敗）。事件の準備は `tests/Feature/Cases/Concerns/BuildsCases.php`（`member()`・`caseOf()`・`board()`）。
 
@@ -561,8 +569,8 @@ worker の箱（`docker-compose.yml` の `worker`）が `php artisan schedule:wo
 | `Feature/Policies` | `OwnerOnlyTest` | 記録の種類ごとの持ち主だけ・`{case}` の結びつけ |
 | `Feature/Review` | `AtticNoteTest`・`CalibrationTest`・`NorburyTest`・`ReviewPageTest`・`WeeklyReflectionTest`・`WeeklyStatsTest` | 棚の CRUD と 403／確かさの集計と画面／ノーベリ帳／週の住所・404・責めない一言／週の問い／週の数字の境目 |
 | `Feature/Settings` | `KidWordsTest`・`UpdateSettingsTest` | 子ども向けの言葉の条件（ふだんの場面だけ・手引きは `?kid` が先）／設定の保存と検証 |
-| `Feature/Tasks` | `CompleteTaskTest`・`ManageTasksTest`・`SimilarTasksTest`・`TaskListTest`・`TaskOwnershipTest`・`TaskRouteMiddlewareTest`・`VerifyTaskTest` | 済み・戻す・確かめるタスクの扱い／作る・直す・消す・draft・戻り先／似た実績／タブの振り分けと並び／他人は 403／直す・消すにも回数制限と持ち主の確かめが付く／確かめるタスクの期日を直すと予想の確かめる日も変わる・期日を空にできない・消せない（403。直す画面に予想の取り下げ）・答え合わせ済みなら記録のまま |
-| `Feature/Today` | `JustEndedEventTest`・`TodayPageTest` | さっき終わった予定（S-6）：3時間以内だけ印・「気になる」を目立たせる／最初の画面・きっかけ・答え合わせ待ち・予定とタスクの混ぜ方・二重に出さない・期日切れの数・部品への受け渡し |
+| `Feature/Tasks` | `CompleteTaskTest`・`ManageTasksTest`・`SimilarTasksTest`・`TaskListTest`・`TaskOwnershipTest`・`TaskRouteMiddlewareTest`・`VerifyTaskTest` | 済み・戻す・確かめるタスクの扱い（戻り先はきょうの画面）／作る・直す・消す・draft・戻り先（そのタスクが見える枠の `?open=`）／似た実績／前の一覧の住所 `/tasks?view=` が `/today?open=` へ移る（`TaskListTest`）／他人は 403／直す・消すにも回数制限と持ち主の確かめが付く／確かめるタスクの期日を直すと予想の確かめる日も変わる・期日を空にできない・消せない（403。直す画面に予想の取り下げ）・答え合わせ済みなら記録のまま |
+| `Feature/Today` | `JustEndedEventTest`・`TodayMergedLayoutTest`・`TodayNavTest`・`TodayPageTest`・`TodayTaskListsTest` | さっき終わった予定（S-6）：3時間以内だけ印・「気になる」を目立たせる／きょうの画面の並び（いまやることのカード → きょうの予定とやること → たたんだ枠 → 練習・事件）・やり残しの赤い印・1行で書く欄の3つの送信ボタンと期日・`?open=` の枠だけ開く・これからは日付ごと・行を開くと直す・気になる・消す・確かめるタスクの「答え合わせ」・他人のタスクが出ない（`TodayMergedLayoutTest`）／ナビは4つでタスクの項目がない・作る・直す画面では「きょう」がいまここ（`TodayNavTest`）／最初の画面・きっかけ・答え合わせ待ち・予定とタスクの混ぜ方・二重に出さない・やり残しの受け渡し・部品への受け渡し（`TodayPageTest`）／枠の振り分け（やり残し・これからは区切りなしで日付ごと・いつか・済みの日数と件数）・件数と枠の中身がそろう・本人のタスクだけ・`open` は枠の名前か null・`dates`（`TodayTaskListsTest`） |
 | `Unit/Enums` | `LabelTest` | 共通・仕事の場面・子ども向けの言葉、全値に言葉がある、確かさの選択肢 |
 | `Unit/Google` | `CalendarApiTest`・`GoogleTokensTest`・`TaskEventTest` | REST の呼び方（409・404/410・503・401・ページ・410・fields）／更新・invalid_grant・revoke／予定の形と戻し方 |
 | `Unit/Guide` | `DailyPracticeTest`・`GuideContentTest`・`ReasoningStepsTest` | 同じ日は同じ提案／教材の JSON の形・キーの重なり・技能のキー・誇張の言葉がない／推理の段 |

@@ -9,7 +9,7 @@ use App\Models\Task;
 use Illuminate\Http\RedirectResponse;
 
 /**
- * 済んだタスクを未完了に戻す受付（DELETE /tasks/{task}/done）。元の画面（今日・一覧）へ戻す
+ * 済んだタスクを未完了に戻す受付（DELETE /tasks/{task}/done）。元の画面（きょう。開いていた枠も ?open= ごと）へ戻す
  */
 class ReopenTaskController extends Controller
 {
@@ -18,6 +18,6 @@ class ReopenTaskController extends Controller
     {
         $reopenTask->handle($task);
 
-        return redirect()->back(fallback: route('tasks.index'))->with('status', __(config('suiri.tasks.flash.reopened'), ['title' => $task->title]));
+        return redirect()->back(fallback: route('today'))->with('status', __(config('suiri.tasks.flash.reopened'), ['title' => $task->title]));
     }
 }

@@ -10,7 +10,7 @@ use Illuminate\Http\RedirectResponse;
 
 /**
  * タスクを済みにする受付（POST /tasks/{task}/done）。かかった時間（任意）も一緒に受け取れる。
- * 元の画面（今日・一覧）へ戻し、「かかった時間」と「気になることを記録」をさそう枠を出すために、済ませたタスクの id を知らせる
+ * 元の画面（きょう。開いていた枠も ?open= ごと）へ戻し、「かかった時間」と「気になることを記録」をさそう枠を出すために、済ませたタスクの id を知らせる
  */
 class CompleteTaskController extends Controller
 {
@@ -19,6 +19,6 @@ class CompleteTaskController extends Controller
     {
         $completeTask->handle($task, $request->validated('actual_minutes'));
 
-        return redirect()->back(fallback: route('tasks.index'))->with('task_done', $task->id);
+        return redirect()->back(fallback: route('today'))->with('task_done', $task->id);
     }
 }

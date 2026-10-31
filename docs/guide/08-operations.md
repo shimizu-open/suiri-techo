@@ -84,7 +84,7 @@
 1. **Google の鍵を `src/.env` に書く：** `GOOGLE_CLIENT_ID`・`GOOGLE_CLIENT_SECRET` に、Google Cloud で作った値を書きます。作り方は [11章](11-google-setup.md)（本番と同じ Google の鍵に、手元の戻り先 `http://localhost:8086/auth/google/callback` と `http://localhost:8086/calendar/callback` も登録してあります）。`GOOGLE_REDIRECT_URI` は手元では見本の `/auth/google/callback` のままで構いません。空のままだと、トップのボタンは「Google でのログインは準備中です」になります。
 2. **（招待制を試すときだけ）自分を名簿に入れる：** `src/.env` に `SUIRI_INVITE_ONLY=true` を書いたときは、`docker compose exec app php artisan invite:add 自分のメールアドレス --note="自分"` も打ちます（8-7）。一般公開のまま（既定の `false`）なら要りません。
 
-これで、トップの「Google ではじめる」→ Google の画面 → 初回だけ同意の画面（利用規約・プライバシーポリシー・年齢の確認）→ 今日の画面、と進みます。
+これで、トップの「Google ではじめる」→ Google の画面 → 初回だけ同意の画面（利用規約・プライバシーポリシー・年齢の確認）→ きょうの画面、と進みます。
 
 **注意：** ブラウザは必ず `localhost` で開きます（`127.0.0.1:8086` で開くと、Google に伝える戻り先も `127.0.0.1` になり、登録した住所と違うので `redirect_uri_mismatch` で止まります）。
 
@@ -105,7 +105,7 @@ docker compose exec app php artisan db:seed --class=DemoSeeder
 | 作るもの | 中身 |
 |---|---|
 | 親子の事件「体操着をなぜ忘れる？」 | 相棒と隠して見立てを書き、見せ合い、答え合わせ（当たり）して解決。「つまり？・たとえば？」を屋根裏の棚に入れてある |
-| 日常の事件「朝の電車がいつも遅れるのはなぜ？」 | 外れた予想（ノーベリ帳に載る）と、今日が確かめる日の予想（今日の画面の答え合わせ待ちに出る） |
+| 日常の事件「朝の電車がいつも遅れるのはなぜ？」 | 外れた予想（ノーベリ帳に載る）と、今日が確かめる日の予想（きょうの画面の答え合わせ待ちに出る） |
 | 仕事の事件「前回より右肩が上がって見えた件」 | 施術者が、自分の見たこと・ご本人の言葉・自分の見立てを分けて書いた形 |
 | 手帳の残り | 予想時間とかかった時間のあるタスク・期日を過ぎたタスク・いつかのタスク、手で足した屋根裏の棚、今週のふりかえり、名推理カードへの推理 |
 
@@ -182,7 +182,7 @@ docker compose exec app php artisan db:seed --class=DemoSeeder
 
 - src/app/Http/Controllers/Tasks/TaskController.php:42  【コントローラーで検証しない】$request->validate([
     → 形の検証は app/Http/Requests/{機能}/ の FormRequest に書き、受付は $request->validated() を受け取るだけにする
-- src/resources/views/tasks/index.blade.php  【ファイルが長すぎる：163 行（上限 150・コメント込み）】
+- src/resources/views/today/index.blade.php  【ファイルが長すぎる：163 行（上限 150・コメント込み）】
     → くり返す塊・意味のまとまりを resources/views/components/{分類}/ の部品にする（どうしても分けられないときは、理由つきで bin/check の ALLOW_SIZE に書く）
 ```
 

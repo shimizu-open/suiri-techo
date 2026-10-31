@@ -1,7 +1,7 @@
 <section class="story" id="s7">
   <h2><span class="no">7</span>答え合わせ：予想が当たったか確かめる</h2>
   <p class="userstory">予想を立てた人として、確かめる日が来たら、実際はどうだったかを記録して、見立てを直したい。だから、答え合わせの画面を開いて4つの大きなボタンから1つを選び、保存する。</p>
-  <p class="summary">この章で追う道筋：今日の画面の「答え合わせしよう」・事件の画面の「答え合わせをしよう」などの入口 → <code>GET /predictions/{prediction}</code>（<code>can:view,prediction</code>）→ 受付 <code>PredictionController::show</code> → 画面（前に書いた予想 <code>prediction-original</code> ＋「実際はどうだった？」のカード <code>resolve-form</code>）→ <code>POST /predictions/{prediction}/result</code> → 形の検証 <code>ResolvePredictionRequest</code> → 受付 <code>ResolvePredictionController</code> → 用事 <code>ResolvePrediction</code>（結果を書く ＋ 確かめるタスクを済みにする）→ 同じ画面へ転送 →「確かめた」のはんこと次の一手（<code>resolve-result</code>）→ 見立てを直す <code>PATCH /hypotheses/{hypothesis}</code>（<code>ChangeHypothesisStatus</code>）</p>
+  <p class="summary">この章で追う道筋：きょうの画面の「答え合わせしよう」・事件の画面の「答え合わせをしよう」などの入口 → <code>GET /predictions/{prediction}</code>（<code>can:view,prediction</code>）→ 受付 <code>PredictionController::show</code> → 画面（前に書いた予想 <code>prediction-original</code> ＋「実際はどうだった？」のカード <code>resolve-form</code>）→ <code>POST /predictions/{prediction}/result</code> → 形の検証 <code>ResolvePredictionRequest</code> → 受付 <code>ResolvePredictionController</code> → 用事 <code>ResolvePrediction</code>（結果を書く ＋ 確かめるタスクを済みにする）→ 同じ画面へ転送 →「確かめた」のはんこと次の一手（<code>resolve-result</code>）→ 見立てを直す <code>PATCH /hypotheses/{hypothesis}</code>（<code>ChangeHypothesisStatus</code>）</p>
 
   <h3>入口：確かめる日が来ると、答え合わせが「いまやること」になる</h3>
   <ol class="steps">
@@ -10,10 +10,10 @@
       <h4>答え合わせの画面への入口</h4>
       <p>答え合わせの画面（<code>/predictions/{prediction}</code>）へは、次のボタンやリンクから来られます。どれも同じ住所へのリンク（GET）です。</p>
       <ol>
-        <li><b>今日の画面のいちばん上のカード</b>（部品 <code>today/next-step</code>。<a href="#s2">2章</a>）：確かめる日が来た予想があると、今日の画面の「いまやること」のカードが「答え合わせしよう」になり、横いっぱいの「答え合わせする」が出る。出すのはいちばん古い1件だけで、ほかは下に「ほかにも◯件あるよ」とたたむ（部品 <code>today/due-predictions</code>）。</li>
+        <li><b>きょうの画面のいちばん上のカード</b>（部品 <code>today/next-step</code>。<a href="#s2">2章</a>）：確かめる日が来た予想があると、きょうの画面の「いまやること」のカードが「答え合わせしよう」になり、横いっぱいの「答え合わせする」が出る。出すのはいちばん古い1件だけで、ほかは下に「ほかにも◯件あるよ」とたたむ（部品 <code>today/due-predictions</code>）。</li>
         <li><b>事件の画面の「答え合わせをしよう」のカード</b>（部品 <code>case-step/resolve-card</code>）：その事件に確かめる日が来た予想があると、事件の画面の1枚だけのカードがこれになる。</li>
         <li><b>事件の画面の「◯月◯日に確かめよう」のカード</b>（部品 <code>case-step/wait-card</code>。<a href="#s6">6章</a>）：確かめる日の前でも、下の小さなリンク「先に答え合わせをする」から来られる。</li>
-        <li><b>タスクの一覧の確かめるタスク</b>（部品 <code>task/item</code>。<a href="#s3">3章</a>）：まだ済んでいない確かめるタスクの行に「答え合わせ」がある。</li>
+        <li><b>きょうの画面の確かめるタスクの行</b>（部品 <code>task/item</code>。「これから」の枠や、期日を過ぎたやることの並び。<a href="#s2">2章</a>・<a href="#s3">3章</a>）：まだ済んでいない確かめるタスクの行の右に「答え合わせ」がある。</li>
         <li><b>Google カレンダーの予定</b>（<a href="#s9">9章</a>）：確かめるタスクの予定に入れたリンクが、答え合わせの画面を指している。</li>
       </ol>
       <div class="code"><div class="file">src/resources/views/components/today/next-step.blade.php</div><pre><code>@php($first = collect($predictions)-&gt;first())
@@ -27,21 +27,22 @@
 @endif</code></pre></div>
       <div class="code"><div class="file">src/resources/views/components/case-step/resolve-card.blade.php</div><pre><code>&lt;x-ui.big-button :href="route('predictions.show', $prediction)" tone="answer" icon="check"&gt;{{ $t('resolve.button') }}&lt;/x-ui.big-button&gt;</code></pre></div>
       <div class="code"><div class="file">src/resources/views/components/case-step/wait-card.blade.php</div><pre><code>&lt;a href="{{ route('predictions.show', $prediction) }}" class="inline-flex min-h-12 items-center font-semibold"&gt;{{ $t('wait.early') }}&lt;/a&gt;</code></pre></div>
-      <div class="code"><div class="file">src/resources/views/components/task/item.blade.php</div><pre><code>{{-- まだ済んでいない確かめるタスクは、予想の画面の「答え合わせ」へ。ふつうのやることは、頼まれていて済んでいれば「気になる」を出す --}}
+      <div class="code"><div class="file">src/resources/views/components/task/item.blade.php</div><pre><code>{{-- まだ済んでいない確かめるタスクは、予想の画面の「答え合わせ」へ進むボタンを右に出す --}}
 @if ($byPrediction &amp;&amp; ! $done &amp;&amp; Route::has('predictions.show'))
-  &lt;a href="{{ route('predictions.show', $task-&gt;prediction_id) }}" class="inline-flex min-h-11 shrink-0 items-center rounded-full border-2 border-answer px-3 text-sm font-bold text-answer no-underline hover:bg-answer-soft"&gt;{{ $words['resolve'] }}&lt;/a&gt;</code></pre></div>
+  &lt;a href="{{ route('predictions.show', $task-&gt;prediction_id) }}" class="mt-2 inline-flex min-h-12 shrink-0 items-center rounded-full border-2 border-answer px-3 text-sm font-bold text-answer no-underline hover:bg-answer-soft"&gt;{{ $words['resolve'] }}&lt;/a&gt;
+@endif</code></pre></div>
       <div class="code"><div class="file">src/app/Services/Google/TaskEvent.php</div><pre><code>// 確かめるタスクで、もとの予想が残っていれば、答え合わせの画面へ
 if ($task-&gt;answeredByPrediction() &amp;&amp; Route::has('predictions.show')) {
     return route('predictions.show', $task-&gt;prediction_id);
 }</code></pre></div>
       <p>確かめるタスクの行や予定から行けるのは、タスクの <code>prediction_id</code>（どの予想から作ったか。<a href="#s6">6章</a>）があるからです。</p>
-      <figure class="shot"><img data-img="screen-today-answer.png" alt="今日の画面・答え合わせの日が来たとき。深い赤の「答え合わせしよう」のカードに、なぞ・あなたの予想・自信・確かめる日と「答え合わせする」"><figcaption>今日の画面のいちばん上が「答え合わせしよう」のカードになったところ（スマホ）</figcaption></figure>
+      <figure class="shot"><img data-img="screen-today-answer.png" alt="きょうの画面・答え合わせの日が来たとき。深い赤の「答え合わせしよう」のカードに、なぞ・あなたの予想・自信・確かめる日と「答え合わせする」。その下に1行で書く欄"><figcaption>きょうの画面のいちばん上が「答え合わせしよう」のカードになったところ（スマホ）</figcaption></figure>
     </li>
 
     <li class="step">
       <span class="who db">データベース</span>
-      <h4>今日の画面のカードは、どの予想を集めるか（<code>DuePredictionsQuery</code>）</h4>
-      <p>今日の画面のカードに出す予想は、一覧を集める係 <code>DuePredictionsQuery</code> が作ります（今日の画面の全体は <a href="#s2">2章</a>）。カードの部品は、その1件目（いちばん古いもの）を大きく出し、2件目からをたたみます（上の <code>$first</code> と <code>$rest</code>）。</p>
+      <h4>きょうの画面のカードは、どの予想を集めるか（<code>DuePredictionsQuery</code>）</h4>
+      <p>きょうの画面のカードに出す予想は、一覧を集める係 <code>DuePredictionsQuery</code> が作ります（きょうの画面の全体は <a href="#s2">2章</a>）。カードの部品は、その1件目（いちばん古いもの）を大きく出し、2件目からをたたみます（上の <code>$first</code> と <code>$rest</code>）。</p>
       <div class="code"><div class="file">src/app/Queries/Today/DuePredictionsQuery.php</div><pre><code>public function for(User $user, string $today): Collection
 {
     return $user-&gt;predictions()
@@ -383,7 +384,7 @@ if ($task !== null &amp;&amp; ! $task-&gt;isDone()) {
 $prediction-&gt;caseFile-&gt;touch();</code></pre></div>
       <ul>
         <li><code>$prediction-&gt;task</code>：モデルの <code>task()</code>（<code>hasOne</code>＝この予想に1つだけつながるタスク）で、<code>tasks.prediction_id</code> がこの予想の行を読みます。</li>
-        <li>まだ済んでいなければ <code>done_at</code>（済んだ日時）を入れます。確かめるタスクは丸を押して済みにできない決まり（タスクの一覧では、丸の代わりに押せない点線の丸と虫めがねの印を出し、「答え合わせをすると、済むよ」と添える。<a href="#s3">3章</a>）なので、済みになる道はここだけです。</li>
+        <li>まだ済んでいなければ <code>done_at</code>（済んだ日時）を入れます。確かめるタスクは丸を押して済みにできない決まり（きょうの画面の行では、丸の代わりに押せない点線の丸と虫めがねの印を出し、「答え合わせをすると、済むよ」と添える。<a href="#s3">3章</a>）なので、済みになる道はここだけです。</li>
         <li><code>caseFile-&gt;touch()</code>：事件の「最後に動いた日時」を今にします。</li>
       </ul>
       <p>タスクを直したので、見張り係 <code>TaskObserver</code> の <code>updated</code> が動きます。</p>
@@ -537,12 +538,12 @@ return $this-&gt;backToCase($hypothesis-&gt;caseFile, '見立てを直しまし�
       <div class="code"><div class="file">src/app/Services/Review/Calibration.php</div><pre><code>$query = $user-&gt;predictions()
     -&gt;whereIn('result', [PredictionResult::Hit-&gt;value, PredictionResult::Miss-&gt;value])
     -&gt;whereNull('withdrawn_at');</code></pre></div>
-      <div class="point"><b>ここが大事</b>答え合わせの記録が1か所（<code>predictions</code> の行）にしかないので、ノーベリ帳・確かさの答え合わせ・今日の画面の「答え合わせしよう」・事件の画面のカードが食い違いません。だからこそ、答え合わせは1回だけ（<code>isPending</code> の確かめ）、文と確かさは書き換えない（<a href="#s6">6章</a>）、答え合わせ済みは取り下げられない、という守りが効いてきます。</div>
+      <div class="point"><b>ここが大事</b>答え合わせの記録が1か所（<code>predictions</code> の行）にしかないので、ノーベリ帳・確かさの答え合わせ・きょうの画面の「答え合わせしよう」・事件の画面のカードが食い違いません。だからこそ、答え合わせは1回だけ（<code>isPending</code> の確かめ）、文と確かさは書き換えない（<a href="#s6">6章</a>）、答え合わせ済みは取り下げられない、という守りが効いてきます。</div>
     </li>
   </ol>
 
   <div class="recap"><b>この章のまとめ</b><ol>
-    <li>確かめる日が来ると、今日の画面のいちばん上のカード（<code>DuePredictionsQuery</code> のいちばん古い1件）と、事件の画面の1枚だけのカード（<code>NextStep</code> がいちばん先に確かめる）が「答え合わせ」になる。確かめるタスクの行・カレンダーの予定・待つカードの「先に答え合わせをする」からも来られる。</li>
+    <li>確かめる日が来ると、きょうの画面のいちばん上のカード（<code>DuePredictionsQuery</code> のいちばん古い1件）と、事件の画面の1枚だけのカード（<code>NextStep</code> がいちばん先に確かめる）が「答え合わせ」になる。確かめるタスクの行・カレンダーの予定・待つカードの「先に答え合わせをする」からも来られる。</li>
     <li><code>GET /predictions/{prediction}</code> は持ち主だけ（<code>PredictionPolicy</code> の <code>view</code>）。画面は、書いた日時と予想の文を「あとから変えられないよ」と大きく上に見せ、ほかは「くわしく」にたたむ。</li>
     <li>「実際はどうだった？」は4つの大きなボタン（当たり・外れ・どちらとも言えない・前提が崩れた）。外れのときだけ「どこで見落とした？」が CSS の <code>:has</code> で現れ、サーバーでも <code>required_if</code> で必須にする。</li>
     <li><code>ResolvePredictionRequest</code> は答え合わせ待ちの予想だけを受け付ける（2回目・取り下げ後は 403）。</li>

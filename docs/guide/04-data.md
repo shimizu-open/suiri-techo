@@ -96,7 +96,7 @@
 
 ### 取り出すときも、持ち主から
 
-- **一覧や集計**は、いつも利用者のモデルからたどります。例：今日の画面の答え合わせ待ちは `$user->predictions()->whereNull('result')…`（`Queries/Today/DuePredictionsQuery`）。`User` モデルには `tasks()`・`caseFiles()`・`clues()`・`hypotheses()`・`predictions()`・`atticNotes()`・`weeklyReflections()`・`sceneAttempts()`・`dismissedHints()`・`calendarConnection()` の関係が並んでいて、ここから始めれば他人の行は混ざりません。
+- **一覧や集計**は、いつも利用者のモデルからたどります。例：きょうの画面の答え合わせ待ちは `$user->predictions()->whereNull('result')…`（`Queries/Today/DuePredictionsQuery`）。`User` モデルには `tasks()`・`caseFiles()`・`clues()`・`hypotheses()`・`predictions()`・`atticNotes()`・`weeklyReflections()`・`sceneAttempts()`・`dismissedHints()`・`calendarConnection()` の関係が並んでいて、ここから始めれば他人の行は混ざりません。
 - **1件を開くとき**（住所に `/cases/12` のように番号が入るとき）は、ルートの `->can('view', 'case')` が **Policy**（してよいかを決める係）を呼びます。事件・手がかり・見立て・予想・タスク・屋根裏の棚の Policy は、どれも部品 `Policies/Concerns/OwnerOnly` を使い、「記録の `user_id` とログイン中の人の `id` が同じか」だけを確かめます。違えば 403（見る権利がない）になります。運営者でも、他人の記録は見られません（テスト `tests/Feature/Policies/OwnerOnlyTest.php`）。
 
 ### 他人の表を作らない理由
@@ -129,7 +129,7 @@
 | `name` / `email` / `avatar_url` | 表示名・Google のメールアドレス（重複なし）・アイコンの住所 |
 | `partner_name` | 相棒の呼び名。入っていれば相棒モードを使える |
 | `default_scene` | ふだんの場面（`daily`・`family`・`work`）。新しい事件の初めの値。`family` の人には子ども向けの言葉を出す（`User::prefersKidWords()`） |
-| `cue` | 記録のきっかけ（例「夕食のあとに、気になったことを1つ」）。今日の画面のいちばん上に出す |
+| `cue` | 記録のきっかけ（例「夕食のあとに、気になったことを1つ」）。きょうの画面のいちばん上に出す |
 | `agreed_at` | 利用規約・プライバシーポリシー・年齢の確認に同意した日時。空なら同意の画面へ送る |
 
 **パスワードの列はありません。** ログインは Google だけだからです。`google_id` と `agreed_at` は、うっかり書き換えられないように「書き込んでよい列」（`#[Fillable]`）から外してあり、決まった用事だけが `forceFill` で入れます。
@@ -213,7 +213,7 @@
 | `result` / `result_note` / `miss_reason` | 答え合わせの結果（`hit`・`miss`・`unclear`・`void`。空なら答え合わせ待ち）／一言／外れたときの原因 |
 | `resolved_at` / `withdrawn_at` | 答え合わせした日時／取り下げた日時 |
 
-`created_at` が「書いた日時」で、答え合わせの画面で必ず見せます。書き換えられない仕組みは 4-5 で説明します。モデルの小さな判定 `isPending()`（答え合わせ待ちか）・`isResolved()`・`isWithdrawn()`・`isDue($today)`（確かめる日が来たか）を、画面や集計が使います。索引 `(user_id, result, check_on)` は、今日の画面の「答え合わせ待ち」を速く探すためのものです。
+`created_at` が「書いた日時」で、答え合わせの画面で必ず見せます。書き換えられない仕組みは 4-5 で説明します。モデルの小さな判定 `isPending()`（答え合わせ待ちか）・`isResolved()`・`isWithdrawn()`・`isDue($today)`（確かめる日が来たか）を、画面や集計が使います。索引 `(user_id, result, check_on)` は、きょうの画面の「答え合わせ待ち」を速く探すためのものです。
 
 ### tasks（タスク）
 

@@ -1,5 +1,5 @@
 {{--
-  ナビ（今日・タスク・事件・手引き・ふりかえり）。項目は config('suiri.nav')。
+  ナビ（きょう・事件・手引き・ふりかえり）。項目は config('suiri.nav')。
   variant="bottom"：スマホの下の固定ナビ（md 以上では隠す）／variant="side"：パソコンの左の縦ナビ（md 未満では隠す）。
   まだ画面（ルート）がない項目は、リンクにせず薄く出す（Route::has で確かめる）。
   いまの画面の項目は、絵を紺で塗った丸の中に出し、名前を太く濃くする（子どもでも「いまここ」がひと目でわかる）
@@ -18,7 +18,7 @@
     </a>
   @endif
 
-  <ul @class(['grid grid-cols-5' => ! $side, 'space-y-1' => $side])>
+  <ul @class(['grid grid-cols-4' => ! $side, 'space-y-1' => $side])>
     {{-- ナビの項目を1つずつ取り出し、画面があればリンク、なければ薄い文字で並べる。いまの画面の項目は印を付ける --}}
     @foreach (config('suiri.nav') as $item)
       @php($ready = Route::has($item['route']))

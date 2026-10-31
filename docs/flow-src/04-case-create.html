@@ -11,8 +11,8 @@
       <p>事件を作る画面へは、3つの道から来ます。</p>
       <div class="data"><b>3つの入口</b><ul>
         <li><b>事件の一覧の「新しい事件を作る」</b>：ふつうのリンク。<code>GET /cases/create</code> へ。</li>
-        <li><b>練習メニューの「この練習を始める」</b>：手引きの練習メニュー（<code>GET /guide/practices</code>）から。住所に練習のキーを付けて <code>GET /cases/create?origin=practice&amp;practice=seventeen-steps</code> のように来ます（今日の画面の「きょうの練習」の「やってみる」も同じ住所です。<a href="#s2">2章</a>）。</li>
-        <li><b>予定・タスクの行の「気になる」</b>：今日の画面（<a href="#s2">2章</a>）やタスクを済ませたあと（<a href="#s3">3章</a>）から。いったん <code>POST /cases/draft</code> に送り、そこから <code>GET /cases/create</code> へ転送されます。</li>
+        <li><b>練習メニューの「この練習を始める」</b>：手引きの練習メニュー（<code>GET /guide/practices</code>）から。住所に練習のキーを付けて <code>GET /cases/create?origin=practice&amp;practice=seventeen-steps</code> のように来ます（きょうの画面の「きょうの練習」の「やってみる」も同じ住所です。<a href="#s2">2章</a>）。</li>
+        <li><b>予定・タスクの行の「気になる」</b>：きょうの画面の予定の行と、やることの行を押して開いた所（<a href="#s2">2章</a>）、タスクを済ませたあとの「できたね！」の枠（<a href="#s3">3章</a>）から。いったん <code>POST /cases/draft</code> に送り、そこから <code>GET /cases/create</code> へ転送されます。</li>
       </ul></div>
       <p>1つ目のリンクは、事件の一覧のいちばん上にある横いっぱいの大きなボタンです。事件がまだ1つもない人には、代わりに絵と一言と「最初の事件を作ってみよう」のボタンだけの画面を出します。</p>
       <div class="code"><div class="file">src/resources/views/cases/index.blade.php</div><pre><code>@php($w = config('suiri.case_list'))
@@ -800,7 +800,7 @@ $cases = self::withCounts($user-&gt;caseFiles())
         <li><code>$user-&gt;caseFiles()</code> から始めるので、<b>この人の事件だけ</b>が並びます（<code>where user_id = この人</code> が必ず付く）。</li>
         <li><code>latest('updated_at')</code>：最近さわった順。手がかりや見立てを足すと、用事係が事件の <code>touch()</code>（更新日時だけを今にする）を呼ぶので、上に来ます（<a href="#s5">5章</a>）。</li>
         <li><code>paginate(20)</code>：20件ずつのページに分けます。<code>withQueryString()</code> で、ページ送りのリンクにも <code>?status=</code> などを引き継ぎます。</li>
-        <li><code>withCounts</code>：1件ごとに、手がかり・見立て・答え合わせ待ち・確かめる日が来た・答え合わせ済みの予想の数を、SQL の数える命令でまとめて数えます（今日の画面でも使う）。</li>
+        <li><code>withCounts</code>：1件ごとに、手がかり・見立て・答え合わせ待ち・確かめる日が来た・答え合わせ済みの予想の数を、SQL の数える命令でまとめて数えます（きょうの画面でも使う）。</li>
       </ul>
       <p>画面では、状態ごとの件数つきのつまみ（<code>&lt;x-case.list-filter&gt;</code>。捜査ファイルの引き出しの形）の下に、1件ずつ <code>&lt;x-case.summary&gt;</code> を並べます。1件には「事件 No.12」・なぞと、段ごとの進み具合の小さな丸（なぞ → 見たこと → どうして？ → もしそうなら → 答え合わせ）、「次は『どうして？』」の一言が出ます。丸は、さっき数えた数から決めます。</p>
       <div class="code"><div class="file">src/resources/views/components/case/summary.blade.php</div><pre><code>{{-- 段ごとに「済んだか」を決める（なぞはいつも済み。予想は答え合わせ待ちか済みが1つでもあれば済み） --}}

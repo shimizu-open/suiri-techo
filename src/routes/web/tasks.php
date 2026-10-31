@@ -8,8 +8,9 @@ use Illuminate\Support\Facades\Route;
 
 /*
 | タスク（機能：Tasks）。ログインして同意した人だけ。住所とルート名は docs/design/basic-design.md の 2-3。
-| - 一覧（?view=today|upcoming|someday|done）・くわしく作る画面・作る・直す画面・直す・消す
-| - すばやく足す欄の「くわしく」（POST /tasks/draft）：入れた題名を持って、くわしく作る画面へ移るだけ（まだ作らない）
+| - 前の一覧（GET /tasks?view=…）は、きょうの画面（/today?open=upcoming|someday|done）へ移すだけ（一覧はきょうの画面にまとめた）
+| - くわしく作る画面・作る・直す画面・直す・消す（保存したあとは、きょうの画面のそのタスクが見える枠へ戻す）
+| - きょうの画面の1行で足す欄の「くわしく」（POST /tasks/draft）：入れた題名・期日を持って、くわしく作る画面へ移るだけ（まだ作らない）
 | - 完了（POST /tasks/{task}/done。かかった時間も一緒に送れる）・未完了に戻す（DELETE /tasks/{task}/done）
 | 他人のタスクは、Policy（持ち主だけ）で見る・直す・消すことができない
 */

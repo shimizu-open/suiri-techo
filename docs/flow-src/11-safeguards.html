@@ -214,11 +214,14 @@ public function handle(CaseFile $case, string $kind, string $body): Clue
     <li class="step">
       <span class="who db">データベース</span>
       <h4>一覧はいつも「この人の記録」から始める</h4>
-      <p>一つひとつの記録は Policy で守れますが、一覧（タスクの一覧・事件の一覧・ノーベリ帳など）は穴がないので、<code>-&gt;can()</code> では守れません。そこで一覧を組み立てる係（Query）は、必ず <code>$user-&gt;tasks()</code> のように<b>ログイン中の人から</b>たどって始めます。</p>
-      <div class="code"><div class="file">src/app/Queries/Tasks/TaskListQuery.php</div><pre><code>/** その種類の一覧のタスクを、並べる順に返す */
-public function list(User $user, string $view, string $today): Collection
+      <p>一つひとつの記録は Policy で守れますが、一覧（きょうの画面のタスクの枠・事件の一覧・ノーベリ帳など）は穴がないので、<code>-&gt;can()</code> では守れません。そこで一覧を組み立てる係（Query）は、必ず <code>$user-&gt;tasks()</code> のように<b>ログイン中の人から</b>たどって始めます。</p>
+      <div class="code"><div class="file">src/app/Queries/Tasks/TaskListQuery.php</div><pre><code>public function forToday(User $user, string $today): array
 {
-    $tasks = $user-&gt;tasks();</code></pre></div>
+    // …（省略）…
+    $overdue = $this-&gt;byDate($user-&gt;tasks()-&gt;open()-&gt;where('due_on', '&lt;', $today))-&gt;get();
+    $upcoming = $this-&gt;byDate($user-&gt;tasks()-&gt;open()-&gt;where('due_on', '&gt;=', $tomorrow))-&gt;get();
+    $someday = $user-&gt;tasks()-&gt;open()-&gt;whereNull('due_on')-&gt;orderBy('id')-&gt;get();
+    $done = $user-&gt;tasks()-&gt;done()-&gt;where('done_at', '&gt;=', $doneFrom)</code></pre></div>
       <div class="code"><div class="file">src/app/Models/User.php</div><pre><code>/** この人のタスク */
 public function tasks(): HasMany
 {
@@ -235,7 +238,7 @@ public function tasks(): HasMany
         $query-&gt;whereNotNull($this-&gt;foreignKey);
     }
 }</code></pre></div>
-      <p>だから、どんな条件をあとから足しても、表に送られる SQL は <code>select * from tasks where user_id = ? and user_id is not null and …</code> になり、他人の行が混ざることはありません。今日の画面・事件の一覧・ノーベリ帳・屋根裏の棚・週のふりかえりの係も、すべて <code>$user-&gt;caseFiles()</code>・<code>$user-&gt;predictions()</code> などから始めています（テスト <code>test_lists_never_show_other_peoples_cases</code>）。</p>
+      <p>だから、どんな条件をあとから足しても、表に送られる SQL は <code>select * from tasks where user_id = ? and user_id is not null and …</code> になり、他人の行が混ざることはありません。きょうの画面・事件の一覧・ノーベリ帳・屋根裏の棚・週のふりかえりの係も、すべて <code>$user-&gt;caseFiles()</code>・<code>$user-&gt;predictions()</code> などから始めています（テスト <code>test_lists_never_show_other_peoples_cases</code>）。</p>
     </li>
 
     <li class="step">

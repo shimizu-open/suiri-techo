@@ -31,7 +31,7 @@ class TaskOwnershipTest extends TestCase
         $this->assertTrue($doneTask->refresh()->isDone());
     }
 
-    /** 一覧と今日の画面には、自分のタスクだけが出て、他人のタスクは出ないことを確かめる */
+    /** きょうの画面（前の一覧をまとめた所）には、自分のタスクだけが出て、他人のタスクは出ないことを確かめる */
     public function test_lists_show_only_my_tasks(): void
     {
         $me = User::factory()->create();
@@ -39,9 +39,9 @@ class TaskOwnershipTest extends TestCase
         Task::factory()->create(['title' => '人のタスク']);
         Task::factory()->someday()->create(['title' => '人のいつか']);
 
-        $this->actingAs($me)->get(route('tasks.index'))->assertOk()->assertSee('自分のタスク')->assertDontSee('人のタスク');
-        $this->get(route('tasks.index', ['view' => 'someday']))->assertOk()->assertDontSee('人のいつか');
-        $this->get(route('today'))->assertOk()->assertSee('自分のタスク')->assertDontSee('人のタスク');
+        $this->actingAs($me)->get(route('today', ['open' => 'someday']))->assertOk()
+            ->assertSee('自分のタスク')->assertDontSee('人のタスク')->assertDontSee('人のいつか')
+            ->assertViewHas('someday', fn ($tasks) => $tasks->isEmpty());
     }
 
     /** 他人の済んだタスクを、さそう枠の id として渡しても出ないことを確かめる */
@@ -50,6 +50,6 @@ class TaskOwnershipTest extends TestCase
         $other = Task::factory()->done()->create(['title' => '人の済んだタスク']);
 
         $this->actingAs(User::factory()->create())->withSession(['task_done' => $other->id])
-            ->get(route('tasks.index'))->assertOk()->assertDontSee('人の済んだタスク');
+            ->get(route('today'))->assertOk()->assertDontSee('人の済んだタスク')->assertViewHas('justDone', null);
     }
 }

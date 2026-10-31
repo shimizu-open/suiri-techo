@@ -419,7 +419,7 @@ $table-&gt;timestamps(); // created_at が「書いた日時」</code></pre></di
     <li class="step">
       <span class="who server">サーバー</span>
       <h4>確かめるタスクを作る（<code>kind = verify</code>）</h4>
-      <p>同じトランザクションの中で、続けてタスクを1つ作ります。予想を「確かめる日にやること」として、ふだんのタスクの一覧と今日の画面に出すためです。</p>
+      <p>同じトランザクションの中で、続けてタスクを1つ作ります。予想を「確かめる日にやること」として、ふだんのやることと同じようにきょうの画面に出すためです。</p>
       <div class="code"><div class="file">src/app/Actions/Cases/MakePrediction.php</div><pre><code>$hypothesis-&gt;user-&gt;tasks()-&gt;create([
     'title' =&gt; Str::limit(
         str_replace(':statement', $prediction-&gt;statement, config('suiri.cases.verify_task_title')),
@@ -518,7 +518,7 @@ $url = route('cases.show', array_filter(['case' =&gt; $case, 'turn' =&gt; $turn,
         <li>下に小さく「先に答え合わせをする」（答え合わせの画面へ。<a href="#s7">7章</a>）と「取り下げる」（あとの手順）。</li>
         <li>文と確かさを直すボタンは、どこにも置いていません。</li>
       </ul>
-      <p>進み具合の「もしそうなら 1つ」を開くと、「10月31日に確かめる：（予想の文）」が並びます。同時に、タスクの一覧と今日の画面には「確かめる：…」のタスクが、確かめる日に出るようになります（<a href="#s2">2章</a>・<a href="#s3">3章</a>）。</p>
+      <p>進み具合の「もしそうなら 1つ」を開くと、「10月31日に確かめる：（予想の文）」が並びます。同時に、きょうの画面には「確かめる：…」のタスクが出るようになります。確かめる日の前は「これから」の枠のその日の見出しの下に（右に「答え合わせ」のボタンつき）、確かめる日が来ると、いちばん上の「答え合わせしよう」のカードに予想が出ます（同じ予想を2か所に出さないよう、そのタスクは並びからは外す。<a href="#s2">2章</a>・<a href="#s3">3章</a>）。</p>
       <figure class="shot"><img data-img="screen-case-step-wait.png" alt="確かめる日を待っているときの事件の画面。緑のカード「11月5日（木）に確かめよう」に、カレンダーの紙の形の日付と予想の文・自信、「先に答え合わせをする」「取り下げる」"><figcaption>確かめる日を待っているとき（仕事の場面の事件。スマホ）</figcaption></figure>
     </li>
 
