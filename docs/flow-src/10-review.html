@@ -1,0 +1,705 @@
+<section class="story" id="s10">
+  <h2><span class="no">10</span>週のふりかえり・事件を閉じる・ノーベリ帳と屋根裏の棚</h2>
+  <p class="userstory">手帳を続けている人として、この1週間で何を記録し、どれだけ考えを変え、確かさの付け方が現実と合っていたかを知りたい。だから、週に1回「ふりかえり」を開き、週の問いに1問ずつ答える。事件が片づいたら閉じて、わかった決まりを屋根裏の棚にしまう。</p>
+  <p class="summary">この章で追う道筋：<code>GET /review/{week?}</code> → <code>ReviewController::show</code> → <code>ReviewWeek</code>（週を決める）→ <code>WeekReviewQuery</code> → <code>WeeklyStats</code>（＋<code>EstimateCheck</code>）・<code>Calibration</code>・<code>WeekCasesQuery</code> → 画面 <code>review/show.blade.php</code>（<code>week-summary</code>・<code>reflection-steps</code>・<code>calibration-chart</code> など）／ <code>PUT /review/{week}</code> → <code>UpdateWeeklyReflectionRequest</code> → <code>SaveWeeklyReflection</code> → <code>weekly_reflections</code> → 次の問い ／ 事件の画面のカード <code>case-step/close-card</code> → <code>POST /cases/{case}/close</code> → <code>CloseCase</code> → <code>case-step/closed-card</code>（「つまり、何がわかった？」）→ <code>POST /attic</code> ／ <code>DELETE /cases/{case}/close</code> → <code>ReopenCase</code> ／ <code>GET /norbury</code> → <code>NorburyQuery</code> ／ <code>/attic</code> → <code>AtticNoteController</code> → <code>SaveAtticNote</code></p>
+
+  <h3>週のふりかえりを開く</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>下のナビの「ふりかえり」を押す</h4>
+      <p>どの画面にもある下のナビ（パソコンでは横のナビ）の項目は、設定ファイルに並べてあります。</p>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>['route' =&gt; 'review.show', 'match' =&gt; ['review.*', 'norbury.*', 'attic.*'], 'label' =&gt; 'ふりかえり', 'icon' =&gt; 'loop'],</code></pre></div>
+      <p><code>route</code> はリンク先のルート名、<code>match</code> は「いまの画面」に印を付けるかの判定に使うルート名です。ふりかえり・ノーベリ帳・屋根裏の棚の3つの画面のどれにいても「ふりかえり」が光ります。<code>route('review.show')</code> は、住所の <code>{week?}</code> を省いた <code>/review</code> になります。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>送る：<code>GET /review</code>（クッキーの番号札だけ）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>住所の表：<code>{week?}</code> は省いてよい穴、形は <code>where</code> で決める</h4>
+      <div class="code"><div class="file">src/routes/web/review.php</div><pre><code>Route::middleware(['auth', 'agreed'])-&gt;group(function () {
+    // 週のふりかえり。{week} は週の月曜日の 'Y-m-d'（省略は今週）
+    Route::get('/review/{week?}', [ReviewController::class, 'show'])-&gt;where('week', '\d{4}-\d{2}-\d{2}')-&gt;name('review.show');
+    Route::put('/review/{week}', [ReviewController::class, 'update'])-&gt;where('week', '\d{4}-\d{2}-\d{2}')
+        -&gt;middleware('throttle:writes')-&gt;name('review.update');</code></pre></div>
+      <ul>
+        <li><code>{week?}</code>：<code>?</code> の付いた穴は<dfn>省略できるルートパラメータ</dfn>です。<code>/review</code> でも <code>/review/2026-10-19</code> でもこの行に当たります。省いたときは、受付係の引数 <code>?string $week = null</code> に <code>null</code> が入ります。</li>
+        <li><code>-&gt;where('week', '\d{4}-\d{2}-\d{2}')</code>：穴の中身の形の決まり（<dfn>正規表現</dfn>：文字の並びの型）です。「数字4つ - 数字2つ - 数字2つ」。<code>/review/26-10-26</code> のように形が違えば、この行には当たらず、ほかに当たる行もないので 404（見つからない）になります。</li>
+      </ul>
+      <p>見張り役の順は <code>EncryptCookies → AddQueuedCookiesToResponse → StartSession → ShareErrorsFromSession → PreventRequestForgery → Authenticate → SubstituteBindings → EnsureAgreed</code>。見るだけの GET なので回数制限はなく、穴の <code>{week}</code> はモデルではないので、<code>SubstituteBindings</code> は文字のまま受付係へ渡します。<code>-&gt;can()</code> もありません。ふりかえりは、いつも「ログイン中の本人の記録」だけを数えるからです（あとで見る <code>$user-&gt;caseFiles()</code> のような、本人から始める読み方で守ります）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付係 <code>ReviewController::show</code>：週を決め、月曜日でなければ住所をそろえ直す</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Review/ReviewController.php</div><pre><code>/** 週のふりかえりの画面を返す。月曜日でない日付は、その週の月曜日の住所へ送り直す。ない日付・未来の週は 404 */
+public function show(Request $request, WeekReviewQuery $query, ?string $week = null): View|RedirectResponse
+{
+    $current = ReviewWeek::fromParam($week) ?? abort(404);
+    // 住所の日付が月曜日でなければ、その週の月曜日の住所にそろえる（確かさの期間の選択は引き継ぐ）
+    if ($week !== null &amp;&amp; $week !== $current-&gt;param()) {
+        return redirect()-&gt;route('review.show', ['week' =&gt; $current-&gt;param()] + $request-&gt;only('range'));
+    }
+    $range = $request-&gt;query('range') === 'week' ? 'week' : 'all';
+
+    return view('review.show', $query-&gt;for($request-&gt;user(), $current, $range));
+}</code></pre></div>
+      <ol>
+        <li><code>ReviewWeek::fromParam($week)</code> で「週」を作ります。作れなければ（ない日付・未来の週）<code>?? abort(404)</code> で 404 にします。<code>??</code> は「左が <code>null</code> なら右を使う」という書き方です。</li>
+        <li>住所の日付が月曜日でなければ（例 <code>/review/2026-10-29</code>）、その週の月曜日の住所 <code>/review/2026-10-26</code> へ転送します。住所を1つの形にそろえておくと、同じ週が別々の住所で開かれません。<code>?range=week</code> が付いていれば引き継ぎます。</li>
+        <li><code>range</code>：確かさの答え合わせを「これまで全部」（<code>all</code>）で数えるか「この週」（<code>week</code>）で数えるか。決まった2つ以外の値は全部 <code>all</code> にします。</li>
+      </ol>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>「週」の係 <code>ReviewWeek</code>：月曜日の 0 時から、次の月曜日の 0 時の手前まで</h4>
+      <div class="code"><div class="file">src/app/Services/Review/ReviewWeek.php</div><pre><code>public static function fromParam(?string $param): ?self
+{
+    // 省略されたら今週
+    if ($param === null) {
+        return self::current();
+    }
+    // 'Y-m-d' の形でない、または 2月31日のようなない日付なら、週を作らない
+    if (! preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $param, $m) || ! checkdate((int) $m[2], (int) $m[3], (int) $m[1])) {
+        return null;
+    }
+    $week = new self(CarbonImmutable::parse($param)-&gt;startOfWeek(CarbonInterface::MONDAY));
+
+    return $week-&gt;start-&gt;greaterThan(self::current()-&gt;start) ? null : $week;
+}</code></pre></div>
+      <ul>
+        <li>住所の <code>where</code> は形しか見ないので、<code>2026-02-31</code> も通ってきます。<code>checkdate(月, 日, 年)</code> が「本当にある日付か」を確かめ、なければ <code>null</code>（→ 404）。</li>
+        <li><code>CarbonImmutable</code> は日付と時刻を扱う道具（Carbon）の「書き換えられない版」です。<code>startOfWeek(MONDAY)</code> でその日を含む週の月曜日の 0 時にします。</li>
+        <li>その週が今週より先（未来）なら <code>null</code>。まだ来ていない週はふりかえれません。</li>
+      </ul>
+      <p>手元で確かめると、<code>fromParam('2026-10-29')</code> の週は <code>2026-10-26</code>、<code>fromParam('2026-11-02')</code>（今日 2026-10-31 から見て来週）と <code>fromParam('2026-02-31')</code> は <code>null</code> でした。</p>
+      <div class="code"><div class="file">src/app/Services/Review/ReviewWeek.php</div><pre><code>/** 住所に使う形（月曜日の 'Y-m-d'）を返す。weekly_reflections.week_start と同じ形 */
+public function param(): string
+{
+    return $this-&gt;start-&gt;toDateString();
+}
+// …（省略）…
+/** 問い合わせで「この週の中」に絞る：列の値が週の始まり以上、次の月曜日の 0 時より前 */
+public function scope($query, string $column)
+{
+    return $query-&gt;where($column, '&gt;=', $this-&gt;start)-&gt;where($column, '&lt;', $this-&gt;end());
+}</code></pre></div>
+      <p><code>scope</code> は、このあとの集計で何度も使う「この週の中だけに絞る」部品です。終わりを「日曜日の 23:59:59 まで」ではなく「次の月曜日の 0 時より前（<code>&lt;</code>）」にしているので、秒の端数で取りこぼしません。</p>
+      <div class="analogy"><b>たとえると</b>カレンダーの1週間の枠です。どんな日付を言われても、まずその日が入っている枠（月曜始まり）を指さし、その枠の中に書かれた記録だけを数えます。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>まとめ役 <code>WeekReviewQuery::for</code>：画面に渡す値を集める</h4>
+      <div class="code"><div class="file">src/app/Queries/Review/WeekReviewQuery.php</div><pre><code>public function for(User $user, ReviewWeek $week, string $range): array
+{
+    $reflection = $user-&gt;weeklyReflections()-&gt;where('week_start', $week-&gt;param())-&gt;first();
+
+    return [
+        'week' =&gt; $week,
+        'stats' =&gt; $this-&gt;stats-&gt;for($user, $week),
+        'range' =&gt; $range,
+        'calibration' =&gt; $this-&gt;calibration-&gt;for($user, $range === 'week' ? $week : null),
+        'reflection' =&gt; $reflection,
+        'caseOptions' =&gt; $this-&gt;cases-&gt;options($user, $week, $reflection?-&gt;changed_case_file_id),
+        'kid' =&gt; $user-&gt;prefersKidWords(),
+    ];
+}</code></pre></div>
+      <p>受付係を薄く保つための窓口です。中身は3つの係に任せます：週の数字（<code>WeeklyStats</code>）、確かさの答え合わせ（<code>Calibration</code>）、週の問いの事件の選択肢（<code>WeekCasesQuery</code>）。保存済みの週の問い（<code>weekly_reflections</code> のこの週の行）も読みます。<code>$reflection?-&gt;changed_case_file_id</code> の <code>?-&gt;</code> は「<code>$reflection</code> が <code>null</code> なら、エラーにせず <code>null</code> を返す」書き方です。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>weekly_reflections</code>（この人・この週の1行。なければなし）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>週の数字 <code>WeeklyStats::for</code>：記録した事件・見立て2つ以上・答え合わせ・考えを変えた</h4>
+      <div class="code"><div class="file">src/app/Services/Review/WeeklyStats.php</div><pre><code>$cases = $week-&gt;scope($user-&gt;caseFiles(), 'created_at')-&gt;withCount('hypotheses')-&gt;get(['id']);
+$multi = $cases-&gt;filter(fn ($case) =&gt; $case-&gt;hypotheses_count &gt;= 2)-&gt;count();
+$resolved = $this-&gt;resolvedByResult($user, $week);
+
+$stats = [
+    'cases' =&gt; $cases-&gt;count(),
+    'multi_hypothesis' =&gt; ['count' =&gt; $multi, 'total' =&gt; $cases-&gt;count(), 'rate' =&gt; self::percent($multi, $cases-&gt;count())],
+    'resolved' =&gt; ['total' =&gt; array_sum($resolved), 'by_result' =&gt; $resolved],
+    'mind_changes' =&gt; $week-&gt;scope(HypothesisStatusLog::where('user_id', $user-&gt;id), 'created_at')-&gt;count(),
+    'misses' =&gt; $this-&gt;missReasons($user, $week),</code></pre></div>
+      <ul>
+        <li><b>記録した事件</b>：<code>$user-&gt;caseFiles()</code>（この人の事件）を、<code>created_at</code>（作った日時）がこの週の中のものに絞って数えます。</li>
+        <li><b>見立てを2つ以上</b>：<code>withCount('hypotheses')</code> は、事件ごとの見立ての数を <code>hypotheses_count</code> として一緒に数えてくる Laravel の書き方です。2つ以上の事件の割合を出します。相棒の見立ても、消えた見立ても数に入ります。</li>
+        <li><b>答え合わせ</b>：その週に答え合わせした予想を、結果（当たり・外れ・どちらとも言えない・前提が崩れた）ごとに数えます（下の <code>resolvedByResult</code>）。</li>
+        <li><b>考えを変えた</b>：見立ての状態を変えるたびに1行ずつ残る <code>hypothesis_status_logs</code>（<a href="#s5">5章</a>・<a href="#s7">7章</a>）の、その週の行の数です。</li>
+      </ul>
+      <div class="code"><div class="file">src/app/Services/Review/WeeklyStats.php</div><pre><code>/** 割合（％・整数）を返す。分母が 0 なら null（画面では「—」と出し、責める言葉は出さない） */
+public static function percent(int $part, int $total): ?int
+{
+    return $total &gt; 0 ? (int) round($part / $total * 100) : null;
+}
+// …（省略）…
+$counts = $week-&gt;scope($user-&gt;predictions(), 'resolved_at')-&gt;whereNotNull('result')
+    -&gt;selectRaw('result, count(*) as n')-&gt;groupBy('result')-&gt;pluck('n', 'result');
+$byResult = [];
+// 結果の種類を1つずつ取り出し、数がなければ 0 にする
+foreach (PredictionResult::cases() as $result) {
+    $byResult[$result-&gt;value] = (int) ($counts[$result-&gt;value] ?? 0);
+}</code></pre></div>
+      <p><code>groupBy('result')</code> はデータベースに「結果ごとにまとめて数えて」と頼む書き方です（SQL の <code>GROUP BY</code>）。1件もない結果は返ってこないので、<code>PredictionResult::cases()</code>（列挙型の全部の値）で回して 0 を埋めます。こうしておくと、画面は「外れ 0」も迷わず出せます。</p>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>読む：<code>case_files</code>（この人・この週に作った事件）と、事件ごとの <code>hypotheses</code> の数</li>
+        <li>読む：<code>predictions</code>（この人・この週に答え合わせした予想の、結果ごと・見落としごとの数）</li>
+        <li>読む：<code>hypothesis_status_logs</code>（この人・この週の行の数）</li>
+        <li>読む：<code>attic_notes</code>（この人・この週に足した知識の数と、新しいものから3件）</li>
+      </ul></div>
+      <div class="point"><b>ここが大事</b>どの数え方も <code>$user-&gt;caseFiles()</code>・<code>$user-&gt;predictions()</code>・<code>where('user_id', $user-&gt;id)</code> のように<b>本人から始めます</b>。他人の記録が数に混ざることはありません（テスト <code>test_only_own_records_are_shown</code>）。また、続けた日数・点数・順位は数えません（設計の決まり。記録のない週も、責めない一言「今週はひと休みだね」「休んでも、何も減らないよ。」を出すだけ）。</div>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>見積もりの答え合わせ <code>EstimateCheck</code>：予想した時間とかかった時間のずれ</h4>
+      <div class="code"><div class="file">src/app/Services/Review/EstimateCheck.php</div><pre><code>public function for(User $user, ReviewWeek $week): array
+{
+    $tasks = $week-&gt;scope($user-&gt;tasks(), 'done_at')
+        -&gt;whereNotNull('duration_minutes')-&gt;whereNotNull('actual_minutes')
+        -&gt;get(['duration_minutes', 'actual_minutes']);
+
+    $count = $tasks-&gt;count();
+    $longer = $tasks-&gt;filter(fn ($task) =&gt; $task-&gt;actual_minutes &gt; $task-&gt;duration_minutes)-&gt;count();
+    $diffs = $tasks-&gt;map(fn ($task) =&gt; $task-&gt;actual_minutes - $task-&gt;duration_minutes);
+
+    return [
+        'count' =&gt; $count,
+        'longer' =&gt; $longer,
+        'longer_rate' =&gt; WeeklyStats::percent($longer, $count),
+        'average_diff' =&gt; $count &gt; 0 ? (int) round($diffs-&gt;avg()) : null,
+    ];
+}</code></pre></div>
+      <p>タスクを作るときに入れた予想時間（<code>duration_minutes</code>）と、済ませたときに入れたかかった時間（<code>actual_minutes</code>。<a href="#s3">3章</a>）の両方があり、この週に済ませた（<code>done_at</code>）タスクだけを数えます。「予想より長かった割合」と「平均のずれ（かかった − 予想。長ければプラス）」を出します。見積もりも「予想して、確かめる」練習の1つだからです。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>tasks</code>（この人・この週に済ませ、2つの時間が入っているもの）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>確かさの答え合わせ <code>Calibration</code>：確かさ 70％ と付けた予想は、本当に 7 割当たったか</h4>
+      <p><dfn>キャリブレーション</dfn>（確かさの答え合わせ）は、「自分が付けた確かさ」と「実際に当たった割合」がどのくらい合っているかを見ることです。予想を立てるとき、確かさを 50〜95％ から選びました（<a href="#s6">6章</a>）。確かさ 70％ の予想を10個立てて7個当たっていれば、確かさの付け方が現実と合っています。</p>
+      <div class="code"><div class="file">src/app/Services/Review/Calibration.php</div><pre><code>$query = $user-&gt;predictions()
+    -&gt;whereIn('result', [PredictionResult::Hit-&gt;value, PredictionResult::Miss-&gt;value])
+    -&gt;whereNull('withdrawn_at');
+// 週が渡されたら、その週に答え合わせした予想に絞る
+if ($week !== null) {
+    $week-&gt;scope($query, 'resolved_at');
+}
+
+$rows = $query-&gt;get(['confidence', 'result'])
+    -&gt;map(fn ($p) =&gt; ['confidence' =&gt; (int) $p-&gt;confidence, 'hit' =&gt; $p-&gt;result === PredictionResult::Hit])
+    -&gt;all();
+
+return $this-&gt;summarize($rows);</code></pre></div>
+      <p>数えるのは「当たり」か「外れ」になった予想だけです。「どちらとも言えない」「前提が崩れた」は、当たったとも外れたとも言えないので入れません。取り下げた予想（<code>withdrawn_at</code> がある）も入れません。データベースから取るのは確かさと結果の2つの列だけで、組にしてから <code>summarize</code> で区間に分けます。</p>
+      <div class="code"><div class="file">src/app/Services/Review/Calibration.php</div><pre><code>foreach (config('suiri.review.calibration_buckets') as [$from, $to]) {
+    $inside = array_values(array_filter($rows, fn ($r) =&gt; $r['confidence'] &gt;= $from &amp;&amp; $r['confidence'] &lt;= $to));
+    $count = count($inside);
+    $hits = count(array_filter($inside, fn ($r) =&gt; $r['hit']));
+    $buckets[] = [
+        'label' =&gt; "{$from}〜{$to}％",
+        'from' =&gt; $from,
+        'to' =&gt; $to,
+        'count' =&gt; $count,
+        'hits' =&gt; $hits,
+        'enough' =&gt; $count &gt;= $min,
+        // 件数が足りれば当たった割合（％）、足りなければ「まだ判断できない」の印として null
+        'rate' =&gt; $count &gt;= $min ? (int) round($hits / $count * 100) : null,
+        // 図の横の位置に使う確かさの平均（1件もなければ区間のまん中）
+        'mean' =&gt; $count &gt; 0 ? array_sum(array_column($inside, 'confidence')) / $count : ($from + $to) / 2,
+    ];
+}</code></pre></div>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>// ふりかえり：確かさの区間の件数がこれより少なければ「まだ判断できない」と出す
+'calibration_min_count' =&gt; 5,
+// …（省略）…
+'calibration_buckets' =&gt; [[50, 55], [60, 65], [70, 75], [80, 85], [90, 95]],</code></pre></div>
+      <ul>
+        <li>区間は 50〜55・60〜65・70〜75・80〜85・90〜95 の5つ（確かさは5刻みなので、2つずつまとめる）。</li>
+        <li>区間の件数が 5 件より少なければ、割合を出さずに「まだ判断できない」（<code>rate</code> が <code>null</code>）。2件中2件当たって「100％」と出すと、たまたまを実力と取り違えるからです。</li>
+        <li><code>mean</code>（その区間の確かさの平均）は、図で点を横のどこに打つかに使います。</li>
+      </ul>
+      <p>手元で <code>summarize</code> に「確かさ 70・75 の予想5件（4件当たり）と、90 の予想1件（外れ）」を渡すと、70〜75％ の区間は <code>count 5・hits 4・rate 80・mean 72</code>、90〜95％ の区間は <code>count 1・enough false・rate null</code> でした。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>predictions</code> の <code>confidence</code> と <code>result</code>（この人の、当たり・外れで、取り下げていないもの。「この週」ならその週に答え合わせしたものだけ）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>週の問いの選択肢 <code>WeekCasesQuery</code>：この週に動いた自分の事件</h4>
+      <div class="code"><div class="file">src/app/Queries/Review/WeekCasesQuery.php</div><pre><code>return $user-&gt;caseFiles()
+    -&gt;where(function ($query) use ($week, $selectedId) {
+        $week-&gt;scope($query, 'created_at')
+            -&gt;orWhereHas('hypotheses.statusLogs', fn ($logs) =&gt; $week-&gt;scope($logs, 'hypothesis_status_logs.created_at'))
+            -&gt;orWhereHas('predictions', fn ($predictions) =&gt; $week-&gt;scope($predictions, 'resolved_at'));
+        // 保存済みの事件があれば、それも選択肢に入れる
+        if ($selectedId !== null) {
+            $query-&gt;orWhere('id', $selectedId);
+        }
+    })
+    -&gt;latest('updated_at')-&gt;latest('id')
+    -&gt;limit(config('suiri.review.case_options'))
+    -&gt;pluck('title', 'id')
+    -&gt;all();</code></pre></div>
+      <p>「今週いちばん考えが変わった事件は？」の選択肢です。この人の事件のうち、この週に「作った」か「見立ての状態を変えた」（<code>orWhereHas</code>：つながった表にこの条件の行があるもの）か「予想の答え合わせをした」ものを、新しい順に30件まで。前に選んで保存した事件は、条件に合わなくなっても残します。全体を <code>where(function …)</code> で囲んでいるのは、「この人の事件で、かつ（A または B または C）」の形にするためです。囲まないと「この人の事件で A、または B、または C」になり、他人の事件が混ざってしまいます。</p>
+      <p><code>pluck('title', 'id')</code> で「事件の id =&gt; なぞ」の配列にして、選択の部品にそのまま渡します。</p>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>画面 <code>review/show.blade.php</code>：切り替え → 週の帯 → 今週のまとめ → 週の問い（1問ずつ）→ 確かさの答え合わせ</h4>
+      <div class="code"><div class="file">src/resources/views/review/show.blade.php</div><pre><code>&lt;x-layouts.app :title="\App\Support\Label::word('review')"&gt;
+  &lt;x-review.tabs current="review" :kid="$kid" /&gt;
+  &lt;x-review.week-nav :week="$week" :range="$range" /&gt;
+  &lt;x-review.week-summary :stats="$stats" :week="$week" :kid="$kid" /&gt;
+  &lt;x-review.reflection-steps :week="$week" :reflection="$reflection" :case-options="$caseOptions" class="mt-5" /&gt;
+  &lt;x-review.calibration :calibration="$calibration" :week="$week" :range="$range" :kid="$kid" class="mt-6" /&gt;
+&lt;/x-layouts.app&gt;</code></pre></div>
+      <p>画面そのものは部品を5つ並べるだけです。上から、ふりかえり・ノーベリ帳・屋根裏の棚の切り替え（<code>tabs</code>）、前の週・次の週の帯（<code>week-nav</code>）、今週のまとめ（<code>week-summary</code>）、週の問い（<code>reflection-steps</code>）、確かさの答え合わせ（<code>calibration</code>）。この画面で<b>いまやること</b>は週の問いに答えることなので、まとめは1枚に詰め、問いのカードと主なボタンがスマホの最初の画面に入るようにしています（ほかの画面と同じ「1画面に、いまやることは1つ」の決まり）。</p>
+      <div class="code"><div class="file">src/resources/views/components/review/week-summary.blade.php</div><pre><code>@php($counts = ['mind_changes' =&gt; $stats['mind_changes'], 'resolved' =&gt; $stats['resolved']['total'], 'cases' =&gt; $stats['cases'], 'attic' =&gt; $stats['attic']['count'], 'estimates' =&gt; $stats['estimates']['count']])
+@php($key = collect($counts)-&gt;search(fn (int $n): bool =&gt; $n &gt; 0))
+@php($line = $key === false ? config('suiri.review.empty_week') : config('suiri.review.headline.'.$key))
+{{-- …（省略）… --}}
+  {{-- 記録のある週だけ、大きな数3つと、たたんだ内訳を出す（記録のない週に 0 を並べない） --}}
+  @if ($key !== false)
+    &lt;x-review.week-details :stats="$stats" :kid="$kid" class="mt-3"&gt;</code></pre></div>
+      <ul>
+        <li><b>大きな一言</b>：5つの数を「考えを変えた → 確かめた予想 → 書いた事件 → 棚の決まり → 見積もり」の順に見て、1 以上の最初のものの一言を出します（例「今週は 3回、考えを変えたね」。文は <code>config('suiri.review.headline')</code>）。<code>collect(…)-&gt;search(…)</code> は「条件に合う最初のキーを返す。なければ <code>false</code>」です。全部 0 なら責めない一言（<code>empty_week</code>）。</li>
+        <li><b>大きな数3つ</b>（書いた事件・確かめた予想・考えを変えた）は、記録のある週だけ出します。0 を並べて責めているように見せないためです。</li>
+        <li><b>内訳</b>（見立てを2つ以上の割合・結果ごとの数・外れの見落とし・棚に増えた決まり・見積もりの答え合わせ）は <code>week-details</code> の中にたたんであり、3つの数の列を押すと開きます（JavaScript を使わない <code>&lt;details&gt;</code> の開け閉め）。割合が <code>null</code> のところは「—」と出ます。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-review.png" alt="週のふりかえりの画面。切り替え、週の帯、大きな一言と3つの数、週の問いのカードが縦に並ぶ"><figcaption>週のふりかえり（スマホ）</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>週の帯 <code>week-nav</code>：前の週へ・次の週へ（今週より先へは進めない）</h4>
+      <div class="code"><div class="file">src/resources/views/components/review/week-nav.blade.php</div><pre><code>@php($keep = $range === 'week' ? ['range' =&gt; 'week'] : [])
+{{-- …（省略）… --}}
+  &lt;x-ui.button variant="ghost" class="justify-self-start px-2" :href="route('review.show', ['week' =&gt; $week-&gt;previous()-&gt;param()] + $keep)"&gt;‹ 前の週&lt;/x-ui.button&gt;
+{{-- …（省略）… --}}
+  {{-- 次の週があれば（今週でなければ）進むリンク、なければ何も置かない（期間はまん中のまま） --}}
+  @if ($week-&gt;next())
+    &lt;x-ui.button variant="ghost" class="justify-self-end px-2" :href="route('review.show', ['week' =&gt; $week-&gt;next()-&gt;param()] + $keep)"&gt;次の週 ›&lt;/x-ui.button&gt;
+  @endif</code></pre></div>
+      <p><code>ReviewWeek::next()</code> は今週なら <code>null</code> を返すので、今週を見ているときは「次の週」のリンクが出ません（住所を直接打っても、未来の週は上の <code>fromParam</code> で 404）。まん中の期間の言葉は <code>ReviewWeek::label()</code> が「10月26日〜11月1日」のように作り（今年でなければ年も付く）、今週なら「今週」の札を添えます。<code>$keep</code> は、確かさの期間を「この週」にしていたら、週を移っても <code>?range=week</code> を引き継ぐためのものです。</p>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>確かさの図 <code>calibration-chart</code>：外の部品を使わず、SVG を Blade で描く</h4>
+      <p><dfn>SVG</dfn> は、線や丸を「座標と形」の文字で書く絵の形式です。グラフの外部ライブラリは読み込まない決まりなので、Blade が数字から SVG の文字を組み立てます。</p>
+      <div class="code"><div class="file">src/resources/views/components/review/calibration-chart.blade.php</div><pre><code>@php($L = 40) @php($R = 308) @php($T = 12) @php($B = 168)
+@php($sx = fn (float $c): float =&gt; round($L + ($c - 50) / 50 * ($R - $L), 1))
+@php($sy = fn (float $r): float =&gt; round($B - $r / 100 * ($B - $T), 1))
+{{-- …（省略）… --}}
+&lt;line x1="{{ $sx(50) }}" y1="{{ $sy(50) }}" x2="{{ $sx(100) }}" y2="{{ $sy(100) }}" class="stroke-muted" stroke-width="1.5" stroke-dasharray="4 4" /&gt;
+{{-- …（省略）… --}}
+{{-- 件数が足りた区間だけ点を打つ（見えない大きめの丸で、指でも中身を出しやすくする） --}}
+@if ($b['enough'])
+  &lt;g&gt;
+    &lt;title&gt;確かさ {{ $b['label'] }}：{{ $b['count'] }}件中 {{ $b['hits'] }}件が当たり（{{ $b['rate'] }}％）&lt;/title&gt;
+    &lt;circle cx="{{ $sx($b['mean']) }}" cy="{{ $sy($b['rate']) }}" r="14" fill="transparent" /&gt;
+    &lt;circle cx="{{ $sx($b['mean']) }}" cy="{{ $sy($b['rate']) }}" r="5" class="fill-ink stroke-sheet" stroke-width="2" /&gt;
+  &lt;/g&gt;
+@endif</code></pre></div>
+      <ul>
+        <li><code>$sx</code>：確かさ（50〜100）を、図の横の位置（左端 40 〜 右端 308）に変える関数。<code>$sy</code>：当たった割合（0〜100）を、縦の位置（下 168 〜 上 12）に変える関数。SVG は下へ行くほど数が大きいので、引き算で上下を逆にしています。</li>
+        <li>点線は (50％, 50％) から (100％, 100％) への「確かさ＝当たった割合」のぴったりの線。点がこの線に近いほど、確かさの付け方が現実と合っています。</li>
+        <li>点は件数が足りた区間（<code>enough</code>）だけに打ちます。横の位置は区間のまん中ではなく、その区間の確かさの平均（<code>mean</code>）です。</li>
+      </ul>
+      <p>図の横の表（<code>components/review/calibration.blade.php</code>）にも同じ数字を出し、足りない区間は「まだ判断できない」と書きます。右上の「これまで全部／この週」は <code>?range=week</code> を付ける・外すだけのリンクです。</p>
+      <figure class="shot"><img data-img="screen-flow-calibration.png" alt="確かさの答え合わせの枠。点線のぴったりの線と、区間ごとの件数の表"><figcaption>確かさの答え合わせ。どの区間もまだ 5 件に届かないので点は打たれず、表は「まだ判断できない」</figcaption></figure>
+    </li>
+  </ol>
+
+  <h3>週の問いを保存する</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>週の問いのカード <code>reflection-steps</code>：いまの問いだけを出し、答えて「次へ」を押す（<code>PUT</code>）</h4>
+      <p>問いは3つ：①「今週いちばん考えが変わった事件は？」（選ぶ）→ ②「つまり、何がわかった？」（ほかでも通じる決まりの形で）→ ③「ほかに当てはまりそうなことは？」（その決まりが起きそうな、ほかの場面）。文は設定ファイル <code>config('suiri.review.questions')</code> にあり、補足は「どうだった？」ではなく「なぜそうなった？」と説明させる形です。3つを一度に並べず、<b>いまの問い1つだけ</b>を大きなカード（<code>&lt;x-ui.step-card&gt;</code>：いまやることのカード）で出します。</p>
+      <div class="code"><div class="file">src/resources/views/components/review/reflection-steps.blade.php</div><pre><code>@php($done = ['changed_case' =&gt; $reflection !== null, 'abstraction' =&gt; filled($values['abstraction']), 'concrete' =&gt; filled($values['concrete'])])
+@php($errored = collect($fields)-&gt;search(fn (string $field): bool =&gt; $errors-&gt;has($field)))
+@php($asked = in_array(request('q'), [...$keys, 'done'], true) ? request('q') : null)
+@php($current = $errored ?: ($asked ?? (array_search(false, $done, true) ?: 'done')))</code></pre></div>
+      <p>どの問いを出すか（<code>$current</code>）は、上から順に決めます。</p>
+      <ol>
+        <li>送り直しでエラーが出た問いがあれば、それ（<code>$errored</code>）。</li>
+        <li>なければ、住所の <code>?q=</code> で選んだ問い（<code>changed_case</code>・<code>abstraction</code>・<code>concrete</code>・<code>done</code> のどれかだけ。答えの一覧の「直す」がこれを付ける）。</li>
+        <li>なければ、まだ済んでいない最初の問い（<code>array_search(false, $done, true)</code>）。全部済んでいれば <code>done</code>（書いた答えの一覧と「直す」のリンクを出す）。①は選ばずに進んでもよいので、その週の行があれば済みとみなします。</li>
+      </ol>
+      <div class="code"><div class="file">src/resources/views/components/review/reflection-steps.blade.php</div><pre><code>&lt;form method="POST" action="{{ route('review.update', $week-&gt;param()) }}"&gt;
+  @csrf
+  @method('PUT')
+  {{-- いま答えない問いを1つずつ取り出し、保存済みの値を hidden で送り直す（上書きで消えないように） --}}
+  @foreach ($fields as $key =&gt; $field)
+    {{-- いまの問いの欄はカードの中に出すので、hidden にしない --}}
+    @if ($key !== $current)
+      &lt;input type="hidden" name="{{ $field }}" value="{{ old($field, $values[$key]) }}"&gt;
+    @endif
+  @endforeach
+  &lt;x-ui.step-card :step="$n" :total="count($keys)" icon="sparkle" :title="$thisWeek($q[$current]['label'])" :hint="$q[$current]['hint']"&gt;
+{{-- …（省略）… --}}
+    &lt;x-slot:later&gt;
+      &lt;a href="{{ $link($keys[$n] ?? 'done') }}"&gt;{{ $q['skip'] }}&lt;/a&gt;
+    &lt;/x-slot:later&gt;</code></pre></div>
+      <ul>
+        <li><code>@method('PUT')</code> は「この週の行を、送った中身で置き換えて」という頼みに見せる隠し欄です。保存の用事（下で見る <code>SaveWeeklyReflection</code>）は3つの欄をまとめて書き換える作りなので、<b>いま答えない2つの問いの値も hidden（見えない欄）で送り直します</b>。こうしないと、②に答えたときに①の答えが空で上書きされてしまいます。</li>
+        <li>カードのつまみには「ステップ 1 / 3」のような数（<code>:step</code>・<code>:total</code>）が出ます。主なボタンは書く欄のすぐ下で、①②は「次へ」、最後の③は「書けた！」。</li>
+        <li>カードの下の小さなリンク「この問いはとばす」は、保存せずに <code>?q=</code> で次の問いへ進むだけのリンクです。</li>
+        <li>前の週を開いているときは、見出しの「今週」を「この週」に読み替えます（<code>$thisWeek</code>）。書いた問いは、カードの下に小さくたたんで出します（<code>&lt;x-ui.done-summary&gt;</code>）。</li>
+      </ul>
+      <div class="analogy"><b>たとえると</b>面接の質問カードです。机には1枚だけ置き、答えたら次の1枚をめくります。前のカードの答えは、手元の控えにしまってあるので消えません。</div>
+      <div class="data"><b>このとき動くデータ</b><ul><li>送る：<code>POST /review/2026-10-26</code>（中身に <code>_method=PUT</code>・<code>_token</code>・<code>changed_case_file_id</code>・<code>abstraction</code>・<code>concrete</code>。いまの問いはカードの欄から、ほかの2つは hidden から）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>PUT /review/{week}</code>：書き込みなので回数制限つき</h4>
+      <p>住所の表は上で見た2行目です（<code>{week}</code> に <code>?</code> はなく、省略できない）。見張り役の順は <code>… → PreventRequestForgery → Authenticate → ThrottleRequests:writes → SubstituteBindings → EnsureAgreed</code>。<code>throttle:writes</code> は「記録を書く頼みは、1人1分に60回まで」の回数制限です（<a href="#s11">11章</a>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>形の検証 <code>UpdateWeeklyReflectionRequest</code>：選べる事件は自分の事件だけ</h4>
+      <div class="code"><div class="file">src/app/Http/Requests/Review/UpdateWeeklyReflectionRequest.php</div><pre><code>/** 項目ごとの決まり。事件は本人のものだけ選べる（他人の事件の id を送られても通さない）。長さの上限は config/suiri.php の limits */
+public function rules(): array
+{
+    $max = 'max:'.config('suiri.limits.reflection_text');
+
+    return [
+        'changed_case_file_id' =&gt; ['nullable', 'integer', Rule::exists('case_files', 'id')-&gt;where('user_id', $this-&gt;user()-&gt;id)],
+        'abstraction' =&gt; ['nullable', 'string', $max],
+        'concrete' =&gt; ['nullable', 'string', $max],
+    ];
+}</code></pre></div>
+      <p><code>Rule::exists('case_files', 'id')-&gt;where('user_id', …)</code> は「<code>case_files</code> 表に、この id で、持ち主がこの人の行があること」という決まりです。選択肢には自分の事件しか出ませんが、送る中身は自由に作れるので、他人の事件の番号を送られても検証で止めます。検証の前には、前後の空白を取り、「選ばない」（空）を <code>null</code> にそろえます（<code>prepareForValidation</code>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付係 <code>ReviewController::update</code>：月曜日の住所でなければ 404</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Review/ReviewController.php</div><pre><code>public function update(UpdateWeeklyReflectionRequest $request, SaveWeeklyReflection $save, string $week): RedirectResponse
+{
+    $current = ReviewWeek::fromParam($week);
+    abort_if($current === null || $current-&gt;param() !== $week, 404);
+    $save-&gt;handle($request-&gt;user(), $current, $request-&gt;validated());
+
+    return redirect()-&gt;route('review.show', $current-&gt;param())-&gt;with('status', config('suiri.review.questions.saved'));
+}</code></pre></div>
+      <p>見るとき（<code>show</code>）は月曜日でない日付を月曜日へ転送しましたが、保存のときは転送せずに 404 にします。保存の頼みは画面のフォームから来るので、いつも月曜日の住所のはずだからです。<code>abort_if(条件, 404)</code> は「条件が本当なら 404 で止める」関数です。</p>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>用事 <code>SaveWeeklyReflection</code>：同じ週は1行だけ（<code>updateOrCreate</code>）</h4>
+      <div class="code"><div class="file">src/app/Actions/Review/SaveWeeklyReflection.php</div><pre><code>public function handle(User $user, ReviewWeek $week, array $data): WeeklyReflection
+{
+    return $user-&gt;weeklyReflections()-&gt;updateOrCreate(
+        ['week_start' =&gt; $week-&gt;param()],
+        [
+            'changed_case_file_id' =&gt; $data['changed_case_file_id'] ?? null,
+            'abstraction' =&gt; filled($data['abstraction'] ?? null) ? $data['abstraction'] : null,
+            'concrete' =&gt; filled($data['concrete'] ?? null) ? $data['concrete'] : null,
+        ],
+    );
+}</code></pre></div>
+      <p><code>updateOrCreate(探す条件, 入れる値)</code> は、「この人の、この週の行」を探して、あれば書き換え、なければ作ります。Laravel 本体ではこうなっています。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Database/Eloquent/Relations/HasOneOrMany.php</div><pre><code>public function updateOrCreate(array $attributes, Closure|array $values = [])
+{
+    return tap($this-&gt;firstOrCreate($attributes, $values), function ($instance) use ($values) {
+        if (! $instance-&gt;wasRecentlyCreated) {
+            $instance-&gt;fill(value($values))-&gt;save();
+        }
+    });
+}</code></pre></div>
+      <p>まず <code>firstOrCreate</code>（あれば最初の1行、なければ作る）を呼び、作ったばかりでなければ（<code>wasRecentlyCreated</code> が偽）、値を入れて保存し直します。<code>$user-&gt;weeklyReflections()</code> から呼んでいるので、探す条件にも作る行にも <code>user_id</code> が自動で入ります。</p>
+      <p>表の側でも「1人1週に1行」を守っています。</p>
+      <div class="code"><div class="file">src/database/migrations/2026_10_31_000010_create_weekly_reflections_table.php</div><pre><code>$table-&gt;date('week_start'); // 週の始まり（月曜日）
+$table-&gt;foreignId('changed_case_file_id')-&gt;nullable()-&gt;constrained('case_files')-&gt;nullOnDelete(); // 今週いちばん考えが変わった事件
+$table-&gt;string('abstraction', 500)-&gt;nullable(); // つまり？
+$table-&gt;string('concrete', 500)-&gt;nullable(); // たとえば？
+$table-&gt;timestamps();
+$table-&gt;unique(['user_id', 'week_start']);</code></pre></div>
+      <ul>
+        <li><code>unique(['user_id', 'week_start'])</code>：同じ人・同じ週の行を2つ作れないようにする、データベースの決まり（<dfn>ユニーク制約</dfn>）です。</li>
+        <li><code>nullOnDelete()</code>：選んだ事件を消したら、この列を空にします（ふりかえりの文は残る）。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む・書く：<code>weekly_reflections</code>（この人・この週の1行。なければ作る）</li></ul></div>
+      <p>保存したら <code>/review/2026-10-26</code> へ転送し、「書いたよ。」のお知らせ（<code>config('suiri.review.questions.saved')</code>）を出します。転送先の画面では <code>reflection-steps</code> がもう一度「まだ済んでいない最初の問い」を探すので、答えた問いの次の問いのカードが出ます。3つとも済めば「今週の問い、書けたね」と書いた答えの一覧になります。</p>
+    </li>
+  </ol>
+
+  <h3>事件を閉じる・開き直す</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>事件の画面のいまやることのカード「事件を閉じる？」で、閉じ方を選んで送る</h4>
+      <p>事件の画面は、いまやることのカードを1枚だけ出します（<a href="#s5">5章</a>）。どのカードにするかを決める <code>NextStep</code> は、答え合わせ待ちの予想がなく、「当たり」の見立てがあると <code>close</code>（閉じることを勧める）を返します。</p>
+      <div class="code"><div class="file">src/app/Queries/Cases/NextStep.php</div><pre><code>// 答え合わせ待ちがなく、当たりの見立てがあれば、事件を閉じることを勧める
+if ($pending-&gt;isEmpty() &amp;&amp; $alive-&gt;contains(fn ($h) =&gt; $h-&gt;status === HypothesisStatus::Confirmed)) {
+    return ['key' =&gt; 'close'];
+}</code></pre></div>
+      <p>勧められていなくても、カードの下の「ほかにできること」の「事件を閉じる」（<code>?open=close</code> 付きのリンク）を押せば、同じカードがいまやることになります。カードの中身はこうです。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/close-card.blade.php</div><pre><code>&lt;form id="close-form" method="POST" action="{{ route('cases.close', $case) }}" class="space-y-5"&gt;
+  @csrf
+  &lt;input type="hidden" name="form_key" value="close"&gt;
+{{-- …（省略）… --}}
+    {{-- 解決・おあずけを1枚ずつ、大きな札にする --}}
+    @foreach (['solved', 'cold'] as $status)
+      &lt;label class="cursor-pointer"&gt;
+        &lt;input type="radio" name="status" value="{{ $status }}" class="peer sr-only" @checked($picked === $status)&gt;
+{{-- …（省略）… --}}
+  &lt;x-ui.textarea name="conclusion" id="f-step-conclusion" :label="$t('close.conclusion')" rows="2" :maxlength="config('suiri.cases.conclusion_max')"
+    :placeholder="$t('close.placeholder')" /&gt;
+  &lt;x-ui.big-button tone="answer" icon="check"&gt;{{ $t('close.button') }}&lt;/x-ui.big-button&gt;</code></pre></div>
+      <ul>
+        <li>閉じ方は「解決！（わかった）」と「おあずけ（まだわからない）」の大きな2枚の札から選びます。中身は <code>status</code> のラジオボタン（<code>solved</code>・<code>cold</code>）で、ボタンそのものは見えなくし（<code>sr-only</code>）、選んだ札だけ色を塗ります（<code>peer-checked:</code>：となりのボタンが選ばれたら、という Tailwind の書き方）。</li>
+        <li>「わかったことを一言で（なくてもOK）」が結論（<code>conclusion</code>）です。</li>
+        <li>屋根裏の棚の「つまり？」「たとえば？」は、このカードでは聞きません。閉じたあとの画面で1問ずつ聞きます（下の「閉じた事件のカード」）。1枚のカードで聞くことを1つにするためです。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-case-step-close.png" alt="事件を閉じる？のカード。解決！とおあずけの大きな札、わかったことを一言の欄、事件を閉じるボタン"><figcaption>いまやることのカード「事件を閉じる？」</figcaption></figure>
+      <div class="data"><b>このとき動くデータ</b><ul><li>送る：<code>POST /cases/12/close</code>（中身に <code>_token</code>・<code>form_key=close</code>・<code>status</code>・<code>conclusion</code>）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>住所の表：<code>POST /cases/{case}/close</code> と <code>DELETE /cases/{case}/close</code></h4>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>Route::post('/cases/{case}/close', CloseCaseController::class)-&gt;can('update', 'case')-&gt;name('cases.close');
+Route::delete('/cases/{case}/close', ReopenCaseController::class)-&gt;can('update', 'case')-&gt;name('cases.reopen');</code></pre></div>
+      <p>同じ住所 <code>/cases/{case}/close</code> を、POST なら「閉じる」、DELETE なら「閉じたのを取り消す＝開き直す」に使い分けています。どちらも1アクションのコントローラーで、見張り役は <code>… → Authenticate → ThrottleRequests:writes → SubstituteBindings → EnsureAgreed → Authorize:update,case</code>（持ち主でなければ 403）です。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>形の検証 <code>CloseCaseRequest</code>：閉じられるのは捜査中の事件だけ</h4>
+      <div class="code"><div class="file">src/app/Http/Requests/Cases/CloseCaseRequest.php</div><pre><code>/** 捜査中の事件だけ閉じられる（持ち主かはルートで確かめ済み） */
+public function authorize(): bool
+{
+    return $this-&gt;route('case')-&gt;isOpen();
+}
+// …（省略）…
+return [
+    'status' =&gt; ['required', Rule::in([CaseStatus::Solved-&gt;value, CaseStatus::Cold-&gt;value])],
+    'conclusion' =&gt; ['nullable', 'string', 'max:'.config('suiri.cases.conclusion_max')],
+    'rule' =&gt; ['nullable', 'required_with:examples', 'string', 'max:'.config('suiri.limits.attic_rule')],
+    'examples' =&gt; ['nullable', 'string', 'max:'.config('suiri.limits.attic_examples')],
+];</code></pre></div>
+      <ul>
+        <li><code>authorize()</code>：もう閉じた事件をもう一度閉じようとすると <code>false</code> → 403。「持ち主か」はルートの <code>-&gt;can()</code> で済んでいるので、ここでは事件の状態だけを見ます。</li>
+        <li><code>status</code>：<code>Rule::in([...])</code> で「解決（<code>solved</code>）か迷宮入り（<code>cold</code>）」だけ。捜査中（<code>open</code>）に「閉じる」ことはできません。</li>
+        <li><code>rule</code>・<code>examples</code>：閉じるのと同時に棚へ入れるための欄です。今の閉じるカードはこの2つを送らないので、検証の前の <code>prepareForValidation</code> が空の文字にそろえ、どちらも空のまま通ります（<code>required_with:examples</code> は「たとえば？だけ書いて、つまり？が空」なら止める決まり）。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>用事 <code>CloseCase</code>：閉じるのと棚に入れるのを、1つの<dfn>トランザクション</dfn>で</h4>
+      <div class="code"><div class="file">src/app/Actions/Cases/CloseCase.php</div><pre><code>public function handle(CaseFile $case, array $data): void
+{
+    DB::transaction(function () use ($case, $data) {
+        $case-&gt;update([
+            'status' =&gt; $data['status'],
+            'conclusion' =&gt; $data['conclusion'] ?? null,
+            'closed_at' =&gt; now(),
+        ]);
+
+        // 「つまり？」が書いてあれば、屋根裏の棚に入れる
+        if (filled($data['rule'] ?? null)) {
+            $case-&gt;user-&gt;atticNotes()-&gt;create([
+                'case_file_id' =&gt; $case-&gt;id,
+                'rule' =&gt; $data['rule'],
+                'examples' =&gt; $data['examples'] ?? null,
+            ]);
+        }
+    });
+}</code></pre></div>
+      <p><dfn>トランザクション</dfn>は「いくつかの書き込みを、全部するか、全部しないかのどちらかにする」しくみです。<code>DB::transaction(function () { … })</code> の中で途中に失敗が起きると、それまでの書き込みも取り消されます。「事件は閉じたのに、棚の知識だけ入らなかった」という半端な状態を残しません。</p>
+      <div class="analogy"><b>たとえると</b>銀行の振り込みです。「Aの口座から引く」と「Bの口座に足す」は、片方だけ起きては困ります。両方そろって初めて「済んだ」ことにします。</div>
+      <ul>
+        <li>事件：状態を解決か迷宮入りに、結論と閉じた日時（<code>closed_at</code>）を入れます。</li>
+        <li>「つまり？」が送られていれば、事件の持ち主の <code>atticNotes()</code> から棚の知識を作ります（<code>user_id</code> は自動で入り、<code>case_file_id</code> で「どの事件からわかったか」も結ぶ）。今の閉じるカードからは「つまり？」が来ないので、この分かれ道は通らず、事件を閉じるだけになります。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>書く：<code>case_files</code>（<code>status</code>・<code>conclusion</code>・<code>closed_at</code>）</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付係 <code>CloseCaseController</code>：お知らせの文を選んで、事件の画面へ戻す</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/CloseCaseController.php</div><pre><code>public function __invoke(CloseCaseRequest $request, CaseFile $case, CloseCase $closeCase): RedirectResponse
+{
+    $data = $request-&gt;validated();
+    $closeCase-&gt;handle($case, $data);
+    $status = filled($data['rule']) ? '事件を閉じました。「つまり？」を屋根裏の棚に入れました。' : '事件を閉じました。';
+
+    return $this-&gt;backToCase($case, $status, [$data['conclusion'], $data['rule'], $data['examples']]);
+}</code></pre></div>
+      <p>事件の画面へ戻すとき、保存した文（結論など）を <code>backToCase</code> に渡し、ほかの人がわかる情報らしきものがあればワトソンの警告を出します（保存は止めない。<a href="#s5">5章</a>）。お知らせは「事件を閉じました。」です。</p>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>閉じた事件のカード <code>case-step/closed-card</code>：はんこと、「つまり、何がわかった？」の1問</h4>
+      <p>戻った事件の画面では、事件が閉じているので、カードを決める部品（<code>case-step/desk</code>）が閉じた事件のカード（<code>closed</code>）を選びます。上に「解決！」か「おあずけ」の大きなはんこと閉じた日・結論、その下に屋根裏の棚へしまう問いのカードが出ます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/closed-card.blade.php</div><pre><code>{{-- この事件からもう棚にしまったことがあればそれを、なければ「つまり、何がわかった？」のカードを出す --}}
+@if ($shelved-&gt;isNotEmpty())
+  &lt;x-ui.done-summary icon="attic" :title="$t('closed.shelved')" :items="$shelved-&gt;pluck('rule')-&gt;all()" open /&gt;
+@else
+  &lt;x-ui.step-card icon="attic" :title="$t('closed.rule')" :hint="$t('closed.rule_hint')"&gt;
+    &lt;form method="POST" action="{{ route('attic.store') }}" class="group/attic space-y-4"&gt;
+      @csrf
+      &lt;input type="hidden" name="case_file_id" value="{{ $case-&gt;id }}"&gt;
+{{-- …（省略）… --}}
+      {{-- 2問目：「つまり？」を書き始めるまで隠す --}}
+      &lt;div class="group-has-[textarea[name=rule]:placeholder-shown]/attic:hidden"&gt;</code></pre></div>
+      <ul>
+        <li>送り先は屋根裏の棚の「足す」（<code>POST /attic</code>）です。隠し欄 <code>case_file_id</code> で「この事件で見つけた決まり」と結びます。</li>
+        <li>2問目「ほかに当てはまりそうなことは？」（<code>examples</code>）は、「つまり？」を書き始めるまで隠れています。<code>group-has-[…:placeholder-shown]</code> は「フォームの中の rule の欄が、まだ空（例の文が見えている）なら」という CSS の条件（<code>:has</code>）で、JavaScript を使わずに1問ずつ出します（使えない古い端末では2問とも並ぶだけ）。</li>
+        <li>この事件からもう棚にしまった決まりがあれば、聞かずにそれをたたんだ要約で見せます。書かなくても構いません（「あとで屋根裏の棚からも書けるよ」）。</li>
+        <li>まだ答え合わせしていない予想があれば、その入口も出します（閉じたあとでも結果は書ける。<a href="#s7">7章</a>）。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-case-step-closed.png" alt="閉じた事件の画面。解決！のはんこと、つまり何がわかった？のカード"><figcaption>閉じた事件のカード：はんこと「つまり、何がわかった？」</figcaption></figure>
+      <div class="data"><b>このとき動くデータ</b><ul><li>送る：<code>POST /attic</code>（中身に <code>_token</code>・<code>case_file_id</code>・<code>rule</code>・<code>examples</code>）。受け取ったあとの流れは下の「屋根裏の棚」の「足す」と同じで、棚の画面へ戻る</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>開き直す：<code>ReopenCaseController</code> → <code>ReopenCase</code>（結論は消さない）</h4>
+      <p>閉じた事件の画面の下の「ほかにできること」の最後の行に「事件を開き直す」ボタンがあり、<code>@method('DELETE')</code> の隠し欄で <code>DELETE /cases/12/close</code> を送ります。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/more.blade.php</div><pre><code>{{-- 閉じた事件なら、開き直すボタンを最後の行に置く --}}
+@if (! $open)
+  &lt;li class="border-b border-rule"&gt;
+    &lt;form method="POST" action="{{ route('cases.reopen', $case) }}"&gt;
+      @csrf
+      @method('DELETE')
+{{-- …（省略）… --}}
+        &lt;span class="flex-1"&gt;{{ config('suiri.case_board.cards.closed.reopen') }}&lt;/span&gt;</code></pre></div>
+      <div class="code"><div class="file">src/app/Actions/Cases/ReopenCase.php</div><pre><code>/** 閉じた事件を開き直す用事（捜査中に戻す）。結論は消さずに残す（前の考えの記録として） */
+class ReopenCase
+{
+    /** 事件を捜査中に戻し、閉じた日時を空にする */
+    public function handle(CaseFile $case): void
+    {
+        $case-&gt;update(['status' =&gt; CaseStatus::Open, 'closed_at' =&gt; null]);
+    }
+}</code></pre></div>
+      <p>状態を捜査中に戻し、閉じた日時を空にします。結論は残します（前にどう考えたかの記録として）。閉じたあとに棚にしまった知識もそのまま残ります。受付係 <code>ReopenCaseController</code> は、この用事を呼んで「事件を開き直しました。」と事件の画面へ戻すだけです。戻った画面では、事件が捜査中なので、いまの一手のカードがまた出ます。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>書く：<code>case_files</code>（<code>status = 'open'</code>・<code>closed_at = null</code>）</li></ul></div>
+    </li>
+  </ol>
+
+  <h3>ノーベリ帳と屋根裏の棚</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>ノーベリ帳 <code>GET /norbury</code>：外れた予想の一覧と、見落としの種類ごとの数</h4>
+      <p>ふりかえりの画面の上の切り替え（<code>x-review.tabs</code>）から開きます。<dfn>ノーベリ帳</dfn>は、外れた予想を集めたページです（ホームズが自分の見込み違いを忘れないように「ノーベリ」とささやいてくれと頼んだ話から）。</p>
+      <div class="code"><div class="file">src/routes/web/review.php</div><pre><code>// ノーベリ帳（外れた予想の一覧）
+Route::get('/norbury', [NorburyController::class, 'index'])-&gt;name('norbury.index');</code></pre></div>
+      <div class="code"><div class="file">src/app/Queries/Review/NorburyQuery.php</div><pre><code>/** 外れた予想の一覧を返す（事件のなぞも一緒に読む）。1ページの件数は config('suiri.review.norbury_per_page') */
+public function misses(User $user): LengthAwarePaginator
+{
+    return $user-&gt;predictions()
+        -&gt;where('result', PredictionResult::Miss-&gt;value)
+        -&gt;with('caseFile:id,user_id,title,scene')
+        -&gt;latest('resolved_at')-&gt;latest('id')
+        -&gt;paginate(config('suiri.review.norbury_per_page'));
+}</code></pre></div>
+      <ul>
+        <li>この人の予想のうち結果が「外れ」のものを、答え合わせの新しい順に。</li>
+        <li><code>with('caseFile:id,user_id,title,scene')</code>：それぞれの予想の事件を、必要な列だけまとめて先に読みます（<dfn>Eager ロード</dfn>。1件ずつ事件を取りに行くと、20件で20回の問い合わせになるのを防ぐ）。</li>
+        <li><code>paginate(20)</code>：1ページ20件に区切り、ページの切り替えの情報も一緒に返します。</li>
+      </ul>
+      <p>もう1つの <code>reasonCounts</code> は、外れの「何を見落とした？」（答え合わせで選んだ原因。<a href="#s7">7章</a>）を種類ごとに数えます。選ばなかった外れは <code>miss_reason</code> が空なので、<code>unknown</code> として別に数えます。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>predictions</code>（この人の外れ。1ページ分）と、その事件（<code>case_files</code> のなぞ・場面）</li></ul></div>
+      <figure class="shot"><img data-img="screen-norbury.png" alt="ノーベリ帳の画面"><figcaption>ノーベリ帳</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>屋根裏の棚の住所：<code>Route::resource</code> で4つをまとめて作る</h4>
+      <div class="code"><div class="file">src/routes/web/review.php</div><pre><code>// 屋根裏の棚。{note} は AtticNote に結びつく。直す・消すは持ち主だけ（AtticNotePolicy）
+Route::resource('attic', AtticNoteController::class)
+    -&gt;only(['index', 'store', 'update', 'destroy'])
+    -&gt;parameters(['attic' =&gt; 'note'])
+    -&gt;middlewareFor('store', 'throttle:writes')
+    -&gt;middlewareFor('update', ['throttle:writes', 'can:update,note'])
+    -&gt;middlewareFor('destroy', ['throttle:writes', 'can:delete,note']);</code></pre></div>
+      <p><code>Route::resource</code> は、一覧・作る・直す・消すといった決まった形の住所をまとめて作る書き方です（<dfn>リソースルート</dfn>）。<code>only</code> で4つだけにし、次の住所ができます。</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>住所</th><th>受付係の関数</th><th>付く見張り役（web・auth・agreed のほか）</th></tr></thead>
+        <tbody>
+          <tr><td><code>GET /attic</code></td><td><code>index</code>（一覧）</td><td>なし</td></tr>
+          <tr><td><code>POST /attic</code></td><td><code>store</code>（足す）</td><td><code>throttle:writes</code></td></tr>
+          <tr><td><code>PUT|PATCH /attic/{note}</code></td><td><code>update</code>（直す）</td><td><code>throttle:writes</code>・<code>can:update,note</code></td></tr>
+          <tr><td><code>DELETE /attic/{note}</code></td><td><code>destroy</code>（消す）</td><td><code>throttle:writes</code>・<code>can:delete,note</code></td></tr>
+        </tbody>
+      </table></div>
+      <ul>
+        <li><code>parameters(['attic' =&gt; 'note'])</code>：穴の名前をふつうの <code>{attic}</code> から <code>{note}</code> に変えます。受付係の引数 <code>AtticNote $note</code> と名前をそろえ、<code>attic_notes</code> の行に取り換えてもらうためです。</li>
+        <li><code>middlewareFor('動作', 見張り役)</code>：その動作の住所だけに見張り役を付けます。同じ動作に2回書くと後の指定で上書きされるので、動作ごとに1回でまとめて書いています。</li>
+        <li><code>can:update,note</code> は <code>-&gt;can('update', 'note')</code> と同じで、<code>AtticNotePolicy</code>（中身は <code>OwnerOnly</code>）が「知識の <code>user_id</code> がログイン中の人か」を確かめます。他人の知識の番号を送ると 403 です。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>足す・直す：<code>StoreAtticNoteRequest</code> → 用事 <code>SaveAtticNote</code>（1つの用事で両方）</h4>
+      <p>棚に足す入口は2つあります。1つは上で見た、閉じた事件のカードの「つまり、何がわかった？」。もう1つは棚の画面の「自分で決まりを1つ書く」で、<code>?add=1</code> 付きで棚を開くと、一覧の代わりに書くカード（<code>review/attic-add</code>）が1枚だけ出ます。どちらも <code>POST /attic</code> に送ります。</p>
+      <div class="code"><div class="file">src/resources/views/attic/index.blade.php</div><pre><code>{{-- 書くときは書くカード、棚が空なら絵と一言、知識があれば一覧を出す --}}
+@if ($writing)
+  &lt;x-review.attic-add :case-options="$caseOptions" /&gt;
+@elseif ($notes-&gt;isEmpty())</code></pre></div>
+      <div class="code"><div class="file">src/app/Http/Requests/Attic/StoreAtticNoteRequest.php</div><pre><code>return [
+    'rule' =&gt; ['required', 'string', 'max:'.config('suiri.limits.attic_rule')],
+    'examples' =&gt; ['nullable', 'string', 'max:'.config('suiri.limits.attic_examples')],
+    'case_file_id' =&gt; ['nullable', 'integer', Rule::exists('case_files', 'id')-&gt;where('user_id', $this-&gt;user()-&gt;id)],
+];</code></pre></div>
+      <p>「つまり？」は必須、「たとえば？」と「どの事件から？」は任意。事件は、週の問いと同じく <code>Rule::exists(...)-&gt;where('user_id', …)</code> で自分の事件だけに限ります。直すときの <code>UpdateAtticNoteRequest</code> も同じ決まりを使います。</p>
+      <div class="code"><div class="file">src/app/Actions/Attic/SaveAtticNote.php</div><pre><code>/** 検証済みの値で知識を保存して返す。空のたとえば？・事件は null にする */
+public function handle(User $user, array $data, ?AtticNote $note = null): AtticNote
+{
+    $note ??= $user-&gt;atticNotes()-&gt;make();
+    $note-&gt;fill([
+        'rule' =&gt; $data['rule'],
+        'examples' =&gt; filled($data['examples'] ?? null) ? $data['examples'] : null,
+        'case_file_id' =&gt; $data['case_file_id'] ?? null,
+    ])-&gt;save();
+
+    return $note;
+}</code></pre></div>
+      <p>知識を渡されなければ（足すとき）、<code>$user-&gt;atticNotes()-&gt;make()</code> で「この人の、まだ保存していない新しい知識」を用意します。<code>??=</code> は「左が <code>null</code> のときだけ右を入れる」書き方です。渡されれば（直すとき）、その知識に値を入れて保存します。足すのも直すのも、同じ1つの用事で済みます。保存したら、受付係 <code>AtticNoteController</code> が棚の画面へ戻し、「棚に置いたよ。」（直したときは「決まりを直したよ。」）のお知らせを出します。文は <code>config('suiri.review.attic.flash')</code> にあります。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>書く：<code>attic_notes</code>（足すなら1行増える。直すならその1行）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>消す：知識を消しても、それを使った予想は残る</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Attic/AtticNoteController.php</div><pre><code>/** 知識を消して、棚へ戻す（この知識を使った予想は残り、つながりだけが外れる） */
+public function destroy(AtticNote $note): RedirectResponse
+{
+    $note-&gt;delete();
+
+    return redirect()-&gt;route('attic.index')-&gt;with('status', config('suiri.review.attic.flash.deleted'));
+}</code></pre></div>
+      <p>「消す」は確かめの部品（<code>x-ui.confirm</code>）で「この決まりを棚から消す？ この決まりを使った予想は残るよ。」と聞いてから送ります。予想を立てるとき、棚の知識を選んで使えます（<a href="#s6">6章</a>）。その予想の <code>attic_note_id</code> 列は、知識が消えると空になる決まりになっているので、予想そのものは消えません。</p>
+      <div class="code"><div class="file">src/database/migrations/2026_10_31_000008_create_predictions_table.php</div><pre><code>$table-&gt;foreignId('attic_note_id')-&gt;nullable()-&gt;constrained()-&gt;nullOnDelete(); // 使った屋根裏の知識（任意）</code></pre></div>
+      <p>一覧（<code>AtticNotesQuery::notes</code>）は、知識ごとに生まれた事件と「使った予想の数」（<code>withCount('predictions')</code>）を付けて、新しい順に1ページ30件で出します。</p>
+      <figure class="shot"><img data-img="screen-attic.png" alt="屋根裏の棚の画面。つまり？・たとえば？の知識が並ぶ"><figcaption>屋根裏の棚</figcaption></figure>
+    </li>
+  </ol>
+
+  <div class="recap"><b>この章のまとめ</b><ol>
+    <li><code>GET /review/{week?}</code> の <code>{week?}</code> は省略できる穴（省略は今週）。<code>where</code> が形を、<code>ReviewWeek::fromParam</code> が「ある日付か・未来でないか」を確かめ、月曜日でない日付は月曜日の住所へ転送する。</li>
+    <li>週は「月曜日の 0 時から、次の月曜日の 0 時の手前まで」。<code>ReviewWeek::scope</code> がどの集計にもこの絞り込みを付ける。</li>
+    <li><code>WeekReviewQuery</code> が、<code>WeeklyStats</code>（事件・見立て2つ以上・答え合わせ・考えを変えた・外れ・棚・見積もり）、<code>Calibration</code>（当たり・外れだけを確かさの区間ごとに。5件未満は「まだ判断できない」）、<code>WeekCasesQuery</code>（週の問いの選択肢）を集める。どれも本人の記録から始めて数える。</li>
+    <li>確かさの図は外の部品を使わず、Blade が SVG を組み立てる。点線が「確かさ＝当たった割合」。</li>
+    <li>画面は「今週のまとめ（大きな一言と3つの数。内訳はたたむ）→ 週の問い → 確かさの答え合わせ」。いまやることは週の問いなので、問いのカードを最初の画面に入れる。</li>
+    <li>週の問いは <code>reflection-steps</code> が1問ずつ出し、<code>PUT /review/{week}</code> で1問ずつ保存する。いま答えない問いの値は hidden で送り直して消さない。事件は <code>Rule::exists(...)-&gt;where('user_id')</code> で自分のものだけ。<code>updateOrCreate</code> と表のユニーク制約で「1人1週に1行」。</li>
+    <li>事件を閉じるのは、事件の画面のいまやることのカード「事件を閉じる？」（当たりの見立てがあれば勧められる）。<code>POST /cases/{case}/close</code> は捜査中の事件だけで、<code>CloseCase</code> がトランザクションの中で閉じる。閉じたあとのカードが「つまり、何がわかった？」を1問ずつ聞き、<code>POST /attic</code> で棚にしまう。開き直す（<code>DELETE</code>）は状態を戻すだけで、結論は残す。</li>
+    <li>ノーベリ帳は外れた予想の一覧と見落としの種類ごとの数。屋根裏の棚は <code>Route::resource</code> の4つの住所で、直す・消すは <code>AtticNotePolicy</code> が持ち主だけに許す。自分で書くときは <code>?add=1</code> で書くカードを1枚だけ出す。</li>
+  </ol></div>
+</section>

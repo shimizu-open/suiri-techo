@@ -1,0 +1,692 @@
+<section class="story" id="s8">
+  <h2><span class="no">8</span>相棒とスマホを渡し合い、見立てを隠して書いて見せ合う</h2>
+  <p class="userstory">子どもと一緒に考える親として、相手の考えに引っぱられずに、それぞれの見立てを出し合いたい。だから、相棒モードの事件で1台のスマホを渡し合い、相棒 → 自分の順に見立てを隠して書いて、最後に「いっしょに見せ合おう！」を押す。</p>
+  <p class="summary">この章で追う道筋：設定で相棒の名前を入れる（<code>PATCH /settings</code> → <code>UpdateSettingsRequest</code> → <code>UpdateSettings</code> → <code>users.partner_name</code>）→ 事件を作る1問目で「長男といっしょに考える？」を入れる（<code>partner-toggle</code> → <code>StoreCaseRequest</code> → <code>CreateCase</code>）→ 事件の画面のいまやることが渡し合いになる（<code>CaseBoardQuery</code> → <code>desk</code> → <code>case-partner.flow</code> → <code>case-partner.turn</code>）→ 渡す付箋 → 書く（<code>POST /cases/{case}/hypotheses</code> → <code>StoreHypothesisRequest</code> → <code>AddHypothesis</code> → 書いた人の番の画面へ）→ ○ を付ける（<code>PUT /hypotheses/{hypothesis}/clues/{clue}</code>）→ 自分の番へ渡す（<code>?turn=self</code>）→ 見せ合う（<code>POST /cases/{case}/reveal</code> → <code>RevealHypotheses</code> → <code>case_files.revealed_at</code>）→ 並べて見る（<code>RevealBoard</code> → <code>case-partner.reveal</code>）</p>
+
+  <div class="point"><b>はじめに：相棒は「別のアカウント」ではない</b>要件定義書（<code>docs/design/requirements.md</code>）では、子ども（相棒）は「保護者の端末で『相棒の見立て』を先に書く」使い方を想定しています（13歳未満なら自分のアカウントは持たない）。だから相棒モードは、<b>1つのアカウント・1台のスマホを渡し合って、順番に書く</b>しくみです。相棒の見立ても、表の上では親のアカウント（<code>user_id</code>）の記録で、「書いた人」の列（<code>author</code>）が <code>partner</code> になっているだけです。2つのアカウントで同じ事件を見る共有（C-13）は「次」に回していて、まだ作っていません。</div>
+
+  <h3>相棒の名前を設定する</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>設定の画面で「一緒に使う人（相棒）」を入れて保存する</h4>
+      <p>相棒モードは、設定に相棒の呼び名（例「長男」）が入っている人だけが使えます。設定の画面（<code>GET /settings</code>）は、名前・相棒・場面・きっかけの4つの問いを罫線で区切って並べ、いちばん下の横いっぱいの「保存する」で送ります。</p>
+      <div class="code"><div class="file">src/resources/views/settings/show.blade.php</div><pre><code>@php($s = config('suiri.settings'))
+{{-- …（省略）… --}}
+&lt;form method="POST" action="{{ route('settings.update') }}"&gt;
+  @csrf
+  @method('PATCH')
+  &lt;div class="divide-y divide-rule border-y border-rule"&gt;
+{{-- …（省略）… --}}
+    &lt;div class="py-4"&gt;
+      &lt;x-ui.field name="partner_name" :label="$s['partner']['label']" :value="$user-&gt;partner_name" :maxlength="config('suiri.limits.partner_name')"
+        :placeholder="$s['partner']['placeholder']" :hint="$s['partner']['hint']" /&gt;
+    &lt;/div&gt;
+{{-- …（省略）… --}}
+  &lt;x-ui.big-button icon="check" class="mt-4"&gt;{{ $s['save'] }}&lt;/x-ui.big-button&gt;</code></pre></div>
+      <ul>
+        <li><code>@csrf</code>：フォームに合言葉の隠し欄を入れます（ほかのサイトからの送信と見分けるため。<a href="#s11">11章</a>）。</li>
+        <li><code>@method('PATCH')</code>：HTML のフォームは GET と POST しか送れないので、隠し欄 <code>_method=PATCH</code> を入れて「一部を書き換えて」の頼みに見せます（<a href="#s0">0章</a>）。</li>
+        <li><code>&lt;x-ui.field&gt;</code> は入力欄の部品（<dfn>Blade コンポーネント</dfn>：画面の部品を1つのファイルにまとめ、タグのように使えるもの）です。<code>:maxlength</code> のように頭に <code>:</code> を付けると、文字ではなく PHP の値（ここでは設定ファイルの上限）を渡せます。</li>
+        <li>見出しや説明の文は画面に直書きせず、設定ファイル <code>config/suiri.php</code> の <code>settings</code> から引きます（<code>$s['partner']['label']</code>）。</li>
+      </ul>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'partner' =&gt; ['label' =&gt; '一緒に使う人（相棒）', 'hint' =&gt; '同じスマホで一緒に考える人。入れると、相棒も答えを書けるよ。', 'placeholder' =&gt; '例：長男'],</code></pre></div>
+      <div class="data"><b>このとき動くデータ</b><ul><li>送る：<code>POST /settings</code>（中身に <code>_method=PATCH</code>・<code>_token</code>・<code>name</code>・<code>partner_name=長男</code>・<code>default_scene</code>・<code>cue</code>）</li></ul></div>
+      <figure class="shot"><img data-img="screen-settings.png" alt="設定の画面。表示名・相棒の名前・ふだんの場面・記録のきっかけが並ぶ"><figcaption>設定の画面。上から2つ目が相棒の名前の欄</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>住所の表：<code>PATCH /settings</code> は「書き込み」の回数制限つき</h4>
+      <div class="code"><div class="file">src/routes/web/settings.php</div><pre><code>Route::middleware(['auth', 'agreed'])-&gt;group(function () {
+    Route::get('/settings', [SettingsController::class, 'show'])-&gt;name('settings.show');
+    Route::patch('/settings', [SettingsController::class, 'update'])-&gt;middleware('throttle:writes')-&gt;name('settings.update');</code></pre></div>
+      <p>Laravel は隠し欄 <code>_method</code> を見て、この頼みを <code>PATCH</code> として扱い、<code>Route::patch('/settings', …)</code> の行に当てはめます。並べ替えたあとの見張り役の順は <code>EncryptCookies → AddQueuedCookiesToResponse → StartSession → ShareErrorsFromSession → PreventRequestForgery → Authenticate（auth）→ ThrottleRequests:writes → SubstituteBindings → EnsureAgreed（agreed）</code> です（手元で Laravel に並びを出させて確かめた順。読み方は <a href="#s0">0章</a>）。</p>
+      <p>住所に <code>{…}</code> の穴がないので、<code>-&gt;can()</code>（持ち主の確認）は付いていません。直すのはいつも「ログイン中の本人の設定」だからです。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>形の検証：<code>UpdateSettingsRequest</code></h4>
+      <p><dfn>FormRequest</dfn> は「送られてきた値の形を確かめる係」です。受付係（コントローラー）の引数にこの型を書くと、受付係の中身が動く前に Laravel が検証を済ませ、だめなら入力画面へ戻します。</p>
+      <div class="code"><div class="file">src/app/Http/Requests/Settings/UpdateSettingsRequest.php</div><pre><code>/** 送る前に、前後の空白を取る（空白だけの名前を防ぐ） */
+protected function prepareForValidation(): void
+{
+    $this-&gt;merge([
+        'name' =&gt; trim((string) $this-&gt;input('name')),
+        'partner_name' =&gt; trim((string) $this-&gt;input('partner_name')),
+        'cue' =&gt; trim((string) $this-&gt;input('cue')),
+    ]);
+}
+
+/** 項目ごとの決まり（長さの上限は config/suiri.php の limits） */
+public function rules(): array
+{
+    return [
+        'name' =&gt; ['required', 'string', 'max:'.config('suiri.limits.user_name')],
+        'partner_name' =&gt; ['nullable', 'string', 'max:'.config('suiri.limits.partner_name')],
+        'default_scene' =&gt; ['required', Rule::enum(Scene::class)],
+        'cue' =&gt; ['nullable', 'string', 'max:'.config('suiri.limits.cue')],
+    ];
+}</code></pre></div>
+      <ul>
+        <li><code>prepareForValidation</code>：検証の前に、前後の空白を取ります。空白だけの「　」は空になります。</li>
+        <li><code>partner_name</code> は <code>nullable</code>（空でもよい）。空にして保存すれば、相棒モードを使わない人に戻れます。</li>
+      </ul>
+      <p>Laravel 本体は、この順に動かします（検証の前の整え → 権限 → 形の検証）。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Validation/ValidatesWhenResolvedTrait.php</div><pre><code>public function validateResolved()
+{
+    $this-&gt;prepareForValidation();
+
+    if (! $this-&gt;passesAuthorization()) {
+        $this-&gt;failedAuthorization();
+    }
+
+    $instance = $this-&gt;getValidatorInstance();
+    // …（省略）…
+    if ($instance-&gt;fails()) {
+        $this-&gt;failedValidation($instance);
+    }</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付係 <code>SettingsController::update</code> → 用事 <code>UpdateSettings</code></h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Settings/SettingsController.php</div><pre><code>/** 設定を保存して、設定の画面へ戻す（形の確かめは UpdateSettingsRequest、保存は UpdateSettings） */
+public function update(UpdateSettingsRequest $request, UpdateSettings $updateSettings): RedirectResponse
+{
+    $updateSettings-&gt;handle($request-&gt;user(), $request-&gt;validated());
+
+    return redirect()-&gt;route('settings.show')-&gt;with('status', config('suiri.settings.saved'));
+}</code></pre></div>
+      <p>受付係は、検証を通った値（<code>validated()</code>）を<dfn>用事（Action）</dfn>に渡すだけです。用事は「記録を書き換える仕事」を1つだけ受け持つクラスです。戻ったあとのお知らせ「設定を保存したよ。」も設定ファイルの文です。</p>
+      <div class="code"><div class="file">src/app/Actions/Settings/UpdateSettings.php</div><pre><code>public function handle(User $user, array $data): User
+{
+    $user-&gt;fill([
+        'name' =&gt; $data['name'],
+        'partner_name' =&gt; filled($data['partner_name'] ?? null) ? $data['partner_name'] : null,
+        'default_scene' =&gt; $data['default_scene'],
+        'cue' =&gt; filled($data['cue'] ?? null) ? $data['cue'] : null,
+    ])-&gt;save();
+
+    return $user;
+}</code></pre></div>
+      <p><code>filled()</code> は「中身があるか」を調べる関数です。空の文字は <code>null</code>（値なし）にそろえて保存します。<code>fill</code> で入れてよい列は、モデルの <code>#[Fillable([...])]</code> に書いた列だけです（書いていない列を送りつけられても入らない）。</p>
+      <div class="code"><div class="file">src/app/Models/User.php</div><pre><code>#[Fillable(['name', 'email', 'avatar_url', 'partner_name', 'default_scene', 'cue'])]</code></pre></div>
+      <div class="data"><b>このとき動くデータ</b><ul><li>書く：<code>users</code> 表のこの人の行の <code>partner_name</code>（「長男」）</li></ul></div>
+      <div class="code"><div class="file">src/database/migrations/0001_01_01_000000_create_users_table.php</div><pre><code>$table-&gt;string('partner_name', 30)-&gt;nullable(); // 相棒の呼び名（例「長男」）。入っていれば相棒モードを使える</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>「相棒がいるか」はモデルに聞く：<code>User::hasPartner</code>・<code>partnerLabel</code></h4>
+      <p>このあとの画面や検証は、列を直接見ずに、<code>User</code> モデルの小さな関数に聞きます。決まりを1か所にまとめておくためです。</p>
+      <div class="code"><div class="file">src/app/Models/User.php</div><pre><code>/** 相棒の名前が入っているか（相棒モードを使えるか）を返す */
+public function hasPartner(): bool
+{
+    return filled($this-&gt;partner_name);
+}
+// …（省略）…
+/** 相棒の呼び名を返す。入っていなければ「相棒」 */
+public function partnerLabel(): string
+{
+    return $this-&gt;hasPartner() ? $this-&gt;partner_name : config('suiri.labels.words.partner');
+}</code></pre></div>
+    </li>
+  </ol>
+
+  <h3>相棒モードの事件を作る</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>事件を作る1問目に「長男といっしょに考える？」が出る</h4>
+      <p>事件を作る画面は1問ずつ進む形です（流れは <a href="#s4">4章</a>）。画面の初めの値は <code>NewCaseDraft</code> が用意し、その中の <code>partner</code> は、相棒の名前があればその名前、なければ <code>null</code> です。1問目「何が気になった？」の部品 <code>case-new.mystery</code> は、名前がある人にだけ切り替えの部品を置きます。</p>
+      <div class="code"><div class="file">src/app/Queries/Cases/NewCaseDraft.php</div><pre><code>'partner' =&gt; $user-&gt;hasPartner() ? $user-&gt;partner_name : null,</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/components/case-new/mystery.blade.php</div><pre><code>{{-- 相棒の名前が設定にある人だけ、相棒といっしょに考えるかを選べるようにする --}}
+@if ($draft['partner'])
+  &lt;x-case-new.partner-toggle :partner="$draft['partner']" /&gt;
+@endif</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/components/case-new/partner-toggle.blade.php</div><pre><code>@props(['partner'])
+{{-- …（省略）… --}}
+  &lt;input type="checkbox" name="partner_mode" value="1" data-partner class="sr-only" @checked(old('partner_mode'))&gt;
+{{-- …（省略）… --}}
+    &lt;span class="block text-base font-bold"&gt;{{ __(config('suiri.case_new.partner.label'), ['partner' =&gt; $partner]) }}&lt;/span&gt;
+    &lt;span class="block text-sm leading-snug text-muted"&gt;{{ config('suiri.case_new.partner.desc') }}&lt;/span&gt;</code></pre></div>
+      <p>中身はチェックボックス1つ（送る名前は <code>partner_mode</code>）です。四角いチェックそのものは <code>sr-only</code>（画面には見せず、読み上げには残す）で隠し、行全体を押せる大きな札にしています。文は「:partnerといっしょに考える？」の <code>:partner</code> に相棒の名前を入れて「長男といっしょに考える？」になります。</p>
+      <figure class="shot"><img data-img="screen-case-new-1.png" alt="事件を作る1問目。なぞの欄、場面の札、「長男といっしょに考える？」の切り替え、「つぎへ」"><figcaption>1問目の下の方に「長男といっしょに考える？」が出る</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>入れると、3問目「どうしてだと思う？」の入力欄が説明に替わる（CSS だけで切り替え）</h4>
+      <p>相棒モードでは、先に相棒が書く決まりなので、事件を作る時点では見立てを受け取りません。そこで、チェックを入れると3問目の入力欄が隠れ、「相棒モードでは、事件を作ったあとに書くよ」の説明が出ます。これは JavaScript ではなく CSS だけでしています。</p>
+      <div class="code"><div class="file">src/resources/views/cases/create-steps.blade.php</div><pre><code>&lt;form id="new-case" method="POST" action="{{ route('cases.store') }}" data-stepper class="group/new max-w-xl space-y-10"&gt;</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/components/case-new/hypothesis.blade.php</div><pre><code>&lt;div class="space-y-4 group-has-[input[data-partner]:checked]/new:hidden"&gt;
+{{-- …（省略）… --}}
+{{-- 相棒の名前がある人には、相棒モードを入れたときの説明を用意しておく（入れたときだけ見える） --}}
+@if ($draft['partner'])
+  &lt;div class="hidden group-has-[input[data-partner]:checked]/new:block"&gt;
+    &lt;x-ui.hint tone="hypothesis" icon="partner"&gt;{{ __($w['partner'], ['partner' =&gt; $draft['partner']]) }}&lt;/x-ui.hint&gt;
+  &lt;/div&gt;
+@endif</code></pre></div>
+      <ul>
+        <li>フォーム全体に <code>group/new</code> という名前を付けています（<dfn>group</dfn>：Tailwind CSS で「外枠の様子で、中の部品の見た目を変える」ための目印）。</li>
+        <li><code>group-has-[input[data-partner]:checked]/new:hidden</code> は「<code>new</code> という外枠の中に、チェックの入った <code>data-partner</code> の欄があれば、この部分を隠す」。反対に <code>hidden …:block</code> は「ふだんは隠し、チェックが入ったら見せる」です。</li>
+        <li>目印に <code>name=partner_mode</code> ではなく <code>data-partner</code> を使うのは、Tailwind が <code>[]</code> の中の <code>_</code> を空白に読み替えてしまい、<code>partner_mode</code> という名前では選べないからです（部品の先頭のコメントに書いてある理由）。</li>
+      </ul>
+      <p>4問目の「これで事件を作るよ」の確かめでも、同じ書き方で、見立ての行が「事件を作ったあとに、長男といっしょに書くよ」に替わります。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>「相棒の名前がない人の相棒モード」は検証の前に外す：<code>StoreCaseRequest</code></h4>
+      <div class="code"><div class="file">src/app/Http/Requests/Cases/StoreCaseRequest.php</div><pre><code>'partner_mode' =&gt; $this-&gt;boolean('partner_mode') &amp;&amp; $this-&gt;user()-&gt;hasPartner(),</code></pre></div>
+      <p>画面に切り替えが出ていなくても、送る中身は利用者が自由に作れます。そこで、送られた <code>partner_mode=1</code> を、相棒の名前がある人のときだけ本当（<code>true</code>）にします。<code>$this-&gt;boolean()</code> は「1」「on」「true」などを <code>true</code> に読み替える関数です。テスト <code>PartnerModeTest</code> の <code>test_partner_mode_needs_a_partner_name</code> が、名前のない人の相棒モードが外れることを確かめています。</p>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>用事 <code>CreateCase</code>：相棒モードなら最初の見立ては保存しない</h4>
+      <div class="code"><div class="file">src/app/Actions/Cases/CreateCase.php</div><pre><code>$case = $user-&gt;caseFiles()-&gt;create([
+    'title' =&gt; $data['title'],
+    'scene' =&gt; $data['scene'],
+    'partner_mode' =&gt; (bool) ($data['partner_mode'] ?? false),
+// …（省略）…
+// 最初の見立てが書いてあり、相棒モードでなければ、一緒に保存する（相棒モードは隠して書く流れで足す）
+if (filled($data['hypothesis_body'] ?? null) &amp;&amp; ! $case-&gt;partner_mode) {
+    $case-&gt;hypotheses()-&gt;create(['body' =&gt; $data['hypothesis_body']]);
+}</code></pre></div>
+      <p>画面で欄を隠していても、送る中身に <code>hypothesis_body</code> が入ってくることはあり得ます（入れてから切り替えた場合など）。それでも相棒モードなら保存しない、とサーバー側でも守っています。</p>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>書く：<code>case_files</code> に1行（<code>partner_mode = 1</code>・<code>revealed_at = null</code>）</li>
+      </ul></div>
+      <div class="code"><div class="file">src/database/migrations/2026_10_31_000002_create_case_files_table.php</div><pre><code>$table-&gt;boolean('partner_mode')-&gt;default(false); // 相棒モードか
+$table-&gt;timestamp('revealed_at')-&gt;nullable(); // 見せ合った日時。相棒モードで null の間は互いの見立てを隠す</code></pre></div>
+      <p>この2つの列が、この章の主役です。<b>「相棒モードで、まだ見せ合っていない」＝ <code>partner_mode</code> が本当で <code>revealed_at</code> が空</b>のあいだ、互いの見立てを隠します。</p>
+    </li>
+  </ol>
+
+  <h3>事件の画面が「渡し合い」になる</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>「隠すか」はモデルの1つの関数で決める：<code>CaseFile::hidesHypotheses</code></h4>
+      <div class="code"><div class="file">src/app/Models/CaseFile.php</div><pre><code>/** 相棒モードで、まだ見せ合っていない（互いの見立てを隠す）かを返す */
+public function hidesHypotheses(): bool
+{
+    return $this-&gt;partner_mode &amp;&amp; $this-&gt;revealed_at === null;
+}</code></pre></div>
+      <p>このあと出てくる「隠す・予想を止める・番の画面へ戻す・AI の窓口に見せない」は、どれもこの関数に聞きます。決まりを1か所にしておくと、見せ合ったあとに隠したままになる、といった食い違いが起きません。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>事件の画面を組み立てる：<code>CaseBoardQuery</code> が「いまの番」を決め、見立てを絞る</h4>
+      <p>事件を作ると、事件の画面 <code>GET /cases/{case}</code>（<code>CaseController::show</code>）へ転送されます。受付係は組み立てを <dfn>Query</dfn>（画面に出すものを読み集める係）に任せ、画面 <code>cases.board</code>（いまやることのカード1枚の形）に渡します。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/CaseController.php</div><pre><code>/** 事件の画面（いまやることのカード1枚）を返す（?turn=partner|self は相棒モードの番、?open= はカードにする用事） */
+public function show(Request $request, CaseFile $case, CaseBoardQuery $board): View
+{
+    $alert = $request-&gt;session()-&gt;get('watson_alert');
+
+    return view('cases.board', $board-&gt;handle($case, $request-&gt;user(), $request-&gt;query('turn'), $request-&gt;query('open'), $alert));
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Queries/Cases/CaseBoardQuery.php</div><pre><code>$turn = $case-&gt;hidesHypotheses() ? ($turn === 'self' ? 'self' : 'partner') : null;
+$visible = $turn === null ? $case-&gt;hypotheses : $case-&gt;hypotheses-&gt;filter(fn ($h) =&gt; $h-&gt;author-&gt;value === $turn)-&gt;values();
+// …（省略）…
+return [
+    'case' =&gt; $case,
+    'hypotheses' =&gt; $visible,
+    'hiddenCount' =&gt; $case-&gt;hypotheses-&gt;count() - $visible-&gt;count(),
+    'turn' =&gt; $turn,
+    'partnerName' =&gt; $user-&gt;partnerLabel(),
+    'selfName' =&gt; $user-&gt;name, // 相棒モードの渡し合いで「父さんの番だよ」のように自分を呼ぶ名前</code></pre></div>
+      <ol>
+        <li>隠す事件なら、住所の <code>?turn=</code> が <code>self</code> のときだけ「自分の番」、それ以外（何もない・ほかの文字）はいつも「相棒の番」にします。<b>先に相棒が書く</b>決まりなので、事件を作った直後は相棒の番から始まります。</li>
+        <li>隠さない事件（相棒モードでない・見せ合った）なら、番はありません（<code>null</code>）。</li>
+        <li>番があるときは、見立てを「書いた人がいまの番の人」のものだけに絞ります（<code>filter</code>）。</li>
+        <li><code>partnerName</code>（相棒の呼び名）と <code>selfName</code>（設定の表示名）は、画面で「長男さんの番だよ」「父さんは見ないでね」と2人を呼ぶのに使います。</li>
+      </ol>
+      <div class="analogy"><b>たとえると</b>クイズ番組で、2人が別々のフリップに答えを書いて「せーの」で見せるのと同じです。ここではフリップの代わりにスマホそのものを手渡しし、画面に出すのは「いまスマホを持っている人」の分だけにします。データベースには両方の答えがあります。</div>
+      <div class="point"><b>ここが大事</b>番は住所の <code>?turn=</code> で切り替えるだけなので、これは秘密を守るしくみではなく「先に相手の見立てを見てしまわないための目隠し」です。1つのアカウントを同じスマホで順番に使う前提（この章のはじめ）だから、これで足ります。他人の記録を見られないようにするしくみ（<code>-&gt;can()</code> と Policy）は別にあり、<a href="#s11">11章</a>で説明します。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>いまの一手は「相棒の番」「自分の番」→ 机の上のカードは「渡し合い」</h4>
+      <p>事件の画面の「いまやること」は、<code>NextStep</code> が上から順に条件を確かめて決めます。番があるときは、答え合わせや予想より先に番の案内になります。</p>
+      <div class="code"><div class="file">src/app/Queries/Cases/NextStep.php</div><pre><code>// 閉じた事件は、閉じたことを知らせて開き直しを置く
+if ($case-&gt;isClosed()) {
+    return ['key' =&gt; 'closed'];
+}
+// 相棒モードで見せ合う前なら、いまの番（相棒・自分）を案内する
+if ($turn !== null) {
+    return ['key' =&gt; $turn === 'self' ? 'self_turn' : 'partner_turn'];
+}</code></pre></div>
+      <p>画面のどのカードを出すかは、机の上の部品 <code>case-step.desk</code> が <code>match</code>（上から順に当てはめて、最初に合ったものを選ぶ書き方）で決めます。番があれば、カードは <code>partner</code>（渡し合い）です。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/desk.blade.php</div><pre><code>@php($card = match (true) {
+    $case-&gt;isClosed() =&gt; $open === 'edit-case' ? 'edit-case' : 'closed',
+{{-- …（省略）… --}}
+    $open === 'close' =&gt; 'close',
+    $turn !== null =&gt; 'partner',
+{{-- …（省略）… --}}
+&lt;x-case-step.stages :case="$case" :hypotheses="$turn === null ? $hypotheses : collect()" :hidden-count="0" :turn="$turn" :partner-name="$partnerName"
+{{-- …（省略）… --}}
+  :class="\Illuminate\Support\Arr::toCssClasses(['lg:sticky lg:top-16 lg:col-start-2 lg:row-start-1', 'max-lg:order-last' =&gt; $card === 'closed', 'max-lg:hidden' =&gt; $card === 'partner'])" /&gt;</code></pre></div>
+      <ul>
+        <li>ふだんの進み具合（5つの丸と済んだ段の要約、<code>case-step.stages</code>）には、番のあいだは見立てを1つも渡しません（<code>collect()</code> は空の一覧）。隠れている見立ての数も出しません（<code>:hidden-count="0"</code>）。</li>
+        <li>スマホの幅（<code>max-lg</code>）では、渡し合いのあいだ進み具合そのものを隠します（<code>max-lg:hidden</code>）。渡し合いの部品が自分の丸3つを出すので、付箋と主なボタンを最初の画面に収めるためです。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>渡し合いの入口：<code>case-partner.flow</code> が2人の呼び名を作り、いまの番の部品を置く</h4>
+      <div class="code"><div class="file">src/resources/views/components/case-step/now.blade.php</div><pre><code>@case('partner')
+  {{-- 相棒の渡し合いの部品に、いまの番と2人の呼び名・子ども向けの言葉を渡す --}}
+  &lt;x-case-partner.flow :case="$case" :board="null" :partner-name="$partnerName" :turn="$turn" :self-name="$selfName" :kid="$kid" /&gt;
+  @break</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/components/case-partner/flow.blade.php</div><pre><code>@php($names = [
+  'partner' =&gt; filled($partnerName) ? $partnerName.$t['honorific'] : config('suiri.labels.words.partner'),
+  'self' =&gt; filled($selfName) ? $selfName.$t['honorific'] : $t['self_fallback'],
+])
+{{-- …（省略）… --}}
+@if ($board !== null)
+  &lt;div {{ $attributes-&gt;class(['[word-break:auto-phrase]']) }}&gt;
+    &lt;x-case-partner.reveal :case="$case" :board="$board" :names="$names" :word="$word" :kid="$kid" /&gt;
+  &lt;/div&gt;
+@elseif (in_array($turn, ['partner', 'self'], true) &amp;&amp; $case-&gt;isOpen())
+  &lt;div {{ $attributes-&gt;class(['[word-break:auto-phrase]']) }}&gt;
+    &lt;x-case-partner.turn :case="$case" :who="$turn" :names="$names" :word="$word" :kid="$kid" /&gt;
+  &lt;/div&gt;
+@endif</code></pre></div>
+      <ul>
+        <li>2人の呼び名は、相棒の名前と設定の表示名に「さん」（<code>honorific</code>）を付けたものです（例「長男さん」「父さん」）。表示名がなければ「あなた」です。</li>
+        <li>見せ合う前（<code>$board</code> が <code>null</code>）で捜査中なら、いまの番の部品 <code>case-partner.turn</code> を置きます。見せ合ったあとは、同じ入口が見せ合いの部品を置きます（この章の最後）。</li>
+        <li><code>[word-break:auto-phrase]</code> は、日本語を文節で折り返す指定です（「渡し／てね」のように語の途中で切らない）。</li>
+      </ul>
+    </li>
+  </ol>
+
+  <h3>相棒の番：渡す付箋 → 書く → ○ を付ける → 渡す</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>まだ書いていなければ「長男さんにスマホを渡してね」の付箋</h4>
+      <p>いまの番の部品 <code>case-partner.turn</code> は、最初に「この人の見立て」（<code>$mine</code>）を集めます。まだ1つもなければ、丸3つの進み具合と、大きな付箋（<code>ui.handoff</code>）を出します。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-partner/turn.blade.php</div><pre><code>@php($other = $who === 'partner' ? 'self' : 'partner')
+@php($mine = $case-&gt;hypotheses-&gt;filter(fn ($h) =&gt; $h-&gt;author-&gt;value === $who)-&gt;values())
+@php($partnerCount = $case-&gt;hypotheses-&gt;filter-&gt;isByPartner()-&gt;count())
+@php($step = $who === 'partner' ? 1 : 2)
+@php($here = route('cases.show', ['case' =&gt; $case, 'turn' =&gt; $who]))
+@php($retry = old('form_key') === 'partner-hypothesis')
+@php($ids = ['write' =&gt; 'relay-'.$who.'-write', 'together' =&gt; 'relay-together'])
+{{-- …（省略）… --}}
+@if ($mine-&gt;isEmpty())
+  &lt;div class="space-y-4 peer-target/write:hidden"&gt;
+    &lt;x-case-partner.relay-progress :at="$who" :names="$names" :partner-done="$partnerCount &gt; 0" /&gt;
+    &lt;x-ui.handoff :to="$names[$who]" :href="'#'.$ids['write']"&gt;
+      {{-- ひとことの2つの文（だれの番か・だれが見ないか）を1行ずつ出す --}}
+      @foreach (config('suiri.case_partner.handoff') as $line)
+        &lt;span class="block"&gt;{{ __($line, ['name' =&gt; $names[$who], 'other' =&gt; $names[$other]]) }}&lt;/span&gt;
+      @endforeach
+    &lt;/x-ui.handoff&gt;
+  &lt;/div&gt;</code></pre></div>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'handoff' =&gt; [':nameの番だよ。', ':otherは見ないでね'], // 付箋のひとこと（1行ずつ出す）</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/components/ui/handoff.blade.php</div><pre><code>&lt;h2 class="mt-5 text-2xl leading-snug"&gt;{{ __(config('suiri.ui.handoff_title'), ['to' =&gt; $to]) }}&lt;/h2&gt;
+{{-- …（省略）… --}}
+@elseif ($href)
+  &lt;div class="mx-auto mt-8 max-w-sm"&gt;
+    &lt;x-ui.big-button :href="$href" tone="hypothesis" icon="check"&gt;{{ $label ?? config('suiri.ui.handoff_button') }}&lt;/x-ui.big-button&gt;
+  &lt;/div&gt;</code></pre></div>
+      <ul>
+        <li>付箋の見出しは「:toにスマホを渡してね」の <code>:to</code> に呼び名を入れた「長男さんにスマホを渡してね」、その下に「長男さんの番だよ。」「父さんは見ないでね」の2行です。だれの番かを、文字の大きさと色ではっきり見せます。</li>
+        <li><code>$mine</code> は事件の見立て全部から「いまの番の人が書いたもの」だけを取り出します。もう片方の見立ての文は、この部品のどこにも書き出さないので、HTML にも入りません（テスト <code>PartnerFlowTest</code> の <code>test_partner_turn_starts_with_the_handoff_and_hides_the_other_side</code> が確かめている）。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-partner-handoff.png" alt="相棒の渡し合いの付箋。上に丸3つ（長男さん・父さん・見せ合う）、「長男さんにスマホを渡してね」「長男さんの番だよ。父さんは見ないでね」、「受け取った！はじめる」"><figcaption>相棒の番の始まり。受け取った人が「受け取った！はじめる」を押す</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>「受け取った！はじめる」で書くカードが開く（サーバーに頼まない切り替え）</h4>
+      <p>ボタンの行き先は <code>#relay-partner-write</code> です。<code>#</code> で始まる行き先は「同じページの中の、この id の場所へ」という意味で、サーバーには何も送りません。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-partner/turn.blade.php</div><pre><code>&lt;section id="{{ $ids['write'] }}" @class(['peer/write scroll-mt-16', 'hidden target:block' =&gt; ! $retry])&gt;
+  &lt;x-case-partner.write-card :case="$case" :who="$who" :names="$names" :word="$word" :kid="$kid" :step="$step"</code></pre></div>
+      <ul>
+        <li>書くカードの枠は、ふだん <code>hidden</code>（隠す）で、<code>target:block</code>（住所の <code>#</code> がこの枠の id のときだけ見せる）です。CSS の <dfn>:target</dfn> は「いまの住所の <code>#…</code> が指している要素」を選ぶ仕組みで、JavaScript なしで「押すと開く」を作れます。ページを読み直しても同じ所が開いたままになります。</li>
+        <li>枠に付けた <code>peer/write</code> と、付箋の側の <code>peer-target/write:hidden</code> の組で、「書くカードが開いたら付箋を隠す」もしています（<dfn>peer</dfn>：前にある兄弟の要素の様子で、後ろの要素の見た目を変える目印）。</li>
+        <li>書いた文を送り直すとき（空のまま送ったなどのエラー）は、<code>$retry</code> が本当になり、付箋を出さずに書くカードを初めから開きます（テスト <code>test_a_resend_opens_the_write_card_directly</code>）。</li>
+      </ul>
+      <div class="code"><div class="file">src/resources/views/components/case-partner/write-card.blade.php</div><pre><code>&lt;form method="POST" action="{{ route('hypotheses.store', $case) }}"&gt;
+  @csrf
+  &lt;input type="hidden" name="form_key" value="partner-hypothesis"&gt;
+  &lt;input type="hidden" name="author" value="{{ $who }}"&gt;
+  &lt;x-ui.step-card :step="$step" :total="3" icon="question" tone="hypothesis" :title="$t['title']" :hint="__($t['mystery'], ['title' =&gt; $case-&gt;title])"&gt;
+{{-- …（省略）… --}}
+    &lt;x-case.textarea name="body" form-key="partner-hypothesis" rows="3" required :maxlength="config('suiri.limits.hypothesis_body')"</code></pre></div>
+      <p>カード「どうしてだと思う？」（ステップ 1 / 3）は、なぞと、見たことの荷札（読むだけ）を見ながら「長男さんの見立て」を1つ書いて「これでOK」で送る形です。隠し欄 <code>author</code> に、いまの番（<code>partner</code>）を入れて送ります。<code>form_key</code> は「どのフォームから送ったか」の札で、エラーで戻ったとき、このカードにだけ入力の残りとエラーを出すのに使います。まだ書けなければ、下の「あとで書く（父さんの番へ）」で飛ばせます。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>送る：<code>POST /cases/12/hypotheses</code>（中身に <code>_token</code>・<code>form_key=partner-hypothesis</code>・<code>author=partner</code>・<code>body</code>）。事件の番号 12 は例</li></ul></div>
+      <figure class="shot"><img data-img="screen-partner-write.png" alt="相棒が書くカード。「どうしてだと思う？」、なぞ、手がかりの荷札、「長男さんの見立て」の欄、「これでOK」、下に「あとで書く（父さんの番へ）」"><figcaption>相棒が書くカード（ステップ 1 / 3）</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>住所の表と見張り役：持ち主で、事件が捜査中か（<code>-&gt;can('write', 'case')</code>）</h4>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>Route::post('/cases/{case}/hypotheses', [HypothesisController::class, 'store'])-&gt;can('write', 'case')-&gt;name('hypotheses.store');</code></pre></div>
+      <p>この行は <code>auth</code>・<code>agreed</code> の囲みと <code>throttle:writes</code> の囲みの中にあります。並べ替えたあとの順は <code>… → PreventRequestForgery → Authenticate → ThrottleRequests:writes → SubstituteBindings → EnsureAgreed → Authorize:write,case</code> です。</p>
+      <ul>
+        <li><code>SubstituteBindings</code>：住所の <code>12</code> を <code>case_files</code> の行（<code>CaseFile</code>）に取り換えます。<code>{case}</code> と <code>CaseFile</code> を結ぶのは <code>AppServiceProvider</code> の <code>Route::model('case', CaseFile::class)</code> です（<code>case</code> は PHP で使えない名前なので、モデルは <code>CaseFile</code>。<a href="#s0">0章</a>）。</li>
+        <li><code>Authorize:write,case</code>：<code>-&gt;can('write', 'case')</code> が付けた見張り役です。<code>CaseFilePolicy</code> の <code>write</code>（中身は <code>WritesOpenCase</code>：記録の <code>user_id</code> とログイン中の人の id が同じか（<code>OwnerOnly</code> の <code>owns</code>）と、事件が捜査中か）に聞き、違えば・閉じていれば 403（禁止）にします（<a href="#s11">11章</a>）。</li>
+      </ul>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Auth/Middleware/Authorize.php</div><pre><code>public function handle($request, Closure $next, $ability, ...$models)
+{
+    $this-&gt;gate-&gt;authorize($ability, $this-&gt;getGateArguments($request, $models));
+
+    return $next($request);
+}</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>形の検証：<code>StoreHypothesisRequest</code>（書いた人は2種類だけ）</h4>
+      <div class="code"><div class="file">src/app/Http/Requests/Cases/StoreHypothesisRequest.php</div><pre><code>/** 持ち主か・事件が捜査中か（閉じた事件には足せない）はルートの -&gt;can('write', 'case') で確かめ済みなので、ここでは通す */
+public function authorize(): bool
+{
+    return true;
+}
+// …（省略）…
+public function rules(): array
+{
+    return [
+        'body' =&gt; ['required', 'string', 'max:'.config('suiri.limits.hypothesis_body')],
+        'author' =&gt; ['nullable', Rule::enum(HypothesisAuthor::class)],
+    ];
+}</code></pre></div>
+      <p><code>Rule::enum(HypothesisAuthor::class)</code> は「<code>HypothesisAuthor</code> という<dfn>列挙型（enum）</dfn>の値のどれかであること」という決まりです。列挙型は「取りうる値を決めた一覧」で、書いた人は <code>self</code>（自分）と <code>partner</code>（相棒）の2つだけです。ほかの文字を送ると検証で止まります。</p>
+      <div class="code"><div class="file">src/app/Enums/HypothesisAuthor.php</div><pre><code>/** 見立てを書いた人（自分・相棒）。hypotheses.author */
+enum HypothesisAuthor: string
+{
+    use HasLabel;
+
+    case Self = 'self';
+    case Partner = 'partner';</code></pre></div>
+      <p><code>authorize()</code> が <code>false</code> を返すと、Laravel は <code>AuthorizationException</code> を投げ、画面は 403 になります（上の <code>validateResolved</code> の <code>failedAuthorization</code>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>用事 <code>AddHypothesis</code>：相棒モードのときだけ「書いた人」を残す</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/HypothesisController.php</div><pre><code>$hypothesis = $addHypothesis-&gt;handle($case, $request-&gt;validated('body'), $request-&gt;validated('author'));</code></pre></div>
+      <div class="code"><div class="file">src/app/Actions/Cases/AddHypothesis.php</div><pre><code>/** 見立てを足して返す。持ち主（user_id）は事件から写る */
+public function handle(CaseFile $case, string $body, ?string $author = null): Hypothesis
+{
+    $author = $case-&gt;partner_mode ? ($author ?? HypothesisAuthor::Self-&gt;value) : HypothesisAuthor::Self-&gt;value;
+    $hypothesis = $case-&gt;hypotheses()-&gt;create(['body' =&gt; $body, 'author' =&gt; $author]);
+    $case-&gt;touch();
+
+    return $hypothesis;
+}</code></pre></div>
+      <ul>
+        <li>相棒モードの事件なら、送られた書いた人を使います（送られなければ「自分」）。</li>
+        <li>相棒モードでない事件なら、<code>author=partner</code> が送られてきても、いつも「自分」にします（テスト <code>test_author_is_self_outside_partner_mode</code>）。</li>
+        <li><code>$case-&gt;hypotheses()-&gt;create(...)</code> と事件から作るので、<code>case_file_id</code> は自動で入ります。<code>user_id</code> は、モデルの部品 <code>CopiesOwnerFromCase</code> が「作る直前に、事件の持ち主を写す」決まりで入れます。相棒の見立ても持ち主は親のアカウントです。</li>
+        <li><code>$case-&gt;touch()</code>：事件の <code>updated_at</code> を今の時刻にします（一覧で「最近さわった事件」が上に来るように）。</li>
+      </ul>
+      <div class="code"><div class="file">src/app/Models/Concerns/CopiesOwnerFromCase.php</div><pre><code>static::creating(function ($model) {
+    // user_id が渡されておらず、親の事件がわかるときは、事件の持ち主を写す
+    if ($model-&gt;user_id === null &amp;&amp; $model-&gt;case_file_id !== null) {
+        $model-&gt;user_id = CaseFile::whereKey($model-&gt;case_file_id)-&gt;value('user_id');
+    }
+});</code></pre></div>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>読む：<code>case_files</code> の持ち主（<code>user_id</code>）</li>
+        <li>書く：<code>hypotheses</code> に1行（<code>author = 'partner'</code>・<code>status = 'considering'</code>（検討中））</li>
+        <li>書く：<code>case_files.updated_at</code></li>
+      </ul></div>
+      <div class="code"><div class="file">src/database/migrations/2026_10_31_000004_create_hypotheses_table.php</div><pre><code>$table-&gt;string('author', 10)-&gt;default('self'); // 書いた人（self・partner）</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>書いた人の番の画面へ戻す（<code>turnOf</code> と <code>backToCase</code>）</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/HypothesisController.php</div><pre><code>return $this-&gt;backToCase($case, '見立てを足しました。', [$hypothesis-&gt;body], 'hypotheses', $this-&gt;turnOf($hypothesis));
+// …（省略）…
+/** 相棒モードで見せ合う前なら、その見立てを書いた人の番（'partner'・'self'）を返す。それ以外は null */
+private function turnOf(Hypothesis $hypothesis): ?string
+{
+    return $hypothesis-&gt;caseFile-&gt;hidesHypotheses() ? $hypothesis-&gt;author-&gt;value : null;
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/Concerns/RedirectsToCase.php</div><pre><code>$alert = app(WatsonNotes::class)-&gt;alertFor(...$texts);
+$url = route('cases.show', array_filter(['case' =&gt; $case, 'turn' =&gt; $turn, 'open' =&gt; $this-&gt;backOpen()]));
+// 警告がなければ、さわっていた場所へ戻す（○× を続けて付けるときなどに、画面が上へ飛ばないように）
+if ($alert === null &amp;&amp; $anchor !== null) {
+    $url .= '#'.$anchor;
+}</code></pre></div>
+      <p>相棒が見立てを足したら <code>/cases/12?turn=partner#hypotheses</code> へ戻ります（テスト <code>test_each_turn_hides_the_other_side</code> が確かめている行き先）。自分の番で足したら <code>?turn=self</code> です。もし番を付けずに戻すと、<code>CaseBoardQuery</code> の決まりで相棒の番に切り替わってしまい、自分が書いた見立てが目の前で隠れてしまいます。それを防ぐために、書いた人の番を住所に付けて戻します。</p>
+      <ul>
+        <li><code>array_filter</code> は空の値を外す関数です。番がない（<code>null</code>）ときは <code>?turn=</code> を付けず、隠し項目 <code>back_open</code> が送られていなければ <code>?open=</code> も付けません（渡し合いの書くカードは <code>back_open</code> を送りません）。</li>
+        <li>保存した文に、ほかの人がわかる情報らしきものがあれば、ワトソンの警告も付けます（<a href="#s5">5章</a>）。</li>
+        <li>戻った画面では、この人の見立てが1つできたので、付箋ではなく次の「○ を付けるカード」が出ます。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>書いたあと：合う手がかりに ○ を付けて、「書けたら、父さんにわたしてね」</h4>
+      <p>カード「合う手がかりに ○ を付けよう」（<code>case-partner.mark-card</code>）は、いま書いた見立て（いちばん最後に書いたもの）と、手がかりの荷札ごとの大きな ○・× のボタンを並べます。○× は、あとで見せ合うときに「見ていたところの違い」を出すのに使います（付けなくても進める）。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-partner/mark-card.blade.php</div><pre><code>@php($latest = $hypotheses-&gt;last())
+{{-- …（省略）… --}}
+&lt;x-ui.step-card id="hyp-{{ $latest-&gt;id }}" class="scroll-mt-16" :step="$step" :total="3" icon="question" tone="hypothesis"</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/components/case-partner/fit-buttons.blade.php</div><pre><code>@foreach (\App\Enums\Fit::cases() as $option)
+  @php($on = $fit === $option)
+  &lt;form method="POST" action="{{ route($on ? 'fits.destroy' : 'fits.update', [$hypothesis, $clue]) }}"&gt;
+    @csrf
+    @method($on ? 'DELETE' : 'PUT')
+    &lt;input type="hidden" name="fit" value="{{ $option-&gt;value }}"&gt;</code></pre></div>
+      <p>○ と × のボタンは、それぞれが小さなフォームです。まだ付いていない印を押すと <code>PUT /hypotheses/{hypothesis}/clues/{clue}</code>（付ける）、付いている印をもう一度押すと <code>DELETE</code>（外す）を送ります。受付は ○× の受付 <code>FitController</code> で、見張り役と検証の流れは <a href="#s5">5章</a> と同じです。戻り先だけは、相棒モードで見せ合う前なら書いた人の番の画面にし、印 <code>#hyp-{番号}</code>（このカードの id）へ戻すので、続けて付けても画面が上へ飛びません。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/FitController.php</div><pre><code>/** その見立てのところへ戻す（相棒モードで見せ合う前なら、書いた人の番の画面へ） */
+private function back(Hypothesis $hypothesis, string $status): RedirectResponse
+{
+    $case = $hypothesis-&gt;caseFile;
+
+    return $this-&gt;backToCase($case, $status, [], 'hyp-'.$hypothesis-&gt;id, $case-&gt;hidesHypotheses() ? $hypothesis-&gt;author-&gt;value : null);
+}</code></pre></div>
+      <p>カードの主なボタンは、番によって替わります。相棒の番なら <code>?turn=self</code> を付けた事件の画面へのリンク「書けたら、父さんにわたしてね」です。ふつうのリンク（GET）なので、記録は何も変わりません。下には「ほかの理由も書く」（書くカードの印 <code>#relay-partner-write</code> へ）があります。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-partner/turn.blade.php</div><pre><code>@if ($who === 'partner')
+  &lt;x-ui.big-button :href="route('cases.show', ['case' =&gt; $case, 'turn' =&gt; 'self'])" tone="hypothesis" icon="partner"&gt;{{ __(config('suiri.case_partner.pass'), ['other' =&gt; $names['self']]) }}&lt;/x-ui.big-button&gt;
+@else
+  &lt;x-ui.big-button :href="'#'.$ids['together']" tone="hypothesis" icon="partner"&gt;{{ __(config('suiri.case_partner.call'), ['other' =&gt; $names['partner']]) }}&lt;/x-ui.big-button&gt;
+@endif</code></pre></div>
+      <figure class="shot"><img data-img="screen-partner-mark.png" alt="○ を付けるカード。「合う手がかりに ○ を付けよう」、長男さんの見立て、荷札ごとの大きな ○ × のボタン、「書けたら、父さんにわたしてね」、下に「ほかの理由も書く」"><figcaption>書いたあとのカード。荷札ごとに ○ × を付けて、スマホを渡す</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>見せ合う前は止めておくこと：予想・見立ての見直し・AI に見せる文</h4>
+      <p>見せ合う前に予想（<a href="#s6">6章</a>）を立てられると、片方だけ先に話が進んでしまいます。そこで、隠しているあいだは予想を受け付けません。</p>
+      <div class="code"><div class="file">src/app/Http/Requests/Cases/StorePredictionRequest.php</div><pre><code>/** 相棒モードなら見せ合ったあとの事件だけ予想を立てられる（持ち主か・捜査中かはルートの -&gt;can('write', 'hypothesis') で確かめ済み） */
+public function authorize(): bool
+{
+    return ! $this-&gt;route('hypothesis')-&gt;caseFile-&gt;hidesHypotheses();
+}</code></pre></div>
+      <p>画面でも、予想や見立てにかかわる入口を出しません。机の上の部品は、隠しているあいだ <code>?open=predict-…</code> のような頼みを受け付けず、下の「ほかにできること」（<code>case-step.more</code>）も、見立てにかかわる行（見立てをもう1つ・見直す・AI に相談する用に写す）を、番がないときだけ出します。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/desk.blade.php</div><pre><code>@php($asked = $case-&gt;hidesHypotheses() ? null : $alive-&gt;firstWhere('id', $openId('predict-') ?? $openId('fit-')))</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/components/case-step/more.blade.php</div><pre><code>@php($together = $open &amp;&amp; $turn === null)</code></pre></div>
+      <p>ワトソンのひとことの「いつ確かめる？」（W-6）も、隠しているあいだは出しません（<code>WatsonNotes::lacksCheckDate</code> の <code>$case-&gt;hidesHypotheses()</code>）。ChatGPT・Claude とつなぐ読むだけの窓口や、AI に相談する用に写す文も、見せ合う前はどちらの見立ても出しません（<a href="#s13">13章</a>）。</p>
+      <div class="code"><div class="file">src/app/Support/Ai/ConsultText.php</div><pre><code>// 相棒モードで見せ合う前は、どちらの見立ても写さない（相手に見せない決まり）
+if ($case-&gt;hidesHypotheses()) {
+    return [$t['hidden']];
+}</code></pre></div>
+      <div class="point"><b>ここが大事</b>画面で入口を出さないだけでは、送る中身を作り直されると通ってしまいます。だから、<b>画面（入口を出さない）とサーバー（<code>authorize()</code> で 403）の両方</b>で止めています。テスト <code>test_each_turn_hides_the_other_side</code> が、見せ合う前の予想が 403 になることを確かめています。</div>
+    </li>
+  </ol>
+
+  <h3>自分の番 → いっしょに見せ合う</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>自分の番も同じ流れ。書いたら「書けたら、長男さんをよぼう」→「2人とも書けたね！」</h4>
+      <p><code>?turn=self</code> の画面では、同じ部品が <code>$who = 'self'</code> で動きます。付箋は「父さんにスマホを渡してね」「父さんの番だよ。」「長男さんは見ないでね」、書くカードはステップ 2 / 3 です。相棒の見立ての文は出ません（テスト <code>test_self_turn_leads_to_reveal_without_showing_the_partner</code>）。</p>
+      <p>自分が書いたあとの主なボタンは「書けたら、長男さんをよぼう」で、行き先は同じページの印 <code>#relay-together</code> です。その印の枠には、「いっしょに見せ合おう！」のカードが隠して置いてあり、<code>:target</code> で開きます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-partner/turn.blade.php</div><pre><code>@if ($who === 'self')
+  &lt;section id="{{ $ids['together'] }}" class="peer/together hidden scroll-mt-16 space-y-4 target:block"&gt;
+    &lt;x-case-partner.relay-progress at="reveal" :names="$names" :partner-done="$partnerCount &gt; 0" /&gt;
+    &lt;x-case-partner.together :case="$case" :names="$names" :partner-count="$partnerCount" :self-count="$mine-&gt;count()"</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/components/case-partner/together.blade.php</div><pre><code>&lt;form method="POST" action="{{ route('cases.reveal', $case) }}"&gt;
+  @csrf
+  &lt;x-ui.step-card :step="3" :total="3" icon="partner" tone="hypothesis" :title="$partnerCount &gt; 0 ? $t['title'] : $t['title_alone']"
+{{-- …（省略）… --}}
+    @foreach (['partner' =&gt; $partnerCount, 'self' =&gt; $selfCount] as $who =&gt; $count)
+{{-- …（省略）… --}}
+      &lt;x-ui.big-button tone="hypothesis" icon="sparkle"&gt;{{ $t['button'] }}&lt;/x-ui.big-button&gt;</code></pre></div>
+      <ul>
+        <li>カード「2人とも書けたね！」（ステップ 3 / 3）は、2人が<b>何個書いたか</b>だけを並べます（文は見せない）。相棒の数は、<code>$partnerCount</code>（相棒が書いた見立ての数）です。</li>
+        <li>相棒がまだ書いていなければ、見出しは「書けたね！」になり、数の代わりに「まだ」と出て、相棒の番に戻るリンクも出ます（書かなくても見せ合える）。</li>
+        <li>フォームの中身は合言葉（<code>_token</code>）だけで、送り先は <code>route('cases.reveal', $case)</code>、つまり <code>POST /cases/12/reveal</code> です。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-partner-together.png" alt="「いっしょに見せ合おう」のカード。丸3つの「見せ合う」が今の段、「2人とも書けたね！」に長男さん 1つ・父さん 1つ、「いっしょに見せ合おう！」"><figcaption>見せ合う前の最後の段。数だけを並べる</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>住所の表：<code>POST /cases/{case}/reveal</code></h4>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>// 閉じる・開き直す・見せ合う
+Route::post('/cases/{case}/close', CloseCaseController::class)-&gt;can('update', 'case')-&gt;name('cases.close');
+Route::delete('/cases/{case}/close', ReopenCaseController::class)-&gt;can('update', 'case')-&gt;name('cases.reopen');
+Route::post('/cases/{case}/reveal', RevealHypothesesController::class)-&gt;can('write', 'case')-&gt;name('cases.reveal');</code></pre></div>
+      <p>受付係が <code>[クラス, '関数']</code> ではなくクラスだけ（<code>RevealHypothesesController::class</code>）なのは、<dfn>1アクションのコントローラー</dfn>だからです。仕事が1つしかない受付係は、関数 <code>__invoke</code> を1つだけ持ちます。設計書では「事件の CRUD は1つのコントローラー、CRUD でない動き（閉じる・開き直す・見せ合う…）は1アクションのコントローラー」と決めています。</p>
+      <p>見張り役は見立てを足すときと同じで、最後に <code>Authorize:write,case</code>（持ち主で、事件が捜査中か）を通ります。閉じる・開き直すは <code>update</code>（持ち主かだけ）です。閉じた事件を開き直せないと困るからです。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付係 <code>RevealHypothesesController</code> → 用事 <code>RevealHypotheses</code></h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/RevealHypothesesController.php</div><pre><code>/** 見せ合って、並べて見る表のところへ戻す */
+public function __invoke(CaseFile $case, RevealHypotheses $reveal): RedirectResponse
+{
+    $reveal-&gt;handle($case);
+
+    return $this-&gt;backToCase($case, '見せ合いました。どの手がかりで見方が分かれたかを話してみましょう。', [], 'reveal');
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Actions/Cases/RevealHypotheses.php</div><pre><code>/** 見せ合った日時を入れる。相棒モードでない事件や、もう見せ合った事件では何もしない */
+public function handle(CaseFile $case): void
+{
+    // まだ隠している相棒モードの事件だけ、見せ合った日時を入れる
+    if ($case-&gt;hidesHypotheses()) {
+        $case-&gt;update(['revealed_at' =&gt; now()]);
+    }
+}</code></pre></div>
+      <p>することは「<code>revealed_at</code> に今の日時を入れる」だけです。これで <code>hidesHypotheses()</code> が <code>false</code> に変わり、隠す・予想を止める・番の画面へ戻す、が全部いっぺんに外れます。2回押しても、2回目は何もしません（最初に見せ合った日時が残る）。見せ合ったあとに隠し直す道は作っていません。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>書く：<code>case_files.revealed_at</code>（今の日時）</li></ul></div>
+      <p>転送先は <code>/cases/12#reveal</code>（番なし）です。<code>#reveal</code> は、画面の中の見せ合いの部品（<code>&lt;section id="reveal"&gt;</code>）へ飛ぶための印です。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>もう一度 <code>CaseBoardQuery</code>：番がなくなり、並べて見る表を作る</h4>
+      <div class="code"><div class="file">src/app/Queries/Cases/CaseBoardQuery.php</div><pre><code>'board' =&gt; $case-&gt;partner_mode &amp;&amp; $turn === null ? $this-&gt;revealBoard-&gt;build($case) : null,</code></pre></div>
+      <p>見せ合ったので <code>$turn</code> は <code>null</code>、見立ては全部（<code>$visible</code> ＝ 全部）出ます。相棒モードで番がないとき、つまり見せ合ったあとだけ、<code>RevealBoard</code> に表を作らせます。</p>
+      <p>番がなくなったので、机の上のカードは、ふつうの事件と同じ「いまの一手」（多くは ○× を付ける・予想を立てる）に戻ります。見せ合いの表は、そのカードと「ほかにできること」の下に、開いた状態のたたみ（<code>&lt;details open&gt;</code>）で置かれます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/desk.blade.php</div><pre><code>{{-- 相棒モードで見せ合ったあとなら、相棒の渡し合いの部品の「見せ合い」を下に置く（中に id="reveal" があり、見せ合った直後はここへ戻る） --}}
+@if ($board !== null)
+  &lt;details open class="group mt-8"&gt;
+{{-- …（省略）… --}}
+      &lt;x-case-partner.flow :case="$case" :board="$board" :partner-name="$partnerName" :self-name="$selfName" :kid="$kid" /&gt;</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>RevealBoard::build</code>：手がかりごとに、どちらがどの見立てで ○× を付けたか</h4>
+      <div class="code"><div class="file">src/app/Queries/Cases/RevealBoard.php</div><pre><code>$partner = $case-&gt;hypotheses-&gt;filter-&gt;isByPartner()-&gt;values();
+$self = $case-&gt;hypotheses-&gt;reject-&gt;isByPartner()-&gt;values();
+
+$rows = [];
+// 手がかりを1つずつ取り出し、両方の側の印を集めて比べる
+foreach ($case-&gt;clues as $clue) {
+    $p = $this-&gt;marks($partner, $clue-&gt;id);
+    $s = $this-&gt;marks($self, $clue-&gt;id);
+    $rows[] = [
+        'clue' =&gt; $clue,
+        'partner' =&gt; $p,
+        'self' =&gt; $s,
+        'differs' =&gt; (bool) $p['fits'] !== (bool) $s['fits'] || (bool) $p['contradicts'] !== (bool) $s['contradicts'],
+    ];
+}</code></pre></div>
+      <ol>
+        <li>見立てを「相棒が書いたもの」と「自分が書いたもの」に分けます。<code>filter-&gt;isByPartner()</code> は「<code>isByPartner()</code> が本当のものだけ残す」、<code>reject-&gt;isByPartner()</code> は「本当のものを外す」という Laravel の短い書き方です。</li>
+        <li>手がかりを1つずつ見て、それぞれの側で「この手がかりに ○（合う）を付けた見立ての番号」と「×（合わない）を付けた見立ての番号」を集めます（<code>marks</code>）。</li>
+        <li><code>differs</code>（違いがあるか）：片方は ○ を付けたのにもう片方は1つも付けていない、のように、<b>○ があるか・× があるかが両方でそろっていない</b>とき本当にします。<code>(bool)</code> は「空の一覧なら false、1つでもあれば true」に変える書き方です。</li>
+      </ol>
+      <div class="code"><div class="file">src/app/Queries/Cases/RevealBoard.php</div><pre><code>/** 片方の側の見立てのうち、その手がかりに ○ を付けた番号と × を付けた番号を返す（番号は並びの1から） */
+private function marks(Collection $hypotheses, int $clueId): array
+{
+    $marks = ['fits' =&gt; [], 'contradicts' =&gt; []];
+    // 見立てを1つずつ取り出し、その手がかりへの印があれば番号を控える
+    foreach ($hypotheses as $i =&gt; $hypothesis) {
+        $fit = $this-&gt;fitOf($hypothesis, $clueId);
+        // 印があれば、合う・合わないの側に番号を入れる
+        if ($fit !== null) {
+            $marks[$fit-&gt;value][] = $i + 1;
+        }
+    }
+
+    return $marks;
+}</code></pre></div>
+      <p>○× の印（<code>clue_hypothesis</code> 表の <code>fit</code>。<code>fits</code> か <code>contradicts</code>）は、<code>CaseBoardQuery</code> が最初に <code>hypotheses.fits</code> として読み込んであるので、ここでデータベースへ取りに行くことはありません。2人がそれぞれの番で付けた ○ が、ここで初めて並びます。</p>
+      <div class="data"><b>例（テスト <code>test_reveal_lines_up_both_sides_and_marks_the_split_clue</code> と同じ形）</b><ul>
+        <li>1つ目の手がかり：父も長男も、自分の見立てに ○ → <code>differs</code> は false</li>
+        <li>2つ目の手がかり：長男だけ ○、父は印なし → <code>differs</code> は true（「見方が分かれたよ」が出る）</li>
+      </ul></div>
+      <div class="analogy"><b>たとえると</b>2人の答案を横に並べて、問題ごとに「2人とも同じ所に丸を付けたか」を見比べる表です。ただし勝ち負けを決めるためではなく、「どの手がかりで見方が分かれたか」を話すきっかけにするための表です。</div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>画面：見せ合い（<code>case-partner.reveal</code>）</h4>
+      <div class="code"><div class="file">src/resources/views/components/case-partner/reveal.blade.php</div><pre><code>&lt;section id="reveal" class="scroll-mt-16"&gt;
+{{-- …（省略）… --}}
+      @foreach ($sides as $who =&gt; $hypotheses)
+        &lt;x-case-partner.side :who="$who" :name="$names[$who]" :word="$word" :hypotheses="$hypotheses" /&gt;
+      @endforeach
+{{-- …（省略）… --}}
+          @foreach ($board['rows'] as $row)
+            &lt;li&gt;
+              &lt;x-ui.evidence-tag :no="$loop-&gt;iteration" :tone="$row['differs'] ? 'hypothesis' : 'clue'"
+{{-- …（省略）… --}}
+                @if ($row['differs'])
+                  &lt;span class="mb-1 inline-flex items-center gap-1 rounded-full bg-hypothesis px-2.5 py-0.5 text-xs font-bold text-on-ink"&gt;
+                    &lt;x-ui.step-icon name="question" class="size-4" /&gt;{{ $t['differs'] }}
+                  &lt;/span&gt;
+                @endif
+{{-- …（省略）… --}}
+                  @foreach (['partner', 'self'] as $who)
+                    &lt;x-case-partner.marks :who="$who" :name="$names[$who]" :marks="$row[$who]" :numbered="$sides[$who]-&gt;count() &gt; 1" /&gt;
+                  @endforeach</code></pre></div>
+      <ul>
+        <li>上に「長男さんの見立て」「父さんの見立て」の2つの欄（<code>case-partner.side</code>）を、幅の広い画面では左右、スマホでは上下に並べます。見立てには番号が付きます。</li>
+        <li>下に手がかりの荷札（<code>ui.evidence-tag</code>）を1枚ずつ並べ、荷札ごとに2人の印（<code>case-partner.marks</code>）を出します。印は、呼び名の1文字目の丸と「○1・2 ×3」のような番号（その人の見立てが1つだけなら番号を省いて ○・× だけ、何もなければ「印なし」）です。</li>
+        <li>付け方が分かれた荷札（<code>differs</code>）は、からし色（<code>tone="hypothesis"</code>）にして「見方が分かれたよ」の印を付けます。いちばん下には「『どうしてそこに ○ を付けたの？』と聞いてみよう」と出します。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-partner-reveal.png" alt="見せ合いの画面。「2人の見立てを並べたよ」、長男さんの見立てと父さんの見立て、手がかりの荷札ごとに2人の印、分かれた札に「見方が分かれたよ」"><figcaption>見せ合ったあと。印の付け方が分かれた荷札に「見方が分かれたよ」が出る</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>見せ合ったあとは、ふつうの事件と同じ流れ。見立てには書いた人が付く</h4>
+      <p>見せ合ったあとは、ふつうの事件と同じように予想を立て、答え合わせができます。「見立てを見直そう」のカード（<code>case-step.edit-hyps-card</code> の中の1行ずつ）には、相棒モードの事件なら「長男の見立て」「自分の見立て」の札が付くので、どちらの見立てから予想を立てたかがわかります。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/hyp-row.blade.php</div><pre><code>{{-- 相棒モードの事件なら、だれの見立てかを上に小さく出す --}}
+@if ($case-&gt;partner_mode)
+  &lt;p class="text-sm font-semibold text-hypothesis"&gt;{{ $h-&gt;isByPartner() ? __($w['by_partner'], ['who' =&gt; $partnerName]) : $w['by_self'] }}&lt;/p&gt;
+@endif</code></pre></div>
+      <p>なお、見せ合ったあとに見立てを足すと、ふつうの「見立てをもう1つ」のカードは <code>author</code> を送りません。<code>AddHypothesis</code> の <code>$author ?? HypothesisAuthor::Self-&gt;value</code> により、その見立ては「自分」の見立てになります。</p>
+    </li>
+  </ol>
+
+  <div class="recap"><b>この章のまとめ</b><ol>
+    <li>相棒は別のアカウントではなく、同じアカウント・同じスマホを渡し合って順番に書く人。相棒の見立ても持ち主（<code>user_id</code>）は親で、<code>hypotheses.author</code> が <code>partner</code> になるだけ。</li>
+    <li>相棒モードは、設定の <code>users.partner_name</code> がある人だけ。事件を作る1問目の「長男といっしょに考える？」で選び、入れると3問目の入力欄が CSS だけで説明に替わる。<code>StoreCaseRequest</code> が名前のない人の <code>partner_mode</code> を外し、<code>CreateCase</code> は相棒モードの最初の見立てを保存しない。</li>
+    <li>「隠すか」は <code>CaseFile::hidesHypotheses()</code>（<code>partner_mode</code> が本当で <code>revealed_at</code> が空）の1か所で決める。<code>CaseBoardQuery</code> が住所の <code>?turn=</code> でいまの番を決め（相棒の番から始まる）、机の上のカードは渡し合い（<code>case-partner.flow</code> → <code>turn</code>）になる。もう片方の見立ての文は HTML にも入れない。</li>
+    <li>番ごとに「渡す付箋 →（<code>:target</code> で開く）書くカード → ○ を付けるカード → 渡す」。書くカードは隠し欄 <code>author</code> に番を入れ、<code>AddHypothesis</code> は相棒モードのときだけそれを残す。書いたあと・○× を付けたあとは、書いた人の番の画面へ戻す。</li>
+    <li>見せ合う前は、予想を画面でもサーバー（<code>StorePredictionRequest::authorize</code>）でも止め、AI に見せる文にも見立てを出さない。</li>
+    <li>「いっしょに見せ合おう！」（<code>POST /cases/{case}/reveal</code>）は <code>revealed_at</code> に日時を入れるだけ。すると <code>RevealBoard</code> が手がかりごとの ○× を2人分並べ、分かれた荷札に「見方が分かれたよ」を出す。カードはふつうのいまの一手に戻る。</li>
+  </ol></div>
+</section>

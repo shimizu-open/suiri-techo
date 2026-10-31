@@ -1,0 +1,829 @@
+<section class="story" id="s5">
+  <h2><span class="no">5</span>手がかりを足し、見立てを立てて ○× を付ける</h2>
+  <p class="userstory">事件を調べている人として、見たこと・聞いたことを手がかりとして集め、説明の案（見立て）を2つ以上並べて、どの手がかりがどの見立てに合うかを確かめたい。だから、事件の画面に1枚ずつ出る「いまやること」のカードに答えて、手がかりと見立てを書き足し、見立てごとに ○× を付ける。</p>
+  <p class="summary">この章で追う道筋：<code>GET /cases/{case}</code> → <code>CaseBoardQuery</code>（いまの一手 <code>NextStep</code>）→ 机の部品 <code>case-step/desk</code> がカードを1枚選ぶ → 「見たことを1つ教えて」のカード（提案のチップつき）→ <code>POST /cases/{case}/clues</code> → 見張り役（<code>throttle:writes</code>・<code>can:write,case</code>）→ <code>StoreClueRequest</code> → <code>ClueController::store</code> → 用事 <code>AddClue</code> → <code>backToCase</code>（ほかの人がわかる情報の確認・<code>back_open</code>）→ 次のカード → <code>WatsonNotes::forCase</code>（吹き出し1つ）→ ひとことを閉じる <code>POST /cases/{case}/hints/{rule}</code> → 「どうしてだと思う？」のカード → <code>POST /cases/{case}/hypotheses</code>（<code>AddHypothesis</code>）→ 「この見立てに合う？」のカード → ○× <code>PUT /hypotheses/{hypothesis}/clues/{clue}</code>（<code>can</code> 2つ・<code>UpdateFitRequest</code>・<code>SetFit</code>）→ 見立てを見直す <code>PATCH /hypotheses/{hypothesis}</code>（<code>ChangeHypothesisStatus</code>・考えを変えた記録）→ 直す・消す</p>
+
+  <h3>事件の画面は「いまやること」のカード1枚</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>CaseController::show</code> と、いまの一手を決める係 <code>NextStep</code></h4>
+      <p>事件の画面（<code>GET /cases/12</code>）は、開いたら<b>いまやることが1つだけ</b>大きく見える形です。手がかりを書く・見立てを書く・○× を付ける・予想を立てる……のうち、今いちばんすべきこと1つをカードにして出し、済んだことは脇にたたみます。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/CaseController.php</div><pre><code>/** 事件の画面（いまやることのカード1枚）を返す（?turn=partner|self は相棒モードの番、?open= はカードにする用事） */
+public function show(Request $request, CaseFile $case, CaseBoardQuery $board): View
+{
+    $alert = $request-&gt;session()-&gt;get('watson_alert');
+
+    return view('cases.board', $board-&gt;handle($case, $request-&gt;user(), $request-&gt;query('turn'), $request-&gt;query('open'), $alert));
+}</code></pre></div>
+      <p>画面に渡す値は、組み立て係 <code>CaseBoardQuery</code>（<a href="#s4">4章</a>）がまとめて作ります。その中で「いまの一手」を決めるのが <code>NextStep</code> です。上から順に確かめ、最初に当てはまったものを返します。</p>
+      <div class="code"><div class="file">src/app/Queries/Cases/NextStep.php</div><pre><code>// 手がかりがまだなければ、まず見たこと・聞いたことを足す
+if ($case-&gt;clues-&gt;isEmpty()) {
+    return ['key' =&gt; 'add_clue'];
+}
+$alive = $case-&gt;hypotheses-&gt;filter(fn ($h) =&gt; $h-&gt;status-&gt;isAlive());
+// 生きている見立てがなければ（まだない・全部消えた）、見立てを足す
+if ($alive-&gt;isEmpty()) {
+    return ['key' =&gt; $case-&gt;hypotheses-&gt;isEmpty() ? 'add_hypothesis' : 'all_eliminated'];
+}
+// …（省略）…
+// 答え合わせ待ちの予想がなければ、有力な見立て（なければ最初の見立て）から予想を立てる
+if ($pending-&gt;isEmpty()) {
+    $target = $alive-&gt;firstWhere('status', HypothesisStatus::Likely) ?? $alive-&gt;first();
+
+    return ['key' =&gt; 'predict', 'hypothesis' =&gt; $target];
+}</code></pre></div>
+      <p>省いた所には、閉じた事件・相棒モードの番・確かめる日が来た予想の答え合わせ・事件を閉じる、の分かれ道があります。この章で追うのは、手がかりがない → <code>add_clue</code>、見立てがない → <code>add_hypothesis</code>、見立てが全部「消えた」 → <code>all_eliminated</code>、見立てがある → <code>predict</code> の4つです。</p>
+      <div class="analogy"><b>たとえると</b>捜査本部の机の真ん中に、いま取りかかる書類が1枚だけ置いてあるようなものです。済んだ書類は脇にたたんで積んであり、開けば読み返せますが、真ん中には「次はこれ」の1枚しかありません。</div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>机の部品 <code>case-step/desk</code> が、出すカードを1枚選ぶ</h4>
+      <p>画面 <code>cases/board</code> は、なぞの見出し（<code>case-step/head</code>）と机の部品 <code>case-step/desk</code> を置くだけです。机の部品が、いまの一手と住所の <code>?open=</code> から、出すカードを決めます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/desk.blade.php</div><pre><code>@php($card = match (true) {
+    $case-&gt;isClosed() =&gt; $open === 'edit-case' ? 'edit-case' : 'closed',
+    $open === 'edit-case' =&gt; 'edit-case',
+    $editClue !== null =&gt; 'edit-clue',
+    in_array($open, ['add-clue', 'clue'], true) =&gt; 'add-clue',
+    $open === 'close' =&gt; 'close',
+    $turn !== null =&gt; 'partner',
+    $open === 'edit-hyps' &amp;&amp; $hypotheses-&gt;isNotEmpty() =&gt; 'edit-hyps',
+    $open === 'add-hypothesis' &amp;&amp; $case-&gt;clues-&gt;isNotEmpty() =&gt; 'add-hypothesis',
+    $asked !== null &amp;&amp; str_starts_with((string) $open, 'fit-') &amp;&amp; $case-&gt;clues-&gt;isNotEmpty() =&gt; 'fit',
+    $asked !== null =&gt; 'predict',
+    $step['key'] === 'predict' &amp;&amp; $fitting =&gt; 'fit',
+    default =&gt; $step['key'],
+})</code></pre></div>
+      <ul>
+        <li><code>?open=</code> は「この用事をカードにして」という頼みです。カードの下の「ほかにできること」（部品 <code>case-step/more</code>）の行や、進み具合の「直す」「見直す・○× をつける」を押すと、<code>?open=add-clue</code>・<code>?open=edit-hyps</code>・<code>?open=edit-clue-7</code> のような住所へ飛び、その用事がいまやることのカードになります。</li>
+        <li>頼みがなければ、いまの一手（<code>$step['key']</code>）がそのままカードになります。ただし、いまの一手が「予想を立てる」で、まだ ○× の付いていない手がかりがあれば（<code>$fitting</code>）、先に ○× のカードを出します（とばせる。あとの手順）。</li>
+      </ul>
+      <p>選んだカードの種類を受け取り、本当にカードを出すのは部品 <code>case-step/now</code> です。<code>@switch</code> で種類ごとに部品を分けます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/now.blade.php</div><pre><code>@switch($card)
+  @case('add_clue')
+  @case('add-clue')
+    &lt;x-case-step.clue-card :case="$case" :kid="$kid" :more="$card === 'add-clue'" :number="$number" :total="$total" :note="$note"
+      :prompt="$prompts['clue'] ?? null" :questions="$suggest['clue'] ?? []" /&gt;
+    @break
+  {{-- …（省略）… --}}</code></pre></div>
+      <p><code>add_clue</code>（いまの一手）と <code>add-clue</code>（「見たことをもう1つ書く」の頼み）は、どちらも同じ手がかりのカードです。違いは <code>:more</code> だけで、頼みから来たときは見出しが「見たことを、もう1つ教えて」になり、下に「もどる」のリンクが付きます。</p>
+    </li>
+  </ol>
+
+  <h3>手がかりを足す</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>「見たことを1つ教えて」のカード（<code>case-step/clue-card</code>）</h4>
+      <p><dfn>手がかり</dfn>は、事件について自分の目や耳で確かめた<b>事実</b>です。「〜と思う」という考えは混ぜず、考えは<dfn>見立て</dfn>（「なぜ？」の説明の案）のカードで書きます。画面では手がかりを「見たこと」と呼んでいます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/clue-card.blade.php</div><pre><code>&lt;x-ui.step-card :step="$number" :total="$total" icon="eye" tone="clue" :title="$t($more ? 'clue.title_more' : 'clue.title')"
+  :hint="$prompt ?? $t($work ? 'clue.hint_work' : 'clue.hint')"&gt;
+  &lt;form method="POST" action="{{ route('clues.store', $case) }}" class="space-y-4"&gt;
+    @csrf
+    &lt;input type="hidden" name="form_key" value="add-clue"&gt;
+    {{-- 仕事の場面なら、入力欄の上に施術者向けの注意を出す --}}
+    @if ($work)
+      &lt;x-case.work-caution /&gt;
+    @endif
+    &lt;x-ui.choices name="kind" :label="$t('clue.kind')" :options="$kinds" selected="seen" /&gt;
+    &lt;div class="space-y-1"&gt;
+      &lt;x-ui.textarea id="f-step-clue" name="body" :label="$t('clue.label')" rows="2" required :maxlength="config('suiri.limits.clue_body')"
+        :placeholder="$t('clue.placeholder')" /&gt;
+      &lt;x-case.suggest-chips :items="$questions" target="f-step-clue" folded :caption="config('suiri.suggest.captions.clue')" /&gt;
+    &lt;/div&gt;
+    &lt;x-ui.big-button tone="clue" icon="check"&gt;{{ $t('clue.button') }}&lt;/x-ui.big-button&gt;</code></pre></div>
+      <ul>
+        <li><code>&lt;x-ui.step-card&gt;</code>：いまやることのカードの枠です。上に段の色のつまみ（「ステップ 2 / 5」と目の絵）、その下に問いの見出しと例、白い面に入力欄と主なボタンを置きます。</li>
+        <li><code>&lt;x-ui.choices&gt;</code>：どうやって知った？（見た・聞いた・なかった）の大きな札。初めは「見た」を選んでおきます。</li>
+        <li><code>&lt;x-ui.textarea&gt;</code>：見たことの欄。送り直したとき（入力の誤りで戻ったとき）は、前に書いた文を残して出します。</li>
+        <li><code>&lt;x-case.suggest-chips&gt;</code>：書き出しの提案。たたんだ「› 書き出し」の1行で、押すと「いつ？」「何回？」……のボタンが開きます（次の手順）。</li>
+        <li><code>&lt;x-ui.big-button&gt;</code>：横いっぱいの主なボタン「これでOK」。1枚のカードに主なボタンは1つだけです。</li>
+        <li><code>route('clues.store', $case)</code>：送り先は <code>/cases/12/clues</code>（12 は事件の番号）。</li>
+      </ul>
+      <p>見出しや例の言葉は、コードに直書きせず <code>config/suiri.php</code> の <code>case_board.cards</code> にまとめてあります。カードの頭の <code>$t</code> は、ふだんの場面が親子の人（子ども向けの言葉を出す人）なら <code>case_board.kid.cards</code> の言い方を先に探し、なければふだんの言い方を返す小さな関数です。</p>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'clue' =&gt; [
+    'title' =&gt; '見たことを1つ教えて', 'title_more' =&gt; '見たことを、もう1つ教えて',
+    'hint' =&gt; '例：玄関に体操着の袋がなかった', 'hint_work' =&gt; '例：右肩が上がって見えた',
+    'explain' =&gt; '見たこと（手がかり）＝目や耳でたしかめたこと。「〜と思う」は、次の「どうして？」で書こう。',
+    'kind' =&gt; 'どうやって知った？', 'label' =&gt; '見たこと', 'placeholder' =&gt; 'ここに書いてね', 'button' =&gt; 'これでOK',
+],</code></pre></div>
+      <figure class="shot"><img data-img="screen-case-step-clue.png" alt="事件の画面・見たことがまだないとき。紺のカード「見たことを1つ教えて」に、どうやって知った？の札、見たことの欄、書き出し、「これでOK」"><figcaption>見たことがまだない事件の画面（スマホ）。5つの丸の「見たこと」が今の段で、カードは「見たことを1つ教えて」の1枚だけ</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>手がかりの種類：列挙 <code>ClueKind</code> と、場面ごとの言い方</h4>
+      <p>種類の札に並べる「値 =&gt; 言葉」の組は、カードの頭で列挙 <code>ClueKind</code> から作ります。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/clue-card.blade.php</div><pre><code>@php($kinds = collect(\App\Enums\ClueKind::cases())-&gt;mapWithKeys(fn ($k) =&gt; [$k-&gt;value =&gt; $work ? $k-&gt;label($case-&gt;scene) : ($kid ? $k-&gt;kidLabel() : $k-&gt;label())])-&gt;all())</code></pre></div>
+      <div class="code"><div class="file">src/app/Enums/ClueKind.php</div><pre><code>case Seen = 'seen';
+case Heard = 'heard';
+case Absent = 'absent';</code></pre></div>
+      <p>送られる値は <code>seen</code>・<code>heard</code>・<code>absent</code> のどれかで、画面に出す言葉は <code>src/config/suiri.php</code> の <code>labels</code> から引きます。仕事の場面では言い方が変わり、親子の人には子ども向けの言い方（<code>kidLabel()</code>）を出します（コードの名前は変えず、表示だけを変える）。</p>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'clue_kind' =&gt; ['seen' =&gt; '見た', 'heard' =&gt; '聞いた', 'absent' =&gt; 'なかった'],
+// …（省略）…
+'clue_kind' =&gt; ['seen' =&gt; '見た・触れた・測った', 'heard' =&gt; 'ご本人の言葉'],</code></pre></div>
+      <p>「なかった」も手がかりです。あるはずのものがなかった、起きるはずのことが起きなかった、という事実は、見立てを消す強い材料になります（練習メニューにも、吠えなかった犬の話から作った練習があります）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who js">画面のプログラム</span>
+      <h4>書き出しの提案：押すと欄に入るだけの「チップ」</h4>
+      <p><dfn>提案のチップ</dfn>は、入力欄の下に並ぶ小さな丸いボタンです。役目は「何を書けばいいか迷ったときの書き出し」を出すこと。押すと欄に「いつ：」のような書き出しが入るだけで、送信はしません。保存するのは、いつも本人が「これでOK」を押したときです。AI は使わず、決まった型から選んでいます。</p>
+      <div class="analogy"><b>たとえると</b>聞き込みのメモ帳の余白に、あらかじめ「いつ？　どこで？　だれが？」と印刷してあるようなものです。使うかどうか、何を書くかは自分で決めます。</div>
+      <p>候補は、組み立て係 <code>SuggestionsQuery</code> が型の係 <code>StarterSuggestions</code> に頼んで作ります。</p>
+      <div class="code"><div class="file">src/app/Queries/Cases/SuggestionsQuery.php</div><pre><code>'clue' =&gt; $this-&gt;starters-&gt;clueQuestions($case-&gt;scene),</code></pre></div>
+      <div class="code"><div class="file">src/app/Queries/Cases/StarterSuggestions.php</div><pre><code>public function clueQuestions(?Scene $scene): array
+{
+    $set = $scene === Scene::Work ? 'work' : 'default';
+
+    return array_map(fn (array $q) =&gt; $q + ['kind' =&gt; null], config("suiri.suggest.clue_questions.{$set}"));
+}</code></pre></div>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>['label' =&gt; 'いつ？', 'text' =&gt; 'いつ：'],
+// …（省略）…
+['label' =&gt; 'あるはずなのに無かったものは？', 'text' =&gt; 'あるはずなのに、なかったもの：', 'kind' =&gt; 'absent'],</code></pre></div>
+      <p>1件は「ボタンの言葉（<code>label</code>）・入る書き出し（<code>text</code>）・切り替える種類（<code>kind</code>。あれば）」です。部品 <code>&lt;x-case.suggest-chips&gt;</code> は、これを <code>data-</code> の印を付けたボタンにします。</p>
+      <div class="code"><div class="file">src/resources/views/components/case/suggest-chips.blade.php</div><pre><code>@foreach ($items as $item)
+  &lt;button type="button" data-suggest data-text="{{ $item['text'] ?? '' }}" data-kind="{{ $item['kind'] ?? '' }}"
+    data-date="{{ $item['date'] ?? '' }}" data-time="{{ $item['time'] ?? '' }}" data-attic="{{ $item['attic'] ?? '' }}"</code></pre></div>
+      <p>押したときの動きは <code>resources/js/parts/suggest-chips.js</code> です（<code>resources/js/app.js</code> が読み込む）。ページ全体で押されたものを1か所で受け、<code>data-suggest</code> の印のボタンなら、同じフォームの欄に当てはめます。</p>
+      <div class="code"><div class="file">src/resources/js/parts/suggest-chips.js</div><pre><code>document.addEventListener('click', (event) =&gt; {
+    const chip = event.target.closest('button[data-suggest]');
+// …（省略）…
+// 書き出しがあり、入れる先の欄があれば、そこに足す
+if (text &amp;&amp; field) {
+    insertText(field, text);
+}
+// 種類の指定があれば（「なかった」など）、その種類の札を選ぶ
+if (kind) {
+    const radio = form?.querySelector(`input[name="kind"][value="${kind}"]`);</code></pre></div>
+      <ul>
+        <li><code>type="button"</code>：フォームの中のボタンでも、押してフォームを送らないための書き方です。</li>
+        <li>「あるはずなのに無かったものは？」を押すと、書き出しが入り、種類の札も「なかった」に切り替わります。</li>
+        <li>JavaScript が動かない端末でも、欄に自分で書いて送れます（チップは手助けだけ）。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>POST /cases/{case}/clues</code>：事件の持ち主か・捜査中かを、書く前に確かめる</h4>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>// 手がかり（閉じた事件には足せない・直せない・消せない）
+Route::post('/cases/{case}/clues', [ClueController::class, 'store'])-&gt;can('write', 'case')-&gt;name('clues.store');
+Route::patch('/clues/{clue}', [ClueController::class, 'update'])-&gt;can('write', 'clue')-&gt;name('clues.update');
+Route::delete('/clues/{clue}', [ClueController::class, 'destroy'])-&gt;can('write', 'clue')-&gt;name('clues.destroy');</code></pre></div>
+      <p>この3行は <code>auth</code>・<code>agreed</code> の囲みの中の、さらに <code>throttle:writes</code> の囲みの中にあります。並べ替えたあとの順は次のとおりです。</p>
+      <p><code>EncryptCookies → AddQueuedCookiesToResponse → StartSession → ShareErrorsFromSession → PreventRequestForgery → Authenticate → ThrottleRequests:writes → SubstituteBindings → EnsureAgreed → Authorize:write,case</code></p>
+      <ul>
+        <li><code>SubstituteBindings</code>：<code>{case}</code> の <code>12</code> を事件の行に替えます（<code>Route::model('case', …)</code>。<a href="#s4">4章</a>）。</li>
+        <li><code>Authorize:write,case</code>：<code>CaseFilePolicy::write</code>（中身は <code>Policies/Concerns/WritesOpenCase</code>）で、事件の持ち主か、そして事件が捜査中かを確かめます。ほかの人の事件の番号を送っても、閉じた（解決・迷宮入り）事件に送っても、ここで 403 になり、1行も書かれません（閉じた事件なら「事件を開き直してください」の文つき。<a href="#s11">11章</a>）。直す・消す（<code>write,clue</code>）も同じで、<code>CluePolicy::write</code> が手がかりの事件を見ます。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>形の検証 <code>StoreClueRequest</code></h4>
+      <div class="code"><div class="file">src/app/Http/Requests/Cases/StoreClueRequest.php</div><pre><code>/** 持ち主かはルートの -&gt;can() で確かめ済みなので、ここでは通す */
+public function authorize(): bool
+{
+    return true;
+}
+
+/** 送る前に、本文の前後の空白を取る */
+protected function prepareForValidation(): void
+{
+    $this-&gt;merge(['body' =&gt; trim((string) $this-&gt;input('body'))]);
+}
+
+/** 項目ごとの決まり */
+public function rules(): array
+{
+    return [
+        'kind' =&gt; ['required', Rule::enum(ClueKind::class)],
+        'body' =&gt; ['required', 'string', 'max:'.config('suiri.limits.clue_body')],
+    ];
+}</code></pre></div>
+      <p>種類は3つのどれか、本文は必須で 500 字まで。検証係の動く順（下ごしらえ → 送ってよいか → 決まり）は <a href="#s4">4章</a> と同じです。誤りがあれば、送る前に開いていた住所（同じ事件の画面）へ戻ります。出るのは同じカードで、欄の下に誤りの文が出て、書いた文も残ります（画面にフォームは1枚だけなので、どのフォームの誤りかで迷いません）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>ClueController::store</code> → 用事 <code>AddClue</code></h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/ClueController.php</div><pre><code>/** 手がかりを足して、事件の詳細の手がかりのところへ戻す */
+public function store(StoreClueRequest $request, CaseFile $case, AddClue $addClue): RedirectResponse
+{
+    $clue = $addClue-&gt;handle($case, $request-&gt;validated('kind'), $request-&gt;validated('body'));
+
+    return $this-&gt;backToCase($case, '手がかりを足しました。', [$clue-&gt;body], 'clues');
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Actions/Cases/AddClue.php</div><pre><code>/** 手がかりを足して返す。持ち主（user_id）は事件から写る */
+public function handle(CaseFile $case, string $kind, string $body): Clue
+{
+    $clue = $case-&gt;clues()-&gt;create(['kind' =&gt; $kind, 'body' =&gt; $body]);
+    $case-&gt;touch();
+
+    return $clue;
+}</code></pre></div>
+      <ul>
+        <li><code>$case-&gt;clues()-&gt;create(...)</code>：この事件の手がかりとして作ります。<code>user_id</code> は部品 <code>CopiesOwnerFromCase</code> が事件から写します（<a href="#s4">4章</a>）。</li>
+        <li><code>$case-&gt;touch()</code>：事件の <code>updated_at</code>（最後にさわった日時）だけを今にします。事件の一覧は最近さわった順なので、手がかりを足した事件が上に来ます。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>読む：<code>select user_id from case_files where id = ?</code>（持ち主の写し）</li>
+        <li>書く：<code>insert into clues (kind, body, case_file_id, user_id, updated_at, created_at)</code>（<code>created_at</code> が「足した日時」）</li>
+        <li>書く：<code>update case_files set updated_at = ?</code>（<code>touch</code>）</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>事件の画面へ戻す <code>backToCase</code>：同じカードへ戻す頼み <code>back_open</code></h4>
+      <p>手がかり・見立て・○×・予想の受付は、終わったらどれも部品 <code>RedirectsToCase</code> の <code>backToCase</code> で事件の画面へ戻します。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/Concerns/RedirectsToCase.php</div><pre><code>protected function backToCase(CaseFile $case, string $status, array $texts = [], ?string $anchor = null, ?string $turn = null): RedirectResponse
+{
+    $alert = app(WatsonNotes::class)-&gt;alertFor(...$texts);
+    $url = route('cases.show', array_filter(['case' =&gt; $case, 'turn' =&gt; $turn, 'open' =&gt; $this-&gt;backOpen()]));
+    // 警告がなければ、さわっていた場所へ戻す（○× を続けて付けるときなどに、画面が上へ飛ばないように）
+    if ($alert === null &amp;&amp; $anchor !== null) {
+        $url .= '#'.$anchor;
+    }
+
+    return redirect()-&gt;to($url)-&gt;with('status', $status)-&gt;with('watson_alert', $alert);
+}</code></pre></div>
+      <ul>
+        <li><code>alertFor(...$texts)</code>：いま保存した文に、ほかの人がわかる情報らしきものがないかを調べます（次の手順）。</li>
+        <li><code>backOpen()</code>：フォームが隠し欄 <code>back_open</code> を送ってきたら、その値を <code>?open=</code> にして、押す前と同じカードへ戻します（○× のカードで続けて印を付けるときなど）。送ってこなければ <code>null</code> で、<code>array_filter</code> が空の値を落とすので <code>?open=</code> は付きません。</li>
+        <li><code>#clues</code>（<code>$anchor</code>）：ページの中の場所の印です。今の事件の画面には <code>id="clues"</code> の場所がないので、ブラウザは画面の上から出します。</li>
+        <li><code>-&gt;with('status', …)</code>：「手がかりを足しました。」のお知らせを、次の1回の画面だけに出すようセッションに預けます。</li>
+      </ul>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/Concerns/RedirectsToCase.php</div><pre><code>// 候補を1つずつ、{id} を数字に置きかえた形とくらべる。ぴったり合う候補があれば、その値で戻す
+foreach (config('suiri.case_board.back_open') as $allowed) {
+    $pattern = '/^'.str_replace('\{id\}', '[0-9]{1,10}', preg_quote($allowed, '/')).'$/';</code></pre></div>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'back_open' =&gt; ['edit-hyps', 'edit-case', 'add-clue', 'add-hypothesis', 'close', 'fit-{id}', 'predict-{id}', 'edit-clue-{id}'],</code></pre></div>
+      <p><code>back_open</code> は、決まった候補（<code>{id}</code> は数字だけ）とぴったり合うときだけ受け付けます。でたらめな値を送られても、ふだんの事件の画面へ戻すだけです。</p>
+      <p>この道の手がかりのカードは <code>back_open</code> を送らないので、戻り先はふだんの事件の画面 <code>/cases/12</code> です。手がかりが1つできたので、<code>NextStep</code> の答えは <code>add_hypothesis</code> に変わり、カードは「どうしてだと思う？」になります。答えるたびに次の問いが1つ出る、という進み方です。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>保存した文に、ほかの人がわかる情報らしきものはないか（W-5）</h4>
+      <p><code>alertFor</code> の中で文を調べるのは <code>TextSigns</code>（文の中の「しるし」を探す係）です。</p>
+      <div class="code"><div class="file">src/app/Services/Watson/WatsonNotes.php</div><pre><code>public function alertFor(?string ...$texts): ?string
+{
+    // 文を1つずつ確かめ、1つでも当てはまれば W-5
+    foreach ($texts as $text) {
+        // 空でなく、ほかの人がわかる情報らしきものがあれば知らせる
+        if (filled($text) &amp;&amp; $this-&gt;signs-&gt;hasPersonalInfo($text)) {
+            return 'personal_info';
+        }
+    }
+
+    return null;
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Services/Watson/TextSigns.php</div><pre><code>public function hasPersonalInfo(string $text): bool
+{
+    $text = $this-&gt;normalize($text);
+
+    return $this-&gt;hasEmail($text) || $this-&gt;hasPhone($text) || $this-&gt;hasNamedPerson($text);
+}</code></pre></div>
+      <ul>
+        <li><code>normalize</code>：全角の英数字と記号を半角にそろえます（<code>mb_convert_kana($text, 'as')</code>）。全角の「０９０」や「＠」でも見つけるためです。</li>
+        <li><code>hasEmail</code>：メールアドレスの形。</li>
+        <li><code>hasPhone</code>：区切りの記号を抜いて、0 で始まる 10〜11 桁。日付（2026-10-31）は当たりません。</li>
+        <li><code>hasNamedPerson</code>：漢字1〜4字かカタカナ2〜8字のすぐ後に「さん」「様」。ただし「お母さん」「店員さん」「八百屋さん」のような呼び方や、「Aさん」のような記号は当たりません。</li>
+      </ul>
+      <p>探す形（<dfn>正規表現</dfn>：文字の並び方の型を書く記法）は、コードではなく設定ファイルにあります。</p>
+      <div class="code"><div class="file">src/config/watson.php</div><pre><code>// W-5 メールアドレスの形（全角は半角にそろえてから探す）
+'email' =&gt; '[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+',
+// W-5 電話番号の形（区切りの記号を抜いて、0 で始まる10〜11桁）
+'phone' =&gt; '(?&lt;!\d)0\d{9,10}(?!\d)',
+// W-5 名前らしきもの：漢字1〜4字かカタカナ2〜8字のすぐ後に「さん」「様」。「Aさん」のような記号は当たらない
+'name_suffix' =&gt; '(?:さん|さま|様(?![子々式相変]))',</code></pre></div>
+      <p>手元で試すと、「田中さんが来た」「０９０-1234-5678に電話」は当たり、「お母さんが言った」「Aさんが来た」「2026-10-31に見た」は当たりませんでした。当たれば <code>watson_alert</code> に <code>personal_info</code> が預けられ、場所の印を付けずに戻します。次の画面では、部品 <code>case-step/now</code> がいまやることのカードの<b>上</b>に、深い赤の吹き出しで知らせます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/now.blade.php</div><pre><code>@php($alert = $watson &amp;&amp; ($watson['alert'] || $watson['rule'] === 'personal_info'))
+@php($note = $alert ? null : $watson)
+{{-- …（省略）… --}}
+@if ($alert)
+  &lt;x-case-step.bubble :note="$watson" :case="$case" class="mb-4" /&gt;
+@endif</code></pre></div>
+      <div class="point"><b>ここが大事</b>この確かめは<b>保存を止めません</b>。文はもう保存されていて、「記号（Aさん など）で書いてください」と直すきっかけを出すだけです。文を書き換えたり、どこかへ送ったりもしません。</div>
+    </li>
+  </ol>
+
+  <h3>ワトソンのひとこと</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>事件の画面で、ワトソンのひとことを1つだけ選ぶ（<code>WatsonNotes::forCase</code>）</h4>
+      <p>転送先の <code>GET /cases/12</code> で、組み立て係 <code>CaseBoardQuery</code> が <code>$this-&gt;watson-&gt;forCase($case, $alert, $skip)</code> を呼びます。<dfn>ワトソンのひとこと</dfn>は、記録の書き方に気づくきっかけを出す問いかけで、AI ではなく<b>決まった規則</b>で選びます。</p>
+      <div class="code"><div class="file">src/app/Services/Watson/WatsonNotes.php</div><pre><code>public function forCase(CaseFile $case, ?string $alert = null, array $skip = []): ?array
+{
+    // 保存した直後の警告があれば、閉じたかどうかに関係なく、それを出す
+    if ($alert !== null &amp;&amp; config("watson.rules.{$alert}") !== null) {
+        return $this-&gt;note($alert, null, true);
+    }
+    $dismissed = [...$case-&gt;dismissedHints-&gt;pluck('rule')-&gt;all(), ...$skip];
+
+    // 規則を優先度の高い順に1つずつ確かめ、閉じていなくて当てはまる最初の1つを返す
+    foreach (array_keys(config('watson.rules', [])) as $rule) {
+        // 閉じた規則と、飛ばすように頼まれた規則は飛ばす
+        if (in_array($rule, $dismissed, true)) {
+            continue;
+        }
+        $quote = $this-&gt;match($rule, $case);
+        // 当てはまったら（引用がなくても空文字が返る）、その規則のひとことを返す
+        if ($quote !== null) {
+            return $this-&gt;note($rule, $quote !== '' ? $quote : null);
+        }
+    }
+
+    return null;
+}</code></pre></div>
+      <ol>
+        <li>保存した直後の警告（<code>$alert</code>）があれば、それを最優先で返す。</li>
+        <li>この事件で閉じた規則（<code>dismissed_hints</code> の行）と、飛ばすよう頼まれた規則（<code>$skip</code>）を集める。</li>
+        <li>設定の規則を<b>上から順に</b>確かめ、閉じていなくて当てはまる最初の1つだけを返す。1つも当てはまらなければ <code>null</code>（ひとことは出ない）。</li>
+      </ol>
+      <p><code>$skip</code> は、いまの一手がすでに「予想を立てよう」と言っているとき、同じことを聞く W-6（いつ確かめる？）を出さないためのものです（<code>CaseBoardQuery</code> の <code>$skip = $step['key'] === 'predict' ? ['no_check_date'] : []</code>）。</p>
+      <div class="analogy"><b>たとえると</b>相棒のワトソンが、手帳を横からのぞいて、気づいたことを<b>1つだけ</b>言ってくれるようなものです。一度に全部言われると読む気がなくなるので、大事な順に1つ。「それはもういい」と言えば（閉じれば）、この事件ではもう言いません。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>規則の一覧 <code>config/watson.php</code>：上にあるほど優先</h4>
+      <div class="code"><div class="file">src/config/watson.php</div><pre><code>'rules' =&gt; [
+    // W-5 ほかの人がわかる情報らしきもの（電話番号・メールアドレスの形、「様」「さん」のつく名前らしきもの）
+    'personal_info' =&gt; [
+        'id' =&gt; 'W-5',
+        'title' =&gt; 'ほかの人がわかる情報ではありませんか？',
+        // …（省略）…
+    ],
+    // W-1 「見た」の手がかりに推測の言葉がある
+    'seen_guess' =&gt; [
+        'id' =&gt; 'W-1',
+        'title' =&gt; 'これは見たこと？　それとも考えたこと？',
+        'body' =&gt; '考えたことなら、見立ての欄に書くと「見たこと」と分けられます。',
+    ],
+    // W-2 「見た」の手がかりに原因を決める言葉がある
+    'seen_cause' =&gt; [
+        'id' =&gt; 'W-2',
+        'title' =&gt; '原因まで見えた？　それとも考えた？',
+        'body' =&gt; '見えたのは「何が起きたか」まで。理由は見立てに書いてみましょう。',
+    ],
+    // …（省略）…
+    // W-3 見立てが1つだけ
+    'single_hypothesis' =&gt; [
+        'id' =&gt; 'W-3',
+        'title' =&gt; 'ほかの説明は？',
+        'body' =&gt; 'ホームズはいつも別の可能性を用意した（『ブラック・ピーター』）。1つ足すだけで十分です。',
+    ],
+    // W-6 見立てはあるのに、答え合わせ待ちの予想がない（予想には確かめる日が必ず付く）
+    'no_check_date' =&gt; [
+        'id' =&gt; 'W-6',
+        'title' =&gt; 'いつ確かめる？',
+        'body' =&gt; '見立てに「もしそうなら」と確かめる日を付けると、その日に答え合わせができます。',
+    ],
+],</code></pre></div>
+      <p>並びは W-5（ほかの人がわかる情報）→ W-1（見たのに推測の言葉）→ W-2（見たのに原因の言葉）→ W-4（仕事の場面で「よくなった」と書いた。省略した所）→ W-3（見立てが1つだけ）→ W-6（確かめる日がない）。PHP の配列は書いた順を覚えているので、<code>array_keys(config('watson.rules'))</code> がこの順で回ります。</p>
+      <ul>
+        <li>キー（<code>seen_guess</code> など）は、閉じた記録 <code>dismissed_hints.rule</code> に入るので、あとから変えない決まりです。</li>
+        <li>文言を直したいときは、コードではなくこのファイルを直します。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>当てはまるかの確かめ方（<code>match</code>）と、推測・原因の言葉</h4>
+      <div class="code"><div class="file">src/app/Services/Watson/WatsonNotes.php</div><pre><code>return match ($rule) {
+    'personal_info' =&gt; $this-&gt;any($this-&gt;allTexts($case), fn ($t) =&gt; $this-&gt;signs-&gt;hasPersonalInfo($t)) ? '' : null,
+    'seen_guess' =&gt; $this-&gt;seenClue($case, fn ($t) =&gt; $this-&gt;signs-&gt;hasGuess($t)),
+    'seen_cause' =&gt; $this-&gt;seenClue($case, fn ($t) =&gt; $this-&gt;signs-&gt;hasCause($t)),
+    // …（省略）…
+    'single_hypothesis' =&gt; $case-&gt;isOpen() &amp;&amp; $case-&gt;hypotheses-&gt;count() === 1 ? '' : null,
+    'no_check_date' =&gt; $this-&gt;lacksCheckDate($case) ? '' : null,
+    default =&gt; null,
+};</code></pre></div>
+      <p><code>match</code> は、値（ここでは規則のキー）によって式を選ぶ書き方です。返す値は3通りに決めてあります：<code>null</code>＝当てはまらない、<code>''</code>（空の文字）＝当てはまる、文字＝当てはまり、その手がかりの引用付き。</p>
+      <div class="code"><div class="file">src/app/Services/Watson/WatsonNotes.php</div><pre><code>private function seenClue(CaseFile $case, callable $test): ?string
+{
+    $clue = $case-&gt;clues-&gt;first(fn ($c) =&gt; $c-&gt;kind === ClueKind::Seen &amp;&amp; $test($c-&gt;body));
+
+    return $clue === null ? null : Str::limit($clue-&gt;body, config('watson.quote_length', 40), '…');
+}</code></pre></div>
+      <p>W-1・W-2 は「見た」の手がかりだけを調べ、当てはまった最初の手がかりの本文を短く切って引用にします（「どの手がかりのことか」がわかるように）。推測の言葉の形は、設定にこう書いてあります。</p>
+      <div class="code"><div class="file">src/config/watson.php</div><pre><code>'guess' =&gt; [
+    'と(?:思|おも)[うえわいっ]',
+    'だろう',
+    '(?&lt;!あた|めず|すば|晴|愛)らしい',  // 新しい・珍しい・素晴らしい・愛らしい は外す
+    '(?&lt;![てで])みたい',             // 「やってみたい」は外す</code></pre></div>
+      <p><code>(?&lt;!…)</code> は「直前が…でないときだけ」という条件です。「らしい」でも「新しい」「珍しい」は推測ではないので外します。手元で試すと「体操着を忘れたと思う」は推測あり、「やってみたい」は推測なし、「雨だから遅れた」「寝坊したので遅れた」は原因あり、「駅から歩いた」は原因なし、でした。</p>
+      <div class="data"><b>たとえば</b><ul><li>「見た：玄関に体操着の袋がなかった」と見立て1つ → W-1・W-2 は当たらず、W-3「ほかの説明は？」が出る</li><li>「見た：雨だから電車が遅れた」 → W-2「原因まで見えた？　それとも考えた？」が、引用つきで出る（W-3 より上にあるので先）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>吹き出しの部品 <code>case-step/bubble</code>：主なボタンの下に1つだけ</h4>
+      <p>選ばれたひとことは、いまやることのカードの中、主なボタンの下に吹き出しで出ます（保存直後の警告だけは、前の手順のとおりカードの上）。ひとことがないときは、その段の言葉の一言の説明（たとえば「見たこと（手がかり）＝目や耳でたしかめたこと。…」）を出します。吹き出しはいつも1つだけです。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/bubble.blade.php</div><pre><code>@if ($note)
+  @php($alert = $note['alert'] || $note['rule'] === 'personal_info')
+  &lt;x-ui.hint :label="$w['label']" :tone="$alert ? 'answer' : 'plain'" {{ $attributes }}&gt;
+  {{-- …（省略）… --}}
+        &lt;p class="font-bold leading-snug"&gt;{{ $note['title'] }}&lt;/p&gt;
+        {{-- どの文で当てはまったかがわかれば、引用して見せる --}}
+        @if ($note['quote'])
+          &lt;p class="mt-1 border-l-2 border-rule pl-2 text-sm"&gt;「{{ $note['quote'] }}」&lt;/p&gt;
+        @endif
+  {{-- …（省略）… --}}
+      &lt;form method="POST" action="{{ route('hints.dismiss', [$case, $note['rule']]) }}" class="-mt-7 -mr-3 shrink-0"&gt;
+        @csrf
+  {{-- …（省略）… --}}
+@elseif (filled($explain))
+  &lt;x-ui.hint {{ $attributes }}&gt;{{ $explain }}&lt;/x-ui.hint&gt;
+@endif</code></pre></div>
+      <ul>
+        <li>見出し（問いかけ）と、当てはまった文の引用を出します。説明の本文は、ふだんは「くわしく」にたたみ、警告のときは開いたまま深い赤（<code>tone</code> が <code>answer</code>）で出します。</li>
+        <li>問いの右の × は、ひとことを閉じる小さなフォームです（次の手順）。フォームの中にフォームは置けないので、吹き出しはカードの入力のフォームの外に置きます。</li>
+        <li>{{ }} で出す値は、Laravel が自動でエスケープ（<code>&lt;</code> などを記号のまま見せる処理）するので、手がかりの本文に HTML を書かれても画面は壊れません。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>ひとことを閉じる：<code>POST /cases/{case}/hints/{rule}</code></h4>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>// ワトソンのひとことを閉じる（規則のキーは config/watson.php にあるものだけ）
+Route::post('/cases/{case}/hints/{rule}', DismissHintController::class)-&gt;can('update', 'case')
+    -&gt;whereIn('rule', array_keys(config('watson.rules', [])))-&gt;name('hints.dismiss');</code></pre></div>
+      <p><code>-&gt;whereIn('rule', [...])</code> は、穴 <code>{rule}</code> に入ってよい値を決める<dfn>制約</dfn>です。Laravel はこれを正規表現 <code>personal_info|seen_guess|seen_cause|work_better|single_hypothesis|no_check_date</code> にして、住所と照らします。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Routing/CreatesRegularExpressionRouteConstraints.php</div><pre><code>public function whereIn($parameters, array $values)
+{
+    return $this-&gt;assignExpressionToParameters(
+        $parameters,
+        (new Collection($values))
+            -&gt;map(fn ($value) =&gt; enum_value($value))
+            -&gt;implode('|')
+    );
+}</code></pre></div>
+      <p>知らないキー（<code>/cases/12/hints/whatever</code>）は、どの住所にも合わないので 404 になり、受付まで届きません（テスト <code>test_unknown_rule_cannot_be_dismissed</code>）。<code>dismissed_hints.rule</code> に、でたらめな文字が入らないようにするためです。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>DismissHint</code>：閉じた規則を事件ごとに1行残す</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/DismissHintController.php</div><pre><code>public function __invoke(CaseFile $case, string $rule, DismissHint $dismiss): RedirectResponse
+{
+    $dismiss-&gt;handle($case, $rule);
+
+    return redirect()-&gt;route('cases.show', $case);
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Actions/Cases/DismissHint.php</div><pre><code>public function handle(CaseFile $case, string $rule): void
+{
+    $case-&gt;dismissedHints()-&gt;firstOrCreate(['rule' =&gt; $rule]);
+}</code></pre></div>
+      <p><code>firstOrCreate</code> は「同じ値の行があればそれを、なければ作る」です。表にも「事件と規則の組は1行だけ」という決まり（<code>unique(['case_file_id', 'rule'])</code>）があるので、2回押しても行は増えません。次に事件の画面を開くと、<code>forCase</code> はこの規則を飛ばし、当てはまる次の規則を探します（なければ、吹き出しは言葉の一言の説明に戻ります）。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>書く：<code>dismissed_hints</code> に1行（<code>case_file_id</code>・<code>user_id</code>（事件から写す）・<code>rule</code>・<code>created_at</code>）</li></ul></div>
+      <div class="point"><b>ここが大事</b>W-5 を閉じても、新しく保存した文にほかの人がわかる情報らしきものがあれば、保存した直後の警告としてはもう一度出ます（<code>forCase</code> の最初の <code>if</code> は、閉じたかどうかを見ないため）。</div>
+    </li>
+  </ol>
+
+  <h3>見立てを足す</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>「どうしてだと思う？」のカード（<code>case-step/hypothesis-card</code>）</h4>
+      <p>手がかりができると、いまの一手は <code>add_hypothesis</code> になり、見立てを書くカードが出ます。部品 <code>now</code> は、見立てがまだない・もう1つ・全部ちがった、の3通りを <code>variant</code> で伝えます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/now.blade.php</div><pre><code>:variant="$card === 'all_eliminated' ? 'eliminated' : ($hypotheses-&gt;isEmpty() ? 'first' : 'more')" :prompt="$prompts['hypothesis'] ?? null"
+:types="$suggest['types'] ?? []" :emphasize="$suggest['emphasize'] ?? false" :attic="$suggest['attic'] ?? []" /&gt;</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/components/case-step/hypothesis-card.blade.php</div><pre><code>&lt;x-ui.step-card :step="$number" :total="$total" icon="question" tone="hypothesis"
+  :title="$t(['first' =&gt; 'hypothesis.title', 'more' =&gt; 'hypothesis.title_more', 'eliminated' =&gt; 'hypothesis.title_eliminated'][$variant])"
+  {{-- …（省略）… --}}
+  &lt;form method="POST" action="{{ route('hypotheses.store', $case) }}" class="space-y-4"&gt;
+    @csrf
+    &lt;input type="hidden" name="form_key" value="add-hypothesis"&gt;
+    {{-- …（省略）… --}}
+      &lt;x-case.suggest-chips :items="$types" target="f-step-hypothesis" folded
+        :caption="config('suiri.suggest.captions.'.($emphasize ? 'hypothesis' : 'hypothesis_folded'))" /&gt;
+      &lt;x-case.suggest-chips :items="$attic" target="f-step-hypothesis" /&gt;</code></pre></div>
+      <ul>
+        <li>見出しは、1つ目なら「どうしてだと思う？」、もう1つなら「ほかの理由もありそう？」（例の前に「2つあると、くらべられるよ」）、全部ちがったなら「見立てが全部ちがったよ。ほかの理由は？」。</li>
+        <li>相棒モードで見せ合う前は、このカードではなく相棒の渡し合いの部品（<code>case-partner/write-card</code>）が見立てを書かせ、いまの番の人を <code>author</code> として送ります（<a href="#s8">8章</a>）。</li>
+        <li>欄の下のチップは2種類です。1つは<b>ほかの説明の型</b>（時間・習慣・環境・人・偶然・数え方・逆向き）。押すと「時期・曜日・時刻が関係していて、」のような書き出しが入ります。見立てが0〜1個のうちは、見出しを「ほかの説明の型（押すと書き出しが入る）」にして気づきやすくします（<code>emphasize</code>。<code>config/suiri.php</code> の <code>emphasize_until</code> が 1）。</li>
+        <li>もう1つは<b>屋根裏の棚の候補</b>です（屋根裏の棚＝前の事件でわかった一般則の置き場。<a href="#s10">10章</a>）。係 <code>AtticSuggestionsQuery</code> が、自分の棚の知識のうち、事件のなぞ・手がかりと言葉が重なるものを3件まで選びます（重なりの判定は <code>App\Support\WordOverlap</code>：漢字2文字・カタカナと英数字3文字のかけらが同じか）。押すと「前にわかった『…』が当てはまるなら、」が入ります。読むのは <code>$user-&gt;atticNotes()</code> だけなので、他人の棚は出ません。</li>
+      </ul>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>['label' =&gt; '時間', 'hint' =&gt; '時期・曜日・時刻が関係？', 'text' =&gt; '時期・曜日・時刻が関係していて、'],
+// …（省略）…
+['label' =&gt; '逆向き', 'hint' =&gt; '原因と結果が逆では？', 'text' =&gt; '原因と結果が逆で、実は'],</code></pre></div>
+      <figure class="shot"><img data-img="screen-case-step-hypothesis.png" alt="「どうしてだと思う？」のカード。見立ての欄の下に、たたんだ「ほかの説明の型（押すと書き出しが入る）」の1行"><figcaption>「どうしてだと思う？」のカード（スマホ）。型の1行を押すと、時間・習慣・環境…のチップが開く</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>POST /cases/{case}/hypotheses</code>：閉じた事件には足せない（見張り役が止める）</h4>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>// 見立て（閉じた事件には足せない・直せない・消せない）
+Route::post('/cases/{case}/hypotheses', [HypothesisController::class, 'store'])-&gt;can('write', 'case')-&gt;name('hypotheses.store');</code></pre></div>
+      <p>見張り役は手がかりと同じ（最後に <code>Authorize:write,case</code>）で、持ち主か・事件が捜査中かはここで確かめ済みです。だから検証係の <code>authorize()</code> は通すだけです。</p>
+      <div class="code"><div class="file">src/app/Http/Requests/Cases/StoreHypothesisRequest.php</div><pre><code>/** 持ち主か・事件が捜査中か（閉じた事件には足せない）はルートの -&gt;can('write', 'case') で確かめ済みなので、ここでは通す */
+public function authorize(): bool
+{
+    return true;
+}
+// …（省略）…
+public function rules(): array
+{
+    return [
+        'body' =&gt; ['required', 'string', 'max:'.config('suiri.limits.hypothesis_body')],
+        'author' =&gt; ['nullable', Rule::enum(HypothesisAuthor::class)],
+    ];
+}</code></pre></div>
+      <p>閉じた事件（解決・迷宮入り）の画面には見立てのカードを出しませんが、閉じる前に開いていた古いタブや手で作った送信のために、見張り役（<code>write</code>）が受付の前で 403 にします。手がかり・○×・予想・見せ合うも同じ決まりで、見張り役の1か所にまとめてあります。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>HypothesisController::store</code> → 用事 <code>AddHypothesis</code></h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/HypothesisController.php</div><pre><code>public function store(StoreHypothesisRequest $request, CaseFile $case, AddHypothesis $addHypothesis): RedirectResponse
+{
+    $hypothesis = $addHypothesis-&gt;handle($case, $request-&gt;validated('body'), $request-&gt;validated('author'));
+
+    return $this-&gt;backToCase($case, '見立てを足しました。', [$hypothesis-&gt;body], 'hypotheses', $this-&gt;turnOf($hypothesis));
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Actions/Cases/AddHypothesis.php</div><pre><code>public function handle(CaseFile $case, string $body, ?string $author = null): Hypothesis
+{
+    $author = $case-&gt;partner_mode ? ($author ?? HypothesisAuthor::Self-&gt;value) : HypothesisAuthor::Self-&gt;value;
+    $hypothesis = $case-&gt;hypotheses()-&gt;create(['body' =&gt; $body, 'author' =&gt; $author]);
+    $case-&gt;touch();
+
+    return $hypothesis;
+}</code></pre></div>
+      <ul>
+        <li>書いた人（<code>author</code>）は、相棒モードの事件でだけ送られた値を使い、ふつうの事件ではいつも「自分」（<code>self</code>）にします。</li>
+        <li>状態（<code>status</code>）は、モデルの初めの値 <code>considering</code>（検討中）で作られます。</li>
+        <li><code>turnOf</code> は、相棒モードで見せ合う前なら書いた人の番（<code>?turn=partner</code> など）を返し、その人の番の画面へ戻します。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul><li>書く：<code>hypotheses</code> に1行（<code>case_file_id</code>・<code>user_id</code>・<code>author</code>・<code>body</code>・<code>status</code>）、<code>case_files.updated_at</code></li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>見立てを2つ以上に：止めずに勧める</h4>
+      <p>このアプリは「見立てを2つ以上立てる」ことを大事にしていますが、1つしかないと保存できない、という止め方はしません。代わりに、見立てがちょうど1つで捜査中のとき、W-3 が当てはまります（<code>'single_hypothesis' =&gt; $case-&gt;isOpen() &amp;&amp; $case-&gt;hypotheses-&gt;count() === 1</code>）。見立てが1つできると、いまの一手は「予想を立てる」に進みますが、カードの吹き出しに「ほかの説明は？」が出て、カードの下の「ほかにできること」の「見立てをもう1つ書く」（<code>?open=add-hypothesis</code>）から2つ目を書けます。2つ目を足すと W-3 は当てはまらなくなり、ひとことは次の規則に移るか、言葉の説明に戻ります。</p>
+      <div class="analogy"><b>たとえると</b>捜査会議で、容疑者が1人しか挙がっていないときに、ワトソンが「ほかの可能性は？」と一言はさむようなものです。会議を止めはしませんが、思い込みに気づくきっかけになります。</div>
+      <p>予想が外れたときの「何を見落とした？」の選択肢にも、「見立てが1つだけだった」があります（答え合わせ。<a href="#s7">7章</a>）。</p>
+    </li>
+  </ol>
+
+  <h3>○× を付ける</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>予想の前に「この見立てに合う？」のカードが出るとき</h4>
+      <p>見立てができると、いまの一手は <code>predict</code>（予想を立てる）になります。ただし机の部品は、その見立てにまだ ○× の付いていない手がかりがあれば、先に ○× のカードを出します。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/desk.blade.php</div><pre><code>@php($alive = $hypotheses-&gt;filter(fn ($h) =&gt; $h-&gt;status-&gt;isAlive()))
+@php($asked = $case-&gt;hidesHypotheses() ? null : $alive-&gt;firstWhere('id', $openId('predict-') ?? $openId('fit-')))
+@php($target = $asked ?? ($step['hypothesis'] ?? null))
+@php($unmarked = $target ? $case-&gt;clues-&gt;reject(fn ($c) =&gt; $target-&gt;fits-&gt;contains('clue_id', $c-&gt;id)) : collect())
+@php($fitting = $target &amp;&amp; $asked === null &amp;&amp; $unmarked-&gt;isNotEmpty() &amp;&amp; ($case-&gt;clues-&gt;count() &gt; 1 || $alive-&gt;count() &gt; 1))</code></pre></div>
+      <ul>
+        <li><code>$target</code>：どの見立てのカードにするか。<code>?open=fit-9</code>・<code>?open=predict-9</code> の頼みがあればその見立て、なければ <code>NextStep</code> が選んだ見立て（有力なもの、なければ最初のもの）。</li>
+        <li><code>$unmarked</code>：その見立てに、まだ ○× の付いていない手がかり。</li>
+        <li><code>$fitting</code>：○× のない手がかりが残っていて、手がかりか見立てが2つ以上あるとき（手がかり1つ・見立て1つだけなら、くらべる意味が薄いので聞かない）。</li>
+      </ul>
+      <div class="code"><div class="file">src/resources/views/components/case-step/fit-card.blade.php</div><pre><code>&lt;a href="{{ route('cases.show', ['case' =&gt; $case, 'open' =&gt; 'predict-'.$h-&gt;id]) }}" class="-mt-2 inline-flex min-h-12 shrink-0 items-center gap-0.5 px-1 text-sm font-semibold text-muted"&gt;
+{{-- …（省略）… --}}
+{{-- 見たことを1つずつ荷札にし、右に ○× のボタンを置く --}}
+@foreach ($case-&gt;clues as $clue)
+  {{-- …（省略）… --}}
+      &lt;x-case-step.fit-buttons :hypothesis="$h" :clue="$clue" :fit="$h-&gt;fits-&gt;firstWhere('clue_id', $clue-&gt;id)?-&gt;fit" :back="'fit-'.$h-&gt;id" /&gt;</code></pre></div>
+      <p>カードの上に見立ての本文を引用し、手がかりを1つずつ<b>証拠品の荷札</b>（部品 <code>&lt;x-ui.evidence-tag&gt;</code>：番号と種類の付いた札）にして並べ、右に ○ と × の大きなボタンを置きます。○× は任意なので、見立ての横の「とばす」（<code>?open=predict-9</code>）で予想のカードへ進めます。</p>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>○× のボタン：付ける（PUT）・もう一度押すと外す（DELETE）</h4>
+      <div class="code"><div class="file">src/resources/views/components/case-step/fit-buttons.blade.php</div><pre><code>@foreach (\App\Enums\Fit::cases() as $option)
+  @php($on = $fit === $option)
+  &lt;form method="POST" action="{{ route($on ? 'fits.destroy' : 'fits.update', [$hypothesis, $clue]) }}"&gt;
+    @csrf
+    @method($on ? 'DELETE' : 'PUT')
+    &lt;input type="hidden" name="fit" value="{{ $option-&gt;value }}"&gt;
+    {{-- 戻るカードが決まっていれば、一緒に送る --}}
+    @if ($back)
+      &lt;input type="hidden" name="back_open" value="{{ $back }}"&gt;
+    @endif</code></pre></div>
+      <ul>
+        <li>ボタンごとに小さなフォームが1つ。いまその印が付いていれば（<code>$on</code>）、押すと外す <code>DELETE</code>、付いていなければ付ける <code>PUT</code> を送ります。<code>@method</code> は隠し欄 <code>_method</code> を入れ、Laravel はこの送信を <code>PUT</code>・<code>DELETE</code> として扱います。</li>
+        <li>送り先は <code>/hypotheses/{見立ての番号}/clues/{手がかりの番号}</code>。値は列挙 <code>Fit</code> の <code>fits</code>（合う）か <code>contradicts</code>（合わない）。</li>
+        <li>隠し欄 <code>back_open=fit-9</code>：送ったあと、同じ ○× のカードへ戻すための頼みです（<code>backToCase</code> の <code>backOpen()</code>）。印を続けて付けられます。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-case-step-fit.png" alt="「この見立てに合う？」のカード。見立ての引用と「とばす」、見たことの荷札ごとに大きな ○ と × のボタン"><figcaption>○× の段（スマホ）。No.1 の荷札は ○ が緑に塗られている</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>PUT /hypotheses/{hypothesis}/clues/{clue}</code>：持ち主と捜査中の確かめが2つ</h4>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>// ○×（見立てと手がかりの両方が自分のもので、事件が捜査中か確かめる。同じ事件かは UpdateFitRequest）
+Route::put('/hypotheses/{hypothesis}/clues/{clue}', [FitController::class, 'update'])
+    -&gt;can('write', 'hypothesis')-&gt;can('write', 'clue')-&gt;name('fits.update');
+Route::delete('/hypotheses/{hypothesis}/clues/{clue}', [FitController::class, 'destroy'])
+    -&gt;can('write', 'hypothesis')-&gt;can('write', 'clue')-&gt;name('fits.destroy');</code></pre></div>
+      <p>穴が2つあり、<code>SubstituteBindings</code> がどちらも行に替えます。穴の名前と受付の引数の名前が同じなので、<code>Route::model</code> の登録なしで、Laravel が表の行に替えます（<dfn>暗黙の結びつけ</dfn>）。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Routing/ImplicitRouteBinding.php</div><pre><code>foreach ($route-&gt;signatureParameters(['subClass' =&gt; UrlRoutable::class]) as $parameter) {
+    if (! $parameterName = static::getParameterName($parameter-&gt;getName(), $parameters)) {
+        continue;
+    }
+    // …（省略）…
+    $instance = $container-&gt;make(Reflector::getParameterClassName($parameter));
+    // …（省略）…
+    } elseif (! $model = $instance-&gt;{$routeBindingMethod}($parameterValue, $route-&gt;bindingFieldFor($parameterName))) {
+        throw (new ModelNotFoundException)-&gt;setModel(get_class($instance), [$parameterValue]);
+    }
+
+    $route-&gt;setParameter($parameterName, $model);
+}</code></pre></div>
+      <p>受付 <code>update(UpdateFitRequest $request, Hypothesis $hypothesis, Clue $clue, …)</code> の引数のうちモデルの型のもの（<code>Hypothesis</code>・<code>Clue</code>）を探し、同じ名前の穴の番号で行を読みます。そのあと見張り役は <code>Authorize:write,hypothesis → Authorize:write,clue</code> の順に動き、<b>見立ても手がかりも自分のもので、事件が捜査中</b>でなければ 403 にします（<code>HypothesisPolicy</code>・<code>CluePolicy</code> の <code>write</code>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>UpdateFitRequest</code>：同じ事件の見立てと手がかりか</h4>
+      <div class="code"><div class="file">src/app/Http/Requests/Cases/UpdateFitRequest.php</div><pre><code>/** 見立てと手がかりが同じ事件のものかを確かめる */
+public function authorize(): bool
+{
+    return $this-&gt;route('hypothesis')-&gt;case_file_id === $this-&gt;route('clue')-&gt;case_file_id;
+}
+
+/** 項目ごとの決まり（外す DELETE のときは fit は要らない） */
+public function rules(): array
+{
+    return [
+        'fit' =&gt; [$this-&gt;isMethod('PUT') ? 'required' : 'nullable', Rule::enum(Fit::class)],
+    ];
+}</code></pre></div>
+      <p>2つの穴は、Laravel の側では互いに関係なく探されます（「この見立ての中の手がかり」という絞り方はしていない）。両方とも自分のものでも、<b>別の事件</b>の手がかりに ○× を付ける送信は作れてしまうので、ここで「同じ事件か」を確かめ、違えば 403 にします（テスト <code>test_fit_needs_the_same_case</code>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>用事 <code>SetFit</code>：組ごとに1行（付け直すと上書き）</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/FitController.php</div><pre><code>public function update(UpdateFitRequest $request, Hypothesis $hypothesis, Clue $clue, SetFit $setFit): RedirectResponse
+{
+    $setFit-&gt;handle($hypothesis, $clue, Fit::from($request-&gt;validated('fit')));
+
+    return $this-&gt;back($hypothesis, '○×を付けました。');
+}
+// …（省略）…
+return $this-&gt;backToCase($case, $status, [], 'hyp-'.$hypothesis-&gt;id, $case-&gt;hidesHypotheses() ? $hypothesis-&gt;author-&gt;value : null);</code></pre></div>
+      <div class="code"><div class="file">src/app/Actions/Cases/SetFit.php</div><pre><code>public function handle(Hypothesis $hypothesis, Clue $clue, ?Fit $fit): void
+{
+    // 印を外すときは、その組の行を消して終わる
+    if ($fit === null) {
+        $hypothesis-&gt;fits()-&gt;where('clue_id', $clue-&gt;id)-&gt;delete();
+
+        return;
+    }
+
+    ClueHypothesis::updateOrCreate(
+        ['hypothesis_id' =&gt; $hypothesis-&gt;id, 'clue_id' =&gt; $clue-&gt;id],
+        ['fit' =&gt; $fit],
+    );
+}</code></pre></div>
+      <p><code>updateOrCreate</code> は「1つ目の条件の行があれば2つ目の値で書き換え、なければ作る」です。表 <code>clue_hypothesis</code> にも「見立てと手がかりの組は1行だけ」（<code>unique(['hypothesis_id', 'clue_id'])</code>）の決まりがあり、○ から × に付け直すと同じ行が書き換わります。外すとき（<code>destroy</code>）は <code>$fit</code> を <code>null</code> で呼び、行を消します。</p>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>読む：<code>select * from clue_hypothesis where (hypothesis_id = ? and clue_id = ?) limit 1</code></li>
+        <li>書く：なければ <code>insert into clue_hypothesis (hypothesis_id, clue_id, fit, …)</code>、あれば <code>update</code></li>
+        <li>返す：<code>302</code>（転送）、行き先 <code>/cases/12?open=fit-9#hyp-9</code></li>
+      </ul></div>
+      <p>戻り先には <code>back_open</code> から作った <code>?open=fit-9</code> と、カードの場所の印 <code>#hyp-9</code>（○× のカードの <code>id</code>）が付きます。同じカードがもう一度出て、画面もカードの位置のままなので、次の手がかりの印を続けて付けられます。</p>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>× が付いた見立てには「ちがった にする」を勧める</h4>
+      <div class="code"><div class="file">src/resources/views/components/case-step/fit-card.blade.php</div><pre><code>@php($contradicted = $h-&gt;fits-&gt;contains(fn ($f) =&gt; $f-&gt;fit === \App\Enums\Fit::Contradicts))
+{{-- …（省略）… --}}
+{{-- × の付いた見立てなら、「ちがった」にすることを勧める（消さずに記録が残る） --}}
+@if ($contradicted)
+  &lt;form method="POST" action="{{ route('hypotheses.update', $h) }}" class="flex flex-wrap items-center gap-3 rounded-xl bg-accent-soft px-4 py-3"&gt;
+    @csrf
+    @method('PATCH')
+    &lt;span class="min-w-0 flex-1"&gt;{{ $t('fit.eliminate') }}&lt;/span&gt;
+    &lt;x-ui.button variant="secondary" name="status" value="eliminated"&gt;{{ $t('fit.eliminate_button') }}&lt;/x-ui.button&gt;
+  &lt;/form&gt;
+@endif
+&lt;x-ui.big-button :href="route('cases.show', ['case' =&gt; $case, 'open' =&gt; 'predict-'.$h-&gt;id])" tone="hypothesis" icon="arrow"&gt;{{ $t('fit.button') }}&lt;/x-ui.big-button&gt;</code></pre></div>
+      <ul>
+        <li>合わない手がかりが1つでもある見立てには「× があるね。この見立ては、ちがいそう？」と「ちがった にする」のボタンを出します。押すと <code>PATCH /hypotheses/{hypothesis}</code>（<code>status=eliminated</code>）が送られ、状態が「消えた」になって、考えを変えた記録が残ります（あとの手順）。見立てが消えると、いまの一手は残りの見立てに移るか、全部消えたなら「ほかの理由は？」のカード（<code>all_eliminated</code>）になります。</li>
+        <li>主なボタン「次へ：もしそうならを考える」は <code>?open=predict-9</code> へのリンクです。ここから先は <a href="#s6">6章</a> です。</li>
+      </ul>
+      <p>こうして、手がかりに合わない説明を消していき、残ったものを確かめに行くのが、事件の画面の進み方です。</p>
+    </li>
+  </ol>
+
+  <h3>見立てを見直す・直す・消す</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>「見立てを見直そう」のカード：状態を変えるボタン（検討中・有力・消えた・当たり）</h4>
+      <p>進み具合の「どうして？ 2つ」の「見直す・○× をつける」か、「ほかにできること」の「見立てを見直す・○× をつける」を押すと、<code>?open=edit-hyps</code> で「見立てを見直そう」のカード（部品 <code>case-step/edit-hyps-card</code>）が出ます。見立て1つずつの行（部品 <code>case-step/hyp-row</code>）に、状態のボタン・「○× をつける」（<code>?open=fit-9</code>）・「もしそうならを立てる」（<code>?open=predict-9</code>）・本文を直す／消す、が並びます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/hyp-row.blade.php</div><pre><code>&lt;form method="POST" action="{{ route('hypotheses.update', $h) }}" class="flex flex-wrap gap-1.5" aria-label="{{ $h-&gt;body }}"&gt;
+  @csrf
+  @method('PATCH')
+  &lt;input type="hidden" name="back_open" value="edit-hyps"&gt;
+  {{-- 状態を1つずつボタンにする。いまの状態は塗って、押されている印を付ける --}}
+  @foreach (\App\Enums\HypothesisStatus::cases() as $status)
+    &lt;button type="submit" name="status" value="{{ $status-&gt;value }}" aria-pressed="{{ $h-&gt;status === $status ? 'true' : 'false' }}" @class([</code></pre></div>
+      <ul>
+        <li>1つのフォームに4つの送信ボタンを並べ、<b>押したボタンの <code>name</code> と <code>value</code> だけ</b>が送られる HTML のしくみを使っています。「有力」を押せば <code>status=likely</code> が送られます。</li>
+        <li>隠し欄 <code>back_open=edit-hyps</code> で、押したあともこのカードに戻ります（場所の印は <code>#hyp-9</code>。行の <code>id</code>）。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-case-step-edit-hyps.png" alt="「見立てを見直そう」のカード。見立てごとに、検討中・有力・消えた・当たり の大きなボタンと「○× をつける」「もしそうならを立てる」「直す」"><figcaption>「見立てを見直そう」のカード（スマホ）。いまの状態のボタンが塗られている</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>PATCH /hypotheses/{hypothesis}</code> → <code>ChangeHypothesisStatus</code>：考えを変えた記録を残す</h4>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>Route::patch('/hypotheses/{hypothesis}', [HypothesisController::class, 'update'])-&gt;can('write', 'hypothesis')-&gt;name('hypotheses.update');</code></pre></div>
+      <p>穴 <code>{hypothesis}</code> は、暗黙の結びつけで <code>hypotheses</code> の行に替わります。持ち主か・事件が捜査中かは <code>HypothesisPolicy::write</code>（中身は事件と同じ <code>WritesOpenCase</code>。見立ての事件を見る）で確かめます。閉じた事件の見立ての状態は、もう変えられません。検証係 <code>UpdateHypothesisRequest</code> は「本文か状態のどちらか1つ以上」（<code>required_without</code>）を求めます。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/HypothesisController.php</div><pre><code>// 本文が送られていれば、本文を直す
+if ($request-&gt;has('body')) {
+    $hypothesis-&gt;update(['body' =&gt; $request-&gt;validated('body')]);
+}
+// 状態が送られていれば、状態を変えて記録を残す
+if ($request-&gt;has('status')) {
+    $changeStatus-&gt;handle($hypothesis, HypothesisStatus::from($request-&gt;validated('status')));
+}
+
+return $this-&gt;backToCase($hypothesis-&gt;caseFile, '見立てを直しました。', [$hypothesis-&gt;body], 'hyp-'.$hypothesis-&gt;id, $this-&gt;turnOf($hypothesis));</code></pre></div>
+      <div class="code"><div class="file">src/app/Actions/Cases/ChangeHypothesisStatus.php</div><pre><code>public function handle(Hypothesis $hypothesis, HypothesisStatus $to): bool
+{
+    $from = $hypothesis-&gt;status;
+    // 同じ状態を選んだだけなら、記録を増やさない
+    if ($from === $to) {
+        return false;
+    }
+
+    DB::transaction(function () use ($hypothesis, $from, $to) {
+        $hypothesis-&gt;update(['status' =&gt; $to]);
+        $hypothesis-&gt;statusLogs()-&gt;create([
+            'user_id' =&gt; $hypothesis-&gt;user_id,
+            'from_status' =&gt; $from,
+            'to_status' =&gt; $to,
+        ]);
+        $hypothesis-&gt;caseFile-&gt;touch();
+    });
+
+    return true;
+}</code></pre></div>
+      <p>状態を変えると、<code>hypothesis_status_logs</code> に「前の状態 → 新しい状態」を1行残します。この表は書いたあと直さないので、<code>updated_at</code> を持ちません（モデルの <code>UPDATED_AT = null</code>）。週のふりかえりで「考えを変えた件数」として数えます（<a href="#s10">10章</a>）。考えを変えたことは、失敗ではなく練習の成果として数える、という設計です。</p>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>書く：<code>update hypotheses set status = 'likely'</code></li>
+        <li>書く：<code>insert into hypothesis_status_logs (user_id, from_status, to_status, hypothesis_id, created_at)</code>（例：<code>considering</code> → <code>likely</code>）</li>
+        <li>書く：<code>case_files.updated_at</code></li>
+        <li>返す：<code>302</code>（転送）、行き先 <code>/cases/12?open=edit-hyps#hyp-9</code>（見直しのカードから送ったとき）</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>手がかり・見立てを直す・消す</h4>
+      <p>手がかりを直すときは、進み具合の「見たこと 3つ」を開き、荷札の右の「直す」を押します（部品 <code>case-step/clue-pile</code>）。<code>?open=edit-clue-7</code> で「見たことを直す」のカード（部品 <code>case-step/edit-clue-card</code>）になり、下に「この見たことを消す」があります。見立ての本文を直す・消すは、見直しのカードの行の「直す」の中です。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/clue-pile.blade.php</div><pre><code>&lt;a href="{{ route('cases.show', ['case' =&gt; $case, 'open' =&gt; 'edit-clue-'.$clue-&gt;id]) }}"</code></pre></div>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/ClueController.php</div><pre><code>/** 手がかりを直して、事件の詳細へ戻す */
+public function update(UpdateClueRequest $request, Clue $clue): RedirectResponse
+{
+    $clue-&gt;update($request-&gt;validated());
+
+    return $this-&gt;backToCase($clue-&gt;caseFile, '手がかりを直しました。', [$clue-&gt;body], 'clues');
+}
+
+/** 手がかりを消して、事件の詳細へ戻す（付けていた ○× も一緒に消える） */
+public function destroy(Clue $clue): RedirectResponse
+{
+    $case = $clue-&gt;caseFile;
+    $clue-&gt;delete();
+
+    return $this-&gt;backToCase($case, '手がかりを消しました。', [], 'clues');
+}</code></pre></div>
+      <ul>
+        <li>手がかりを直す <code>PATCH /clues/{clue}</code>：検証係 <code>UpdateClueRequest</code> は <code>class UpdateClueRequest extends StoreClueRequest {}</code>（足すときと同じ決まりを受け継ぐだけ）。直した文も W-5 の確認にかけます。直したあとは、ふだんの事件の画面（いまの一手のカード）へ戻ります。</li>
+        <li>手がかりを消す <code>DELETE /clues/{clue}</code>：<code>clue_hypothesis.clue_id</code> が <code>cascadeOnDelete()</code> なので、付けていた ○× はデータベースが一緒に消します。</li>
+        <li>直す・消すの住所も <code>-&gt;can('write', …)</code> なので、閉じた事件の手がかり・見立ては直せず消せません（403）。直したいときは、事件を開き直します。</li>
+        <li>見立ての本文を直す：状態と同じ <code>PATCH /hypotheses/{hypothesis}</code> に <code>body</code> を送ります（<code>update</code> の「本文が送られていれば」の分かれ道）。</li>
+        <li>見立てを消す <code>DELETE /hypotheses/{hypothesis}</code>：用事 <code>DeleteHypothesis</code> が、その見立ての予想から作った確かめるタスクを1件ずつ消してから（カレンダーの後始末のため。<a href="#s4">4章</a>の事件を消すときと同じ）、見立てを消します。予想・○×・考えを変えた記録は、表のつながりで一緒に消えます。</li>
+      </ul>
+      <div class="code"><div class="file">src/app/Actions/Cases/DeleteHypothesis.php</div><pre><code>DB::transaction(function () use ($hypothesis) {
+    Task::whereIn('prediction_id', $hypothesis-&gt;predictions()-&gt;select('id'))-&gt;get()-&gt;each-&gt;delete();
+    $hypothesis-&gt;delete();
+});</code></pre></div>
+      <div class="point"><b>ここが大事</b>考えが変わったときは、消さずに「消えた」にすると記録が残ります。消すと考えを変えた記録も消えるので、ふりかえりで数えられなくなるからです。消すのは、書き間違えた見立てのためのものです。</div>
+    </li>
+  </ol>
+
+  <div class="recap"><b>この章のまとめ</b><ol>
+    <li>事件の画面は「いまやること」のカード1枚。<code>NextStep</code> がいまの一手を決め、机の部品 <code>case-step/desk</code> が <code>?open=</code> の頼みと合わせてカードを選ぶ。答えるたびに次の問いが1つ出る。</li>
+    <li>手がかりは事実（見た・聞いた・なかった）だけ。<code>POST /cases/{case}/clues</code> は、事件の持ち主で捜査中か（<code>can:write,case</code>）→ 形の検証 → <code>AddClue</code>（持ち主を写して1行・事件の <code>touch</code>）の順。</li>
+    <li>提案のチップは、押すと欄に書き出しが入るだけ（AI なし・保存は本人）。手がかりの問いかけ・ほかの説明の型・屋根裏の棚の候補。</li>
+    <li>戻すときの <code>backToCase</code> は、ほかの人がわかる情報らしきもの（メール・電話番号・「〇〇さん」）があれば W-5 の警告をカードの上に出し（保存は止めない）、<code>back_open</code> が決まった候補なら同じカードへ戻す。</li>
+    <li>ワトソンのひとことは <code>config/watson.php</code> の規則を上から確かめ、閉じていなくて当てはまる1つだけを、主なボタンの下の吹き出しに出す。閉じると <code>dismissed_hints</code> に残り、その事件ではもう出ない。知らない規則のキーは住所の制約で 404。</li>
+    <li>見立ては止めずに2つ以上を勧める（W-3）。○× は見立てと手がかりの組ごとに1行（<code>updateOrCreate</code>）。両方の持ち主かを2つの <code>can</code> で、同じ事件かを <code>UpdateFitRequest</code> で確かめる。</li>
+    <li>× の付いた見立ては「ちがった にする」を勧める。状態を変えると <code>hypothesis_status_logs</code> に「考えを変えた記録」が残る。消すより「消えた」にするほうが、記録が残る。</li>
+  </ol></div>
+</section>

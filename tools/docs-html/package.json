@@ -1,0 +1,8 @@
+{
+  "name": "suiri-docs-html",
+  "private": true,
+  "type": "module",
+  "description": "推理手帳の docs（解体新書と設計書）を1つの HTML ファイル（docs/guide.html）に、流れ解説の断片を docs/flow.html にまとめる道具",
+  "scripts": { "build": "node build.mjs", "flow": "node flow.mjs" },
+  "dependencies": { "marked": "15.0.12" }
+}

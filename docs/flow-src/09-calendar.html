@@ -1,0 +1,1567 @@
+<section class="story" id="s9">
+  <h2><span class="no">9</span>Google カレンダーとつなぐ・書き出す・取り込む</h2>
+  <p class="userstory">手帳を使う人として、期日のあるタスクや予想を確かめる日を、ふだん見ている Google カレンダーにも出したい。カレンダーの上で日をずらしたら、手帳のほうも合わせてほしい。だから、設定の画面で「カレンダーとつなぐ」を押す。</p>
+  <p class="summary">この章で追う道筋：①つなぐ：<code>GET /calendar/connect</code>（説明）→ <code>POST /calendar/connect</code>（Google へ送り出す）→ Google の同意画面 → <code>GET /calendar/callback</code> → 用事 <code>ConnectCalendar</code>（確かめる・専用カレンダーを用意する・トークンを暗号化して <code>calendar_connections</code> 表へ）→ 後回しの仕事 <code>PushAllTasksToCalendar</code> ②書き出す：<code>TaskObserver</code> が積んだ仕事（<code>jobs</code> 表）→ worker の箱の <code>queue:work</code> → <code>PushTaskToCalendar</code>・<code>RemoveTaskFromCalendar</code> → 窓口 <code>CalendarApi</code> → Google ③取り込む：<code>routes/console.php</code> の予定 → <code>schedule:work</code> → <code>PullCalendarChanges</code> → 用事 <code>ApplyCalendarChanges</code> → <code>tasks</code> 表 ④やめる：<code>DELETE /calendar</code> → 用事 <code>DisconnectCalendar</code></p>
+
+  <p>この章は、ほかの章よりも登場人物が多くなります。ブラウザとサーバーのほかに、<b>Google</b>（同意の画面と、カレンダーの API）と、<b>worker の箱</b>（<a href="#s0">0章</a>。後回しにした仕事と、決まった時刻の仕事を片づける係）が出てきます。下の図の A〜C の3つの流れと、最後にやめる流れを順に追います（D の「今日の予定」は <a href="#s2">2章</a> で追いました。同じ読むだけの窓口 <code>CalendarAgenda</code> は、予想を立てるときの「確かめる日」の候補にも、これからの予定を読んで使います。<a href="#s6">6章</a>）。</p>
+  <figure class="shot"><img data-img="calendar-sync.svg" alt="推理手帳と Google カレンダーのやりとりの図。A つなぐ、B 書き出す、C 15分ごとに取り込む、D 今日の予定"><figcaption>推理手帳と Google カレンダーのやりとり。左から画面・web の箱（受付と用事）とデータベース・worker の箱・Google</figcaption></figure>
+  <div class="point"><b>この章をつらぬく3つの決まり</b>（<code>.claude/rules/google.md</code>）
+    <ul>
+      <li>書くのは、アプリが作った<b>専用カレンダー「推理手帳」にだけ</b>。ふだんのカレンダーには書かない。</li>
+      <li>送るのは<b>タスクの題名と日時と、アプリに戻るリンクと、どのタスクの予定かを見分ける番号（<code>suiri_task_id</code>）だけ</b>。番号はアプリの中の通し番号で、記録の中身ではない。メモや事件の手がかり・見立て・予想の文は送らない。</li>
+      <li>Google が止まっていても、<b>タスクの保存は成功させる</b>。Google への書き出しは後回しの仕事にして、あとで送り直す。</li>
+    </ul>
+  </div>
+
+  <h3>1. つなぐ：説明の画面から Google へ行って、戻ってくるまで</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>設定の画面の「Google カレンダー」の枠</h4>
+      <p>出発点は設定の画面（<code>GET /settings</code>）です。受付 <code>SettingsController::show</code> は、ログイン中の人と、その人の<dfn>連携</dfn>（Google カレンダーとつないだ記録。<code>calendar_connections</code> 表の1行）を一緒に読んでから画面を作ります。引数の <code>ConnectedAppsQuery</code> は、同じ画面の「ChatGPT・Claude とつなぐ」枠に出す一覧を組み立てる係です（<a href="#s13">13章</a>）。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Settings/SettingsController.php</div><pre><code>public function show(Request $request, ConnectedAppsQuery $connectedApps): View
+{
+    $user = $request-&gt;user()-&gt;load('calendarConnection');</code></pre></div>
+      <p><code>calendarConnection</code> は <code>User</code> モデルに書いた「1人に1行」のつながり（<code>hasOne</code>）です。つないでいない人なら <code>null</code>（何もない）になります。</p>
+      <div class="code"><div class="file">src/app/Models/User.php</div><pre><code>/** この人の Google カレンダー連携（1人1行。つないでいなければ null） */
+public function calendarConnection(): HasOne
+{
+    return $this-&gt;hasOne(CalendarConnection::class);
+}</code></pre></div>
+      <p>設定の画面は上から、4つの問い（あなたの名前・一緒に使う人・どんな場面で使う？・いつ書く？）と「保存する」→ カレンダーの枠 → ChatGPT・Claude とつなぐ枠 → ログインしているアカウント → データのダウンロードと退会、の順に並びます。外とつながる2つの枠を隣に並べ、危ない操作をいちばん下に置く並びです。Blade はカレンダーの枠を部品 <code>settings.calendar-panel</code> に任せ、連携（つないでいなければ <code>null</code>）を渡すだけです。</p>
+      <div class="code"><div class="file">src/resources/views/settings/show.blade.php</div><pre><code>&lt;x-settings.calendar-panel :user="$user" :connection="$user-&gt;calendarConnection" class="mt-8" /&gt;
+&lt;x-settings.ai-panel :apps="$aiApps" class="mt-8" /&gt;
+&lt;x-settings.account :user="$user" class="mt-8" /&gt;</code></pre></div>
+      <p>部品の中では、連携の状態ごとに、出す説明とボタンを変えます。枠はいつも「つなぐと、確かめる日をカレンダーが知らせてくれるよ。」の一言から始まります。文は Blade に直接書かず、<code>config/suiri.php</code> の <code>settings.calendar</code>（部品の中では <code>$c</code>）から引きます。<code>strtr</code> は文の中の <code>:name</code> を専用カレンダーの名前「推理手帳」に置きかえる PHP の関数です。</p>
+      <div class="code"><div class="file">src/resources/views/components/settings/calendar-panel.blade.php</div><pre><code>@props(['connection' =&gt; null, 'user' =&gt; null, 'ready' =&gt; \App\Services\Google\GoogleTokens::configured()])
+@php($c = config('suiri.settings.calendar'))
+@php($name = config('suiri.calendar.name'))
+{{-- …（省略）… --}}
+  {{-- 状態ごとに、説明と押せるボタンを変える --}}
+  @if ($connection === null &amp;&amp; ! $ready)
+    &lt;p class="mt-3 text-sm text-muted"&gt;{{ $c['not_ready'] }}&lt;/p&gt;
+  @elseif ($connection === null)
+    &lt;p class="mt-3 text-sm leading-relaxed text-muted"&gt;{{ strtr($c['what'], [':name' =&gt; $name]) }}&lt;/p&gt;
+    &lt;x-ui.button variant="secondary" :href="route('calendar.connect')" class="mt-3 w-full sm:w-auto"&gt;&lt;x-ui.icon name="calendar" class="size-5" /&gt;{{ $c['connect'] }}&lt;/x-ui.button&gt;
+  @elseif ($connection-&gt;isBroken())
+{{-- …（省略）… --}}
+  @else</code></pre></div>
+      <div class="data"><b>枠の4つの状態</b><ul>
+        <li><b>準備中</b>：運営者が Google の鍵（<code>.env</code> の <code>GOOGLE_CLIENT_ID</code> と <code>GOOGLE_CLIENT_SECRET</code>）をまだ入れていない。「準備中」の札と「Google カレンダーとの連携は準備中だよ。」だけで、ボタンを出さない。</li>
+        <li><b>つないでいない</b>（<code>$connection</code> が <code>null</code>）：「つないでいません」の札と「カレンダーとつなぐ」ボタン。行き先は <code>route('calendar.connect')</code>＝<code>/calendar/connect</code>。</li>
+        <li><b>切れた</b>（<code>isBroken()</code>）：札は出さず、赤い太字の一文「連携が切れました。つなぎ直してください。」とそのわけ、「つなぎ直す」「つなぐのをやめる」（この章の 2 の終わりで見ます）。同じ言葉を札と文で2回出さないためです。</li>
+        <li><b>つながっている</b>（<code>@else</code>）：緑の札「つながっています」、最後に同期した日時と「つなぐのをやめる」（この章の 4）。</li>
+      </ul></div>
+      <figure class="shot"><img data-img="screen-google-panel.png" alt="設定の画面の Google カレンダーの枠。つないでいませんの札と、カレンダーとつなぐボタン"><figcaption>つないでいないときの枠。「カレンダーとつなぐ」を押す</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>住所の表：カレンダーの4つの住所</h4>
+      <p>「カレンダーとつなぐ」は、ただのリンク（<code>&lt;a href="/calendar/connect"&gt;</code>）なので、ブラウザは <code>GET /calendar/connect</code> を送ります。住所の表 <code>src/routes/web.php</code> が読み込む <code>src/routes/web/calendar.php</code> に、カレンダーの住所が4つだけ並んでいます。</p>
+      <div class="code"><div class="file">src/routes/web/calendar.php</div><pre><code>Route::middleware(['auth', 'agreed', 'throttle:calendar'])-&gt;group(function () {
+    Route::get('/calendar/connect', [ConnectCalendarController::class, 'show'])-&gt;name('calendar.connect');
+    Route::post('/calendar/connect', [ConnectCalendarController::class, 'redirect'])-&gt;name('calendar.redirect');
+    Route::get('/calendar/callback', [ConnectCalendarController::class, 'callback'])-&gt;name('calendar.callback');
+    Route::delete('/calendar', DisconnectCalendarController::class)-&gt;name('calendar.disconnect');
+});</code></pre></div>
+      <div class="data"><b>4つの住所の役目</b><ul>
+        <li><code>GET /calendar/connect</code>：つなぐ前の説明の画面。</li>
+        <li><code>POST /calendar/connect</code>：「同意して Google へ進む」を押したとき。Google の画面へ送り出す。</li>
+        <li><code>GET /calendar/callback</code>：Google で許可したあと、Google がブラウザを戻してくる先。</li>
+        <li><code>DELETE /calendar</code>：つなぐのをやめる。</li>
+      </ul></div>
+      <div class="point"><b>ここが大事</b>どの住所にも、連携の番号（<code>{connection}</code> のような穴）がありません。受付はいつも「ログイン中の本人の連携」だけを扱うので、住所の数字を書き換えて他人の連携をさわる、ということが最初からできない形です。</div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>見張り役：ログイン・同意・回数制限</h4>
+      <p>囲みに付けた <code>auth</code>・<code>agreed</code>・<code>throttle:calendar</code> と、<code>web</code> のひとまとまりは、Laravel の並べ替え（<a href="#s0">0章</a>）のあと、次の順に動きます（Laravel に並びを出させて確かめました）。</p>
+      <ol>
+        <li><code>EncryptCookies</code> → <code>AddQueuedCookiesToResponse</code> → <code>StartSession</code> → <code>ShareErrorsFromSession</code>（Cookie とセッション。<a href="#s1">1章</a>）</li>
+        <li><code>PreventRequestForgery</code>：POST と DELETE の合言葉を確かめる（<a href="#s11">11章</a>）</li>
+        <li><code>Authenticate</code>（<code>auth</code>）：ログインしているか（<a href="#s1">1章</a>）</li>
+        <li><code>ThrottleRequests:calendar</code>：回数が多すぎないか</li>
+        <li><code>SubstituteBindings</code>：住所の穴を記録に替える（この住所には穴がないので、何もしない）</li>
+        <li><code>EnsureAgreed</code>（<code>agreed</code>）：利用規約などに同意したか（<a href="#s1">1章</a>）</li>
+      </ol>
+      <p>回数制限 <code>calendar</code> の中身は <code>AppServiceProvider</code> にあります。</p>
+      <div class="code"><div class="file">src/app/Providers/AppServiceProvider.php</div><pre><code>$by = fn (Request $request) =&gt; $request-&gt;user()?-&gt;id ?? $request-&gt;ip(); // ログイン中は人ごと、ログイン前は IP ごとに数える
+// …（省略）…
+RateLimiter::for('calendar', fn (Request $r) =&gt; Limit::perMinute(10)-&gt;by($by($r)));    // カレンダーとつなぐ・やめる</code></pre></div>
+      <p>つなぐ・戻る・やめるをまとめて、<b>1人あたり1分に10回まで</b>です。Google への行き来をくり返されて、Google の側の回数の上限を使い切られないようにするためです（回数制限のしくみは <a href="#s11">11章</a>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>ConnectCalendarController::show</code>：説明の画面を返す</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Calendar/ConnectCalendarController.php</div><pre><code>/** つなぐ前の説明の画面を返す（GET /calendar/connect）。Google の鍵が未設定なら「準備中」と出し、進むボタンは出さない */
+public function show(Request $request): View
+{
+    return view('calendar.connect', [
+        'ready' =&gt; GoogleTokens::configured(),
+        'connection' =&gt; $request-&gt;user()-&gt;calendarConnection,
+    ]);
+}</code></pre></div>
+      <p>画面に渡すのは2つだけです。<code>ready</code> は「Google の鍵が入っているか」、<code>connection</code> は今の連携（なければ <code>null</code>）。<code>ready</code> を決める <code>GoogleTokens::configured</code> は、設定の値が2つとも入っているかを見るだけです。</p>
+      <div class="code"><div class="file">src/app/Services/Google/GoogleTokens.php</div><pre><code>/** Google の鍵（クライアント ID とシークレット）が両方設定されているかを返す。未設定なら「準備中」と出す */
+public static function configured(): bool
+{
+    return filled(config('services.google.client_id')) &amp;&amp; filled(config('services.google.client_secret'));
+}</code></pre></div>
+      <p><code>filled</code> は「空でない」を確かめる Laravel の関数です。鍵の値そのものは <code>.env</code> にだけ書かれ、<code>config/services.php</code> を通して読みます（コードにもこの資料にも値は出てきません）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>つなぐ前の説明の画面（送るもの・送らないもの・読むもの）</h4>
+      <p>Google へ行く前に、どうなるか・何を送って何を受け取るかを1画面で見せます。文は Blade に直接書かず、<code>config/suiri.php</code> の <code>calendar.consent</code> から引きます。説明の文が長いので、枠で囲まずに小さめの文字で詰め、主なボタンがスマホの最初の画面に入るようにしています。</p>
+      <div class="code"><div class="file">src/resources/views/calendar/connect.blade.php</div><pre><code>&lt;dl class="mt-3 divide-y divide-rule border-y border-rule text-xs leading-relaxed"&gt;
+  &lt;x-settings.consent-row label="どうなる？"&gt;{{ config('suiri.calendar.consent.what') }}&lt;/x-settings.consent-row&gt;
+  &lt;x-settings.consent-row label="送るもの"&gt;{{ config('suiri.calendar.consent.send') }}&lt;/x-settings.consent-row&gt;
+  &lt;x-settings.consent-row label="送らないもの"&gt;{{ config('suiri.calendar.consent.not_send') }}&lt;/x-settings.consent-row&gt;
+  &lt;x-settings.consent-row label="読むもの"&gt;{{ config('suiri.calendar.consent.receive') }}&lt;/x-settings.consent-row&gt;
+  &lt;x-settings.consent-row label="Google"&gt;{{ config('suiri.calendar.consent.company') }}&lt;/x-settings.consent-row&gt;
+  &lt;x-settings.consent-row label="やめるとき"&gt;{{ config('suiri.calendar.consent.stop') }}&lt;/x-settings.consent-row&gt;
+&lt;/dl&gt;
+
+{{-- Google の鍵が設定されていれば、同意して進むボタンを出す。なければ「準備中」とだけ出す --}}
+@if ($ready)
+  &lt;form method="POST" action="{{ route('calendar.redirect') }}" class="mt-4"&gt;
+    @csrf
+    {{-- すでに連携の行がある（切れた・つながっている）人には「つなぎ直す」と出す --}}
+    &lt;x-ui.big-button icon="calendar" tone="check"&gt;{{ $connection ? '同意して、つなぎ直す' : '同意して Google へ進む' }}&lt;/x-ui.big-button&gt;
+  &lt;/form&gt;</code></pre></div>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'send' =&gt; 'タスクの題名と日時、推理手帳に戻るリンク、どのタスクの予定かを見分ける番号だけ。番号はアプリの中の通し番号で、あなたの記録の中身ではありません。確かめるタスクの題名は「推理手帳：答え合わせの日」です。',
+'not_send' =&gt; 'メモ、事件のなぞ・手がかり・見立て・予想の文などの本文。',
+'receive' =&gt; '今日から2週間の予定の題名と時刻だけ（今日の画面と、事件の画面の「確かめる日」の候補に出すため。説明・場所・参加者は受け取らず、保存もしません。5分だけ覚えます）。専用カレンダーで動かした日時は、タスクに写します。',</code></pre></div>
+      <p>「読むもの」には、受け取るのが予定の題名と時刻だけで、保存せずに5分だけ覚えることまで書いています。今日の画面の予定と、予想を立てるときの「確かめる日」の候補（これからの予定のうち、事件のなぞ・手がかり・見立てと言葉が重なる予定を「次の『◯◯』の日」として出す）に使うためです。</p>
+      <p>ボタンは <code>&lt;form method="POST"&gt;</code> の中にあります。<code>@csrf</code> は、フォームに合言葉の隠し欄（<code>_token</code>）を入れる Blade の命令です（<a href="#s11">11章</a>）。ボタンは横いっぱいの主なボタン <code>x-ui.big-button</code>（高さ 56px）で、すでに連携の行がある人（切れた人など）には、文字が「同意して、つなぎ直す」に変わります。ボタンの下には、Google の画面で「このアプリは Google で確認されていません」という注意が出ることがある、と小さく書いています。</p>
+      <figure class="shot"><img data-img="screen-google-connect.png" alt="カレンダーとつなぐ前の説明の画面。どうなる？・送るもの・送らないもの・読むもの・Google・やめるとき、と同意して Google へ進むボタン"><figcaption>つなぐ前の説明の画面（スマホ）</figcaption></figure>
+      <div class="analogy"><b>たとえると</b>銀行の口座振替の申込書です。「どこに、何を、どこまで伝えるか」を書いた紙を先に見せ、納得した人だけが判を押して（同意して）窓口に出します。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>ConnectCalendarController::redirect</code>：「カレンダーも使わせて」と Google に頼む</h4>
+      <p>「同意して Google へ進む」を押すと <code>POST /calendar/connect</code> が届きます。見張り役を通ったあと、この関数が呼ばれます。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Calendar/ConnectCalendarController.php</div><pre><code>public function redirect(Request $request): RedirectResponse|SymfonyRedirect
+{
+    // Google の鍵がまだ設定されていなければ、設定の画面へ戻して「準備中」と知らせる
+    if (! GoogleTokens::configured()) {
+        return redirect()-&gt;route('settings.show')-&gt;with('error', 'Google カレンダーとの連携は準備中です。');
+    }
+
+    return Socialite::driver('google')
+        -&gt;redirectUrl(route('calendar.callback'))
+        -&gt;scopes(config('suiri.calendar.scopes'))
+        -&gt;with([
+            'access_type' =&gt; 'offline',
+            'prompt' =&gt; 'consent',
+            'include_granted_scopes' =&gt; 'true',
+            'login_hint' =&gt; $request-&gt;user()-&gt;email,
+        ])
+        -&gt;enablePKCE()
+        -&gt;redirect();
+}</code></pre></div>
+      <p><dfn>Socialite</dfn> は、Google などのアカウントで「許可をもらう手続き（OAuth）」を代わりにしてくれる Laravel の部品です。ログインでも使いました（<a href="#s1">1章</a>）。ログインのときとの違いは、ここで<b>カレンダーの許可を足して</b>頼むことです。ログインのときには、名前・メール・アイコンの許可しかもらっていません。使う機能を選んだ人にだけ、あとから許可を足してもらうやり方を<dfn>段階的な許可</dfn>と呼びます。</p>
+      <div class="data"><b>1行ずつの意味</b><ul>
+        <li><code>redirectUrl(route('calendar.callback'))</code>：Google で許可したあとに戻ってくる先。ログインの戻り先（<code>/auth/google/callback</code>）とは別の <code>/calendar/callback</code> にする。</li>
+        <li><code>scopes(...)</code>：<dfn>スコープ</dfn>（許可の範囲）。下の2つ。</li>
+        <li><code>access_type=offline</code>：利用者が画面の前にいないとき（worker の箱が夜中に書き出すときなど）にも使える <dfn>refresh token</dfn>（鍵を取り直すための鍵）をもらう。</li>
+        <li><code>prompt=consent</code>：前に許可したことがあっても、同意の画面を必ず出してもらう。こうしないと refresh token がもう一度もらえないことがある。</li>
+        <li><code>include_granted_scopes=true</code>：ログインのときの許可も、まとめて1つの許可にする。</li>
+        <li><code>login_hint</code>：Google の画面で、ログイン中の人のメールのアカウントを先に選んでおく。</li>
+        <li><code>enablePKCE()</code>：途中で許可を横取りされないための合言葉（このあと説明）。</li>
+      </ul></div>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'calendar' =&gt; [
+    'name' =&gt; '推理手帳', // アプリが作る専用カレンダーの名前
+    'timezone' =&gt; 'Asia/Tokyo',
+    'pull_every_minutes' =&gt; 15,
+    'scopes' =&gt; [
+        'https://www.googleapis.com/auth/calendar.app.created',
+        'https://www.googleapis.com/auth/calendar.events.owned.readonly',
+    ],</code></pre></div>
+      <ul>
+        <li><code>calendar.app.created</code>：<b>このアプリが作ったカレンダーだけ</b>を読み書きできる許可。ふだんのカレンダーの予定は書き換えられません。</li>
+        <li><code>calendar.events.owned.readonly</code>：自分のカレンダーの予定を<b>読むだけ</b>の許可。今日の画面に予定を出すのに使います（<a href="#s2">2章</a>）。</li>
+      </ul>
+      <p>カレンダーのすべてを読み書きできる大きな許可（<code>calendar</code>）は求めません。許可は、使う分だけの最小にします。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>Socialite が合言葉をセッションにしまい、Google の住所を作る</h4>
+      <p><code>scopes()</code> は、Socialite がもともと持っている Google の既定の許可（<code>openid</code>・<code>profile</code>・<code>email</code>）に、渡した2つを足します。</p>
+      <div class="code"><div class="file">src/vendor/laravel/socialite/src/Two/AbstractProvider.php</div><pre><code>public function scopes($scopes)
+{
+    $this-&gt;scopes = array_values(array_unique(array_merge($this-&gt;scopes, (array) $scopes)));
+
+    return $this;
+}</code></pre></div>
+      <p>最後の <code>redirect()</code> が、Google の同意の画面への転送を作ります。</p>
+      <div class="code"><div class="file">src/vendor/laravel/socialite/src/Two/AbstractProvider.php</div><pre><code>public function redirect()
+{
+    $state = null;
+
+    if ($this-&gt;usesState()) {
+        $this-&gt;request-&gt;session()-&gt;put('state', $state = $this-&gt;getState());
+    }
+
+    if ($this-&gt;usesPKCE()) {
+        $this-&gt;request-&gt;session()-&gt;put('code_verifier', $this-&gt;getCodeVerifier());
+    }
+
+    return new RedirectResponse($this-&gt;getAuthUrl($state));
+}</code></pre></div>
+      <ol>
+        <li><dfn>state</dfn>（でたらめな文字列）を作って、この人のセッション（サーバーの預かり箱。<a href="#s1">1章</a>）にしまう。</li>
+        <li>PKCE の <code>code_verifier</code>（もう1つのでたらめな文字列）もセッションにしまう。</li>
+        <li>Google の住所 <code>https://accounts.google.com/o/oauth2/auth?…</code> を作って、そこへの転送（302）を返す。</li>
+      </ol>
+      <p>住所の後ろ（<code>?</code> から先）に付ける項目は、次の関数が集めます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/socialite/src/Two/AbstractProvider.php</div><pre><code>if ($this-&gt;usesState()) {
+    $fields['state'] = $state;
+}
+
+if ($this-&gt;usesPKCE()) {
+    $fields['code_challenge'] = $this-&gt;getCodeChallenge();
+    $fields['code_challenge_method'] = $this-&gt;getCodeChallengeMethod();
+}
+
+return array_merge($fields, $this-&gt;parameters);</code></pre></div>
+      <p><code>state</code> はそのまま住所に付けます。<code>code_verifier</code> のほうは、そのままではなく、計算で元に戻せない形（<code>code_challenge</code>。SHA-256 という計算の結果）にして付けます。最後の <code>$this-&gt;parameters</code> が、さっき <code>with([...])</code> で渡した <code>access_type</code> などです。</p>
+      <div class="analogy"><b>たとえると</b>クリーニング店の引換券です。店（Google）に行く前に、半券（state と code_verifier）を自分の財布（セッション）に入れておきます。戻ってきたとき、半券と合わない人には品物（許可）を渡しません。</div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>Google の同意の画面で許可し、<code>/calendar/callback</code> へ戻る</h4>
+      <p>ブラウザは転送に従って Google の画面を開きます。ここから先はアプリのコードではなく、Google の画面です。利用者はアカウントを選び、カレンダーの項目にチェックを入れて「続行」を押します。</p>
+      <p>「このアプリは Google で確認されていません」という注意が出ることがあります。少人数で使うアプリなので、Google の確認の手続きをしていないためで、説明の画面の下にもそう書いてあります（<code>config/suiri.php</code> の <code>calendar.consent.warning</code>）。</p>
+      <p>許可すると、Google はブラウザを <code>/calendar/callback</code> へ戻します（Google からの転送）。</p>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>送る：<code>GET /calendar/callback?state=…&amp;code=…&amp;scope=…</code></li>
+        <li><code>code</code>：<dfn>認可コード</dfn>。「この人は許可しました」という1回きりの引換券。これだけではまだカレンダーは使えない。</li>
+        <li><code>state</code>：行くときに付けた合言葉が、そのまま返ってくる。</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>ConnectCalendarController::callback</code>：引換券を鍵に替える</h4>
+      <p>戻りの住所にも、同じ見張り役（ログイン・同意・回数制限）が付いています。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Calendar/ConnectCalendarController.php</div><pre><code>public function callback(Request $request, ConnectCalendar $connect): RedirectResponse
+{
+    // Google の鍵がまだ設定されていなければ、設定の画面へ戻して「準備中」と知らせる
+    if (! GoogleTokens::configured()) {
+        return redirect()-&gt;route('settings.show')-&gt;with('error', 'Google カレンダーとの連携は準備中です。');
+    }
+
+    // Google から許可を受け取る（送り出しと同じ戻り先と PKCE で）。やめた・時間切れなどで失敗したら、設定の画面で知らせる
+    try {
+        $google = Socialite::driver('google')-&gt;redirectUrl(route('calendar.callback'))-&gt;enablePKCE()-&gt;user();
+    } catch (Throwable $e) {
+        Log::info('カレンダーとつなぐのを中断', ['user_id' =&gt; $request-&gt;user()-&gt;id, 'error' =&gt; class_basename($e)]);
+
+        return redirect()-&gt;route('settings.show')-&gt;with('error', 'Google カレンダーとつなげませんでした。もう一度お試しください。');
+    }</code></pre></div>
+      <p><code>user()</code> が、受け取った引換券（<code>code</code>）を Google に出して、本物の鍵に替えてきます。途中で利用者が「キャンセル」を押した・時間がたちすぎた・合言葉が合わない、などで失敗したら、<code>catch</code> に入って設定の画面へ戻します。</p>
+      <div class="point"><b>ここが大事</b>失敗の記録（<dfn>ログ</dfn>）に書くのは、利用者の番号（<code>user_id</code>）と、エラーの種類の名前（<code>class_basename($e)</code>。たとえば <code>InvalidStateException</code>）だけです。メールアドレスや鍵は書きません（<a href="#s11">11章</a>）。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>Socialite の <code>user()</code>：合言葉を確かめ、鍵（トークン）を受け取る</h4>
+      <div class="code"><div class="file">src/vendor/laravel/socialite/src/Two/AbstractProvider.php</div><pre><code>public function user()
+{
+    if ($this-&gt;user) {
+        return $this-&gt;user;
+    }
+
+    if ($this-&gt;hasInvalidState()) {
+        throw new InvalidStateException;
+    }
+
+    $response = $this-&gt;getAccessTokenResponse($this-&gt;getCode());
+
+    $user = $this-&gt;getUserByToken(Arr::get($response, 'access_token'));
+
+    return $this-&gt;userInstance($response, $user);
+}</code></pre></div>
+      <p>まず <code>hasInvalidState</code> で、行くときにセッションにしまった state と、戻ってきた state を比べます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/socialite/src/Two/AbstractProvider.php</div><pre><code>$state = $this-&gt;request-&gt;session()-&gt;pull('state');
+
+return empty($state) || ! hash_equals($state, (string) $this-&gt;request-&gt;input('state'));</code></pre></div>
+      <p><code>pull</code> は「取り出して、箱からは消す」です。1回使った合言葉はもう使えません。合わなければ <code>InvalidStateException</code> を投げ、受付の <code>catch</code> に入ります。これで、ほかの人が用意した戻りの住所を踏まされても、自分の手帳に他人のカレンダーがつながることはありません。</p>
+      <p>合えば、<code>getAccessTokenResponse</code> で引換券を Google（<code>https://oauth2.googleapis.com/token</code>）に出します。このとき、セッションにしまっておいた <code>code_verifier</code> も一緒に出します。</p>
+      <div class="code"><div class="file">src/vendor/laravel/socialite/src/Two/AbstractProvider.php</div><pre><code>if ($this-&gt;usesPKCE()) {
+    $fields['code_verifier'] = $this-&gt;request-&gt;session()-&gt;pull('code_verifier');
+}</code></pre></div>
+      <p>Google は、行くときに受け取った <code>code_challenge</code> と、いま出された <code>code_verifier</code> を同じ計算で比べます。途中で引換券だけを盗み見た人は <code>code_verifier</code> を持っていないので、鍵に替えられません。これが PKCE です。</p>
+      <p>Google が返してきた鍵は、Socialite の利用者の入れ物にまとめられます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/socialite/src/Two/AbstractProvider.php</div><pre><code>return $this-&gt;user-&gt;setToken(Arr::get($response, 'access_token'))
+    -&gt;setRefreshToken(Arr::get($response, 'refresh_token'))
+    -&gt;setExpiresIn(Arr::get($response, 'expires_in'))
+    -&gt;setApprovedScopes(explode($this-&gt;scopeSeparator, Arr::get($response, 'scope', '')));</code></pre></div>
+      <div class="data"><b>このとき受け取るデータ（<code>$google</code>）</b><ul>
+        <li><code>token</code>：<dfn>access token</dfn>。カレンダーの API を呼ぶときに見せる鍵。1時間ほどで使えなくなる。</li>
+        <li><code>refreshToken</code>：refresh token。access token が切れたら、これで取り直す。</li>
+        <li><code>expiresIn</code>：access token があと何秒使えるか。</li>
+        <li><code>approvedScopes</code>：利用者が実際に許可したスコープの一覧（チェックを外した項目は入らない）。</li>
+        <li><code>getId()</code>：Google のアカウントの番号（<code>sub</code>）。</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>用事 <code>ConnectCalendar</code>：受け取った許可を3つ確かめる</h4>
+      <p>受付は、鍵を受け取ったら用事に任せます。断られたら、その理由の文を設定の画面に出します。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Calendar/ConnectCalendarController.php</div><pre><code>// 確かめて保存する。別のアカウント・許可が足りない・鍵がないなどで断られたら、その理由を出す
+try {
+    $connect-&gt;handle($request-&gt;user(), $google);
+} catch (CalendarConnectRefused $e) {
+    return redirect()-&gt;route('settings.show')-&gt;with('error', $e-&gt;getMessage());
+}</code></pre></div>
+      <p>用事 <code>ConnectCalendar::handle</code> は、最初に <code>check</code> で確かめます。</p>
+      <div class="code"><div class="file">src/app/Actions/Calendar/ConnectCalendar.php</div><pre><code>private function check(User $user, GoogleUser $google): void
+{
+    // ログイン中とは別の Google アカウントで許可されたなら、つながない（ほかの人のカレンダーに書かないため）
+    if ((string) $google-&gt;getId() !== (string) $user-&gt;google_id) {
+        throw new CalendarConnectRefused('ログイン中と同じ Google アカウントを選んで、もう一度つないでください。');
+    }
+
+    $missing = array_diff(config('suiri.calendar.scopes'), (array) $google-&gt;approvedScopes);
+
+    // 求めた許可の一部が外されていたら、つながない（Google の画面で、すべての項目にチェックが要る）
+    if ($missing !== []) {
+        throw new CalendarConnectRefused('カレンダーの許可が足りませんでした。Google の画面で、すべての項目にチェックを入れて、もう一度つないでください。');
+    }
+
+    // あとで鍵を取り直すための refresh token がなければ、つながない（すぐに使えなくなるため）
+    if (blank($google-&gt;refreshToken)) {
+        throw new CalendarConnectRefused('Google から必要な鍵を受け取れませんでした。もう一度つないでください。');
+    }
+}</code></pre></div>
+      <ol>
+        <li><b>同じアカウントか</b>：Google のアカウントの番号（<code>sub</code>）が、ログインのときに保存した <code>users.google_id</code> と同じか。家族の別のアカウントを選んでしまったときなどに止めます。</li>
+        <li><b>許可がそろったか</b>：<code>array_diff</code> は「左の一覧にあって、右の一覧にないもの」を返す関数です。求めた2つのスコープのうち、許可されなかったものが1つでもあれば止めます。Google の画面では、項目ごとにチェックを外せるからです。</li>
+        <li><b>refresh token があるか</b>：これがないと、1時間後には書き出せなくなります。</li>
+      </ol>
+      <p>どれかがだめなら、<code>CalendarConnectRefused</code> を投げます。これは「つなぐのを断った」ことを表す、このアプリが作った例外（いつもと違うことが起きたという知らせ）です。</p>
+      <div class="code"><div class="file">src/app/Services/Google/Exceptions/CalendarConnectRefused.php</div><pre><code>/**
+ * カレンダーとつなぐのを断ったしるし（違う Google アカウント・許可が足りない・鍵がない・専用カレンダーを作れない）。
+ * 文は利用者に向けたもので、受付が設定の画面にそのまま出す
+ */
+class CalendarConnectRefused extends RuntimeException {}</code></pre></div>
+      <p>ここで投げると、このあとの保存は1つも行いません。中途半端な連携の行が残らないようにするためです。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>連携の行に、鍵と期限を入れる（まだ保存しない）</h4>
+      <div class="code"><div class="file">src/app/Actions/Calendar/ConnectCalendar.php</div><pre><code>public function handle(User $user, GoogleUser $google): CalendarConnection
+{
+    $this-&gt;check($user, $google);
+
+    $connection = $user-&gt;calendarConnection ?? new CalendarConnection;
+    $connection-&gt;fill([
+        'access_token' =&gt; $google-&gt;token,
+        'refresh_token' =&gt; $google-&gt;refreshToken,
+        'expires_at' =&gt; now()-&gt;addSeconds((int) ($google-&gt;expiresIn ?: 0)),
+        'scopes' =&gt; array_values($google-&gt;approvedScopes),
+        'status' =&gt; CalendarStatus::Active,
+    ]);</code></pre></div>
+      <ul>
+        <li><code>$user-&gt;calendarConnection ?? new CalendarConnection</code>：前につないだ行があれば（切れた人のつなぎ直しなど）それを使い、なければ新しい行を用意します。<code>??</code> は「左が <code>null</code> なら右」です。連携は1人1行と決めてあります。</li>
+        <li><code>fill</code>：行に値を入れるだけで、まだデータベースには書きません。</li>
+        <li><code>expires_at</code>：今の時刻に「あと何秒使えるか」を足して、access token の期限の時刻にします。</li>
+        <li><code>status</code>：<code>CalendarStatus::Active</code>（つながっている）。</li>
+      </ul>
+      <div class="code"><div class="file">src/app/Enums/CalendarStatus.php</div><pre><code>enum CalendarStatus: string
+{
+    use HasLabel;
+
+    case Active = 'active';
+    case Broken = 'broken';</code></pre></div>
+      <p><dfn>enum</dfn>（列挙）は「取りうる値を決めた一覧」です。連携の状態は「つながっている（<code>active</code>）」と「切れた（<code>broken</code>）」の2つだけです。</p>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>鍵は暗号にして保存し、外には出さない</h4>
+      <p>連携のモデル <code>CalendarConnection</code> は、鍵の列を<dfn>暗号化</dfn>（決まった秘密の鍵がないと読めない形に変えること）して保存するよう決めてあります。</p>
+      <div class="code"><div class="file">src/app/Models/CalendarConnection.php</div><pre><code>#[Hidden(['access_token', 'refresh_token', 'sync_token'])]
+class CalendarConnection extends Model
+{
+// …（省略）…
+    protected function casts(): array
+    {
+        return [
+            'access_token' =&gt; 'encrypted',
+            'refresh_token' =&gt; 'encrypted',
+            'expires_at' =&gt; 'datetime',
+            'scopes' =&gt; 'array',
+            'status' =&gt; CalendarStatus::class,
+            'last_synced_at' =&gt; 'datetime',
+        ];
+    }</code></pre></div>
+      <p><dfn>キャスト</dfn>（<code>casts</code>）は「この列は、読み書きのときにこの形に変える」という決まりです。<code>'encrypted'</code> と書いた列は、Laravel が保存の直前に暗号にし、読むときに元に戻します。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Database/Eloquent/Concerns/HasAttributes.php</div><pre><code>protected function castAttributeAsEncryptedString($key, #[\SensitiveParameter] $value)
+{
+    return static::currentEncrypter()-&gt;encrypt($value, false);
+}</code></pre></div>
+      <p>暗号にするのに使う秘密の鍵は、<code>.env</code> の <code>APP_KEY</code> です。やり方は AES-256-CBC という決まった方式です。</p>
+      <div class="code"><div class="file">src/config/app.php</div><pre><code>'cipher' =&gt; 'AES-256-CBC',</code></pre></div>
+      <p>なので、もしデータベースの中身だけがどこかに漏れても、<code>APP_KEY</code> がなければ鍵は読めません。もう1つの <code>#[Hidden([...])]</code> は「この列は JSON に出さない」という印です。データのダウンロード（<a href="#s11">11章</a>）で自分の記録を書き出すときにも、鍵と <code>sync_token</code> は入りません。</p>
+      <div class="code"><div class="file">src/database/migrations/2026_10_31_000013_create_calendar_connections_table.php</div><pre><code>Schema::create('calendar_connections', function (Blueprint $table) {
+    $table-&gt;id();
+    $table-&gt;foreignId('user_id')-&gt;unique()-&gt;constrained()-&gt;cascadeOnDelete(); // 1人1行
+    $table-&gt;text('access_token'); // 暗号化して保存する
+    $table-&gt;text('refresh_token'); // 暗号化して保存する
+    $table-&gt;timestamp('expires_at'); // access_token の期限
+    $table-&gt;json('scopes'); // 許可されたスコープ
+    $table-&gt;string('app_calendar_id')-&gt;nullable(); // アプリが作った専用カレンダーの ID
+    $table-&gt;text('sync_token')-&gt;nullable(); // 差分取り込みの印
+    $table-&gt;string('status', 10)-&gt;default('active'); // active・broken
+    $table-&gt;timestamp('last_synced_at')-&gt;nullable();
+    $table-&gt;timestamps();
+});</code></pre></div>
+      <div class="data"><b><code>calendar_connections</code> 表（1人1行）</b><ul>
+        <li><code>user_id</code>：持ち主。<code>unique()</code> で1人1行に、<code>cascadeOnDelete()</code> で退会して <code>users</code> の行が消えたら一緒に消える。</li>
+        <li><code>access_token</code>・<code>refresh_token</code>：暗号にした鍵。暗号にすると長くなるので <code>text</code>（長い文字の列）。</li>
+        <li><code>app_calendar_id</code>：専用カレンダー「推理手帳」の ID（次のステップで決まる）。</li>
+        <li><code>sync_token</code>：取り込みのしおり（この章の 3）。</li>
+        <li><code>status</code>・<code>last_synced_at</code>：つながっているか・最後に同期した時刻。</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>専用カレンダー「推理手帳」を用意する</h4>
+      <div class="code"><div class="file">src/app/Actions/Calendar/ConnectCalendar.php</div><pre><code>private function prepareCalendar(CalendarConnection $connection): string
+{
+    // 前の専用カレンダーが残っているか確かめ、なければ作る。Google が止まっていたら、つながずに知らせる
+    try {
+        // 前につないだときの専用カレンダーがまだあれば、それを使う（予定が二重にならない）
+        if (filled($connection-&gt;app_calendar_id) &amp;&amp; $this-&gt;api-&gt;hasCalendar($connection, $connection-&gt;app_calendar_id)) {
+            return $connection-&gt;app_calendar_id;
+        }
+
+        return $this-&gt;api-&gt;insertCalendar($connection, config('suiri.calendar.name'), config('suiri.calendar.timezone'));
+    } catch (Throwable) {
+        throw new CalendarConnectRefused('Google カレンダーに専用のカレンダーを用意できませんでした。時間をおいて、もう一度つないでください。');
+    }
+}</code></pre></div>
+      <ul>
+        <li>つなぎ直しで、前の専用カレンダーが Google にまだ残っていれば、それをそのまま使います。新しく作ると「推理手帳」が2つになり、予定も二重になるからです。</li>
+        <li>なければ（初めて・利用者が Google で消した）、新しく作ります。名前は <code>推理手帳</code>、タイムゾーンは <code>Asia/Tokyo</code>。</li>
+        <li>Google が止まっていて作れなければ、つながずに断ります。</li>
+      </ul>
+      <p><code>$this-&gt;api</code> は、Google カレンダーの<dfn>窓口</dfn>（<code>App\Contracts\CalendarApi</code>）です。窓口は「何ができるか」の一覧（<dfn>interface</dfn>）だけを決めた約束で、本物の中身は <code>App\Services\Google\CalendarApi</code> にあります（どちらを使うかの結びつけと、中身のしくみはこの章の 2 で見ます）。作るときに送るのは、名前とタイムゾーンだけです。</p>
+      <div class="code"><div class="file">src/app/Services/Google/CalendarApi.php</div><pre><code>/** 専用カレンダーを作り、その ID を返す（POST /calendars。送るのは名前とタイムゾーンだけ） */
+public function insertCalendar(CalendarConnection $connection, string $name, string $timeZone): string
+{
+    $response = $this-&gt;send($connection, 'post', '/calendars', ['summary' =&gt; $name, 'timeZone' =&gt; $timeZone]);
+    $this-&gt;failUnless($connection, $response, 'insertCalendar');
+
+    return (string) $response-&gt;json('id');
+}</code></pre></div>
+      <p>Google は、作ったカレンダーの ID（<code>…@group.calendar.google.com</code> の形）を返します。<code>calendar.app.created</code> の許可で読み書きできるのは、このカレンダーだけです。</p>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>まとめて保存する（トランザクション）</h4>
+      <div class="code"><div class="file">src/app/Actions/Calendar/ConnectCalendar.php</div><pre><code>$calendarId = $this-&gt;prepareCalendar($connection);
+$isNewCalendar = $calendarId !== $connection-&gt;app_calendar_id;
+
+DB::transaction(function () use ($user, $connection, $calendarId, $isNewCalendar) {
+    // 新しい専用カレンダーにしたなら、前のカレンダーの予定とのつながりを外し、差分の印も捨てる（全部書き直す）
+    if ($isNewCalendar) {
+        $user-&gt;tasks()-&gt;whereNotNull('calendar_event_id')-&gt;update(['calendar_event_id' =&gt; null, 'calendar_synced_at' =&gt; null]);
+        $connection-&gt;sync_token = null;
+    }
+    $connection-&gt;app_calendar_id = $calendarId;
+    $connection-&gt;user_id = $user-&gt;id;
+    $connection-&gt;save();
+});</code></pre></div>
+      <p><dfn>トランザクション</dfn>は「中の書き込みを、全部するか、1つもしないか」にするしくみです。<code>DB::transaction(function () { … })</code> の中で失敗すると、それまでの書き込みも取り消されます。</p>
+      <ul>
+        <li>専用カレンダーが新しくなった（<code>$isNewCalendar</code>）なら、前のカレンダーの予定とつながっていたタスクの印（<code>tasks.calendar_event_id</code>）を全部外し、取り込みのしおり（<code>sync_token</code>）も捨てます。新しいカレンダーには、全部を書き直すからです。</li>
+        <li>専用カレンダーの ID と持ち主を入れて、連携の行を保存します。このとき鍵が暗号になります（前のステップ）。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>書く：<code>calendar_connections</code> の1行（なければ作る・あれば直す）</li>
+        <li>書く（新しいカレンダーのときだけ）：その人の <code>tasks</code> の <code>calendar_event_id</code>・<code>calendar_synced_at</code> を空に</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>今までのタスクの書き出しを「後回しの仕事」にして、設定の画面へ戻す</h4>
+      <div class="code"><div class="file">src/app/Actions/Calendar/ConnectCalendar.php</div><pre><code>PushAllTasksToCalendar::dispatch($user-&gt;id);
+
+return $connection;</code></pre></div>
+      <p>つないだ時点で、すでに期日のあるタスクがいくつもあるかもしれません。それを今ここで1件ずつ Google に送ると、件数が多い人ほど画面が返ってくるまで待たされ、途中で Google が止まれば失敗します。そこで、書き出しは<dfn>後回しの仕事（Job）</dfn>にして、<dfn>キュー</dfn>（仕事の待ち行列）に積むだけにします。<code>dispatch</code> は「この仕事を列に並べて」という命令で、すぐに終わります。</p>
+      <div class="analogy"><b>たとえると</b>レストランの注文票です。ホールの係（受付）は注文票を厨房の棚（キュー）に置いたらすぐに次のお客さんのところへ戻り、料理は厨房の係（worker の箱）が順番に作ります。</div>
+      <p>用事が終わると、受付は設定の画面へ転送します。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Calendar/ConnectCalendarController.php</div><pre><code>return redirect()-&gt;route('settings.show')
+    -&gt;with('status', 'Google カレンダーとつなぎました。専用のカレンダー「'.config('suiri.calendar.name').'」に、期日のあるタスクを書き込みます。');</code></pre></div>
+      <p><code>with('status', …)</code> は、次の1回の画面だけに出す知らせ（<dfn>フラッシュメッセージ</dfn>）をセッションに入れます。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4>後回しの仕事 <code>PushAllTasksToCalendar</code>：1件ずつの仕事に分け、残った予定を片づける</h4>
+      <p>列に並んだ順に、worker の箱がこの仕事を取り出して動かします（取り出すしくみはこの章の 2 で見ます）。つなぎ直したときも、毎回この仕事が出ます。</p>
+      <div class="code"><div class="file">src/app/Jobs/PushAllTasksToCalendar.php</div><pre><code>public function handle(DeleteOrphanEvents $deleteOrphans): void
+{
+    $connection = CalendarConnection::where('user_id', $this-&gt;userId)-&gt;first();
+
+    // つないでいない・切れた・専用カレンダーがないなら、何もしない（つなぎ直したときにまた出る）
+    if ($connection === null || ! $connection-&gt;isActive() || blank($connection-&gt;app_calendar_id)) {
+        return;
+    }
+
+    $tasks = Task::where('user_id', $this-&gt;userId)
+        -&gt;where(fn ($query) =&gt; $query-&gt;where(fn ($open) =&gt; $open-&gt;open()-&gt;whereNotNull('due_on'))-&gt;orWhereNotNull('calendar_event_id'))
+        -&gt;select('id')-&gt;lazyById();
+
+    // タスクを1件ずつ取り出して、書き出しの仕事を出す（済んだタスクは「✓」つきに、いつかにしたタスクは予定を消す）
+    foreach ($tasks as $task) {
+        PushTaskToCalendar::dispatch($task-&gt;id);
+    }
+
+    // もうないタスクの予定を消す。許可が切れていたら（連携は broken になっている）試し直さずに終える
+    try {
+        $deleteOrphans-&gt;handle($connection);
+    } catch (GoogleAuthBroken) {
+        return;
+    }
+}</code></pre></div>
+      <ul>
+        <li><code>where('user_id', …)</code>：その人のタスクだけ。</li>
+        <li><code>open()-&gt;whereNotNull('due_on')</code>：まだ済んでいない（<code>done_at</code> が空の）、期日のあるタスク。<code>open()</code> は <code>Task</code> モデルに書いた絞り込み（<dfn>スコープ</dfn>。許可のスコープとは別の意味の言葉）です。「いつか」のタスクは予定にしません。</li>
+        <li><code>orWhereNotNull('calendar_event_id')</code>：前に予定を書いたタスク（予定の ID を持つもの）も書き直します。連携が切れている間に済ませた・「いつか」にしたタスクの予定を、「✓」つきにしたり消したりするためです。</li>
+        <li><code>select('id')-&gt;lazyById()</code>：id だけを、少しずつ読みます（何千件あっても、一度にメモリに載せない）。</li>
+        <li>最後の <code>DeleteOrphanEvents</code>：連携が切れている間に消したタスクの予定を消します（すぐ下の手順）。</li>
+      </ul>
+      <div class="code"><div class="file">src/app/Models/Task.php</div><pre><code>#[Scope]
+protected function open(Builder $query): void
+{
+    $query-&gt;whereNull('done_at');
+}</code></pre></div>
+      <p>タスク1件ごとに別の仕事 <code>PushTaskToCalendar</code> を積みます。まとめて1つの仕事にしないのは、1件が失敗しても、ほかは書き出せるようにするためです（失敗した分だけ試し直します）。片づけで Google が止まっていたら、この仕事ごと間を空けて試し直します（<code>tries()</code>・<code>backoff()</code>。書き出しは同じ予定の置き換えなので、出し直しても二重になりません）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4>用事 <code>DeleteOrphanEvents</code>：もうないタスクの予定を、専用カレンダーから消す</h4>
+      <p>連携が切れている間（<code>broken</code>）にタスクを消すと、予定を消す仕事 <code>RemoveTaskFromCalendar</code> は「切れている」ので何もせずに終わり、タスクの行も消えます。すると、予定だけが Google に残ります。つなぎ直したときに、それを片づけます。</p>
+      <div class="code"><div class="file">src/app/Actions/Calendar/DeleteOrphanEvents.php</div><pre><code>public function handle(CalendarConnection $connection, ?array $events = null): int
+{
+    $events ??= $this-&gt;api-&gt;listChangedEvents($connection, $connection-&gt;app_calendar_id, null)['events'];
+
+    // アプリの印があって、まだ消されていない予定だけを「予定の ID =&gt; タスクの番号」にする
+    $marked = collect($events)
+        -&gt;reject(fn (array $event) =&gt; ($event['status'] ?? null) === 'cancelled' || ! isset($event['id']))
+        -&gt;mapWithKeys(fn (array $event) =&gt; [$event['id'] =&gt; $event['extendedProperties']['private']['suiri_task_id'] ?? null])
+        -&gt;filter(fn ($taskId) =&gt; filled($taskId));
+    // …（省略）…
+    $existing = Task::where('user_id', $connection-&gt;user_id)
+        -&gt;whereIn('id', $marked-&gt;values()-&gt;unique()-&gt;all())
+        -&gt;pluck('id')-&gt;map(fn ($id) =&gt; (string) $id)-&gt;flip();
+    $orphans = $marked-&gt;reject(fn ($taskId) =&gt; $existing-&gt;has((string) $taskId))-&gt;keys();
+
+    // 本人の今あるタスクに当たらない予定を1つずつ消す（もう消えていれば窓口が何もしない）
+    foreach ($orphans as $eventId) {
+        $this-&gt;api-&gt;deleteEvent($connection, $connection-&gt;app_calendar_id, (string) $eventId);
+    }
+
+    return $orphans-&gt;count();
+}</code></pre></div>
+      <ul>
+        <li><code>listChangedEvents(…, null)</code>：しおりなしで、専用カレンダーの予定を全部読みます（次の手順の取り込みの窓口と同じ）。全件を読み直す取り込みのときは、もう読んだ一覧を <code>$events</code> で渡してもらい、読み直しません。</li>
+        <li>見るのは、アプリの印 <code>suiri_task_id</code>（タスクの番号）がついた予定だけです。印のない予定は、利用者が専用カレンダーに手で足したものなので、消しません。</li>
+        <li>その番号が<b>本人の今あるタスク</b>（<code>where('user_id', …)</code>）に当たらなければ、消します。他人のタスクの番号がついた予定も、自分の専用カレンダーにあるべきではないので消します。</li>
+      </ul>
+      <div class="point"><b>ここが大事</b>消してよいのは、専用カレンダーがアプリだけが書く場所（スコープ <code>calendar.app.created</code> で作ったもの）だからです。ふだんのカレンダーの予定には、そもそも触れられません。テスト <code>src/tests/Feature/Calendar/DeleteOrphanEventsTest.php</code> が、Google の返事を <code>Http::fake</code> の偽物にして、消すのが「もうないタスク・他人のタスクの番号の予定」だけで、今あるタスク・印のない予定・消された印の予定には触らないことを確かめています。</div>
+      <div class="data"><b>このとき動くデータ</b><ul><li>外へ：<code>GET /calendars/{専用カレンダー}/events</code>（全件）と、消す予定ごとに <code>DELETE /calendars/{専用カレンダー}/events/{予定の ID}</code></li><li>読む：<code>tasks</code> の id（その人の分だけ）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>設定の画面に「つながっています」が出る</h4>
+      <div class="code"><div class="file">src/resources/views/components/settings/calendar-panel.blade.php</div><pre><code>&lt;p class="mt-2 text-sm"&gt;
+  &lt;span class="text-muted"&gt;{{ $c['synced'] }}&lt;/span&gt;
+  &lt;span class="font-bold"&gt;{{ $connection-&gt;last_synced_at?-&gt;format('Y年n月j日 H:i') ?? $c['not_synced'] }}&lt;/span&gt;
+&lt;/p&gt;</code></pre></div>
+      <p><code>$c['synced']</code> は「最後に同期した日時：」です。転送のすぐあとは、まだ worker の箱が書き出していないことがあるので、<code>$c['not_synced']</code> の「まだだよ（数分のうちに書き出すよ）」と出ます。1件でも書き出すと <code>last_synced_at</code> に時刻が入り、次に開いたときにはその時刻が出ます。</p>
+      <figure class="shot"><img data-img="screen-settings-calendar.png" alt="設定の Google カレンダーの枠。つながっていますの札、最後に同期した日時、つなぐのをやめるを開いたところ"><figcaption>つながっているときの枠（「つなぐのをやめる」を開いたところ。この章の 4 で使います）</figcaption></figure>
+    </li>
+  </ol>
+
+  <h3>2. 書き出す：タスクの保存から、Google の予定ができるまで</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>ここまで（3章）：タスクを見張る係が、仕事を予約した</h4>
+      <p><a href="#s3">3章</a> で、タスクを足す・直す・済ませると、タスクを見張る係 <code>TaskObserver</code> が動くのを見ました。この係は <code>CalendarServiceProvider</code> で結んであります。</p>
+      <div class="code"><div class="file">src/app/Providers/CalendarServiceProvider.php</div><pre><code>public function boot(): void
+{
+    Task::observe(TaskObserver::class);</code></pre></div>
+      <p>見張る係は、予定に出る列が変わったときだけ、書き出しの仕事を積みます。</p>
+      <div class="code"><div class="file">src/app/Observers/TaskObserver.php</div><pre><code>/** 予定の中身に関わる列。これ以外（メモ・かかった時間など）だけが変わったときは書き出さない */
+private const SENT_COLUMNS = ['title', 'due_on', 'starts_at', 'duration_minutes', 'done_at', 'kind', 'prediction_id'];
+// …（省略）…
+private function push(Task $task): void
+{
+    // カレンダーとつないでいない（切れた）人のタスクなら、何もしない
+    if (! $this-&gt;connected($task)) {
+        return;
+    }
+
+    $this-&gt;safely($task, fn () =&gt; PushTaskToCalendar::dispatch($task-&gt;id)-&gt;afterCommit());
+}</code></pre></div>
+      <p>ここからは、積まれた仕事がどうやって Google に届くかを追います。</p>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>仕事は <code>jobs</code> 表に1行として並ぶ（保存が確定してから）</h4>
+      <p>このアプリのキューの置き場は、データベースの <code>jobs</code> 表です。</p>
+      <div class="code"><div class="file">src/config/queue.php</div><pre><code>'default' =&gt; env('QUEUE_CONNECTION', 'database'),</code></pre></div>
+      <p><code>-&gt;afterCommit()</code> を付けたので、タスクの保存のトランザクションが確定するまで、列には並べません。Laravel 本体はこう分けています。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Queue/Queue.php</div><pre><code>if ($this-&gt;shouldDispatchAfterCommit($job) &amp;&amp;
+    $this-&gt;container-&gt;bound('db.transactions')) {
+    $this-&gt;registerRollbackCallbacksForJobsThatDispatchAfterCommit($job);
+
+    return $this-&gt;container-&gt;make('db.transactions')-&gt;addCallback(</code></pre></div>
+      <p>「確定したら、これをして」と預けておき（<code>addCallback</code>）、確定したときに初めて列に並べます。保存が取り消されたら、仕事も並びません。こうしないと、まだ（あるいはもう）ないタスクを、worker の箱が読みに行ってしまうことがあるからです。</p>
+      <p>並べるときは、<code>jobs</code> 表に1行を足します。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Queue/DatabaseQueue.php</div><pre><code>protected function buildDatabaseRecord($queue, $payload, $availableAt, $attempts = 0)
+{
+    return [
+        'queue' =&gt; $queue,
+        'attempts' =&gt; $attempts,
+        'reserved_at' =&gt; null,
+        'available_at' =&gt; $availableAt,
+        'created_at' =&gt; $this-&gt;currentTime(),
+        'payload' =&gt; $payload,
+    ];
+}</code></pre></div>
+      <div class="data"><b><code>jobs</code> 表の1行</b><ul>
+        <li><code>payload</code>：仕事の中身。仕事のクラスの名前（<code>App\Jobs\PushTaskToCalendar</code>）と、作ったときに渡した値。</li>
+        <li><code>attempts</code>：何回試したか（はじめは 0）。</li>
+        <li><code>reserved_at</code>：worker が取り出して作業中なら、その時刻。</li>
+        <li><code>available_at</code>：この時刻から取り出してよい（試し直しのときは先の時刻になる）。</li>
+      </ul></div>
+      <div class="code"><div class="file">src/app/Jobs/PushTaskToCalendar.php</div><pre><code>/** 書き出すタスクの id を覚えて作る（タスクそのものではなく id だけを積む） */
+public function __construct(public int $taskId) {}</code></pre></div>
+      <div class="point"><b>ここが大事</b>列に積むのは<b>タスクの id だけ</b>です。題名もメモも <code>jobs</code> 表には入りません。仕事が動くときに、その時点のタスクを読み直します。だから、続けて2回直しても、送られるのはいつも最新の中身です。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>同じタスクの仕事は、待っている間は1つにまとめる</h4>
+      <p>タスクの題名を直して、すぐに日付も直すと、仕事が2つ積まれそうです。でも、どちらも「タスク 42 を読み直して送る」なので、1つで足ります。</p>
+      <div class="code"><div class="file">src/app/Jobs/PushTaskToCalendar.php</div><pre><code>class PushTaskToCalendar implements ShouldBeUniqueUntilProcessing, ShouldQueue
+{
+// …（省略）…
+    /** 同じタスクの仕事は、待っている間は1つにまとめる */
+    public function uniqueId(): string
+    {
+        return (string) $this-&gt;taskId;
+    }</code></pre></div>
+      <ul>
+        <li><code>ShouldQueue</code>：この仕事はキューに積む（その場では動かさない）。</li>
+        <li><code>ShouldBeUniqueUntilProcessing</code>：同じ <code>uniqueId</code>（ここではタスクの id）の仕事が<b>列で待っている間は</b>、2つ目を積まない。worker が取り出して動き始めたら、また積めるようになる。</li>
+      </ul>
+      <p>Laravel は、積む前に「鍵」を取りにいき、取れなければ積みません。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Foundation/Bus/PendingDispatch.php</div><pre><code>$lockAcquired = (new UniqueLock($container-&gt;make(Cache::class)))-&gt;acquire($this-&gt;job);
+
+if ($lockAcquired) {
+    return true;
+}</code></pre></div>
+      <p>鍵はキャッシュ（このアプリでは <code>cache</code> 表）に置かれます。動き始めたら鍵を外すので、動いている最中に直したタスクの分は、新しい仕事として積まれます（読み直すので、取りこぼしません）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4>worker の箱の <code>queue:work</code> が、列から仕事を取り出す</h4>
+      <p><dfn>worker の箱</dfn>は、画面を返す app の箱とは別に動いている、仕事を片づけるための箱です。</p>
+      <div class="code"><div class="file">docker-compose.yml</div><pre><code>worker:
+  build: ./infra/php
+  user: "1000:1000"
+  command: sh -c "php artisan schedule:work &amp; php artisan queue:work --sleep=3 --tries=3 --max-time=3600"</code></pre></div>
+      <ul>
+        <li><code>schedule:work</code>：決まった時刻の仕事を出す係（この章の 3）。</li>
+        <li><code>queue:work</code>：キューの仕事を1つずつ取り出して動かす係。列が空なら <code>--sleep=3</code>（3秒）待って、また見に行く。</li>
+        <li><code>--max-time=3600</code>：1時間たったら区切りよく終わる。</li>
+        <li><code>--tries=3</code>：試す回数の既定。ただし、仕事のクラスが自分で <code>tries()</code> を持っていれば、そちらが勝つ（このあと見ます。カレンダーの仕事は5回）。</li>
+      </ul>
+      <p><code>queue:work</code> は、<code>jobs</code> 表から「今取り出してよい、いちばん古い行」を探します。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Queue/DatabaseQueue.php</div><pre><code>$query-&gt;where(function ($query) {
+    $query-&gt;whereNull('reserved_at')
+        -&gt;where('available_at', '&lt;=', $this-&gt;currentTime());
+});</code></pre></div>
+      <p>「だれも作業していない（<code>reserved_at</code> が空）で、取り出してよい時刻（<code>available_at</code>）を過ぎた行」です。見つけたら <code>reserved_at</code> に今の時刻を入れて自分の作業中にし、<code>payload</code> から仕事を組み立て直して、その <code>handle</code> を呼びます。</p>
+      <div class="point"><b>ここが大事</b>worker の箱は、起動したときのプログラムで動き続けます。仕事のコードを直したら <code>docker compose restart worker</code> で起動し直します（CLAUDE.md の「よく使うコマンド」）。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4><code>PushTaskToCalendar::handle</code>：タスクを読み直して、書いてよいか確かめる</h4>
+      <div class="code"><div class="file">src/app/Jobs/PushTaskToCalendar.php</div><pre><code>public function handle(CalendarApi $api, TaskEvent $taskEvent): void
+{
+    $task = Task::find($this-&gt;taskId);
+    $connection = $task ? CalendarConnection::where('user_id', $task-&gt;user_id)-&gt;first() : null;
+
+    // タスクがもう消えた・持ち主がつないでいない・切れた・専用カレンダーがないなら、何もしない
+    if ($task === null || $connection === null || ! $connection-&gt;isActive() || blank($connection-&gt;app_calendar_id)) {
+        return;
+    }
+
+    // Google に書く。許可が切れていたら（連携は broken になっている）試し直さずに終える
+    try {
+        $this-&gt;push($api, $taskEvent, $task, $connection);
+    } catch (GoogleAuthBroken) {
+        return;
+    }
+}</code></pre></div>
+      <p><code>handle</code> の引数 <code>CalendarApi $api</code> と <code>TaskEvent $taskEvent</code> は、Laravel が用意して渡します。<code>CalendarApi</code> は窓口（interface）なので、そのままでは作れません。どの中身を使うかは <code>CalendarServiceProvider</code> で結んであります。</p>
+      <div class="code"><div class="file">src/app/Providers/CalendarServiceProvider.php</div><pre><code>// テストのときは偽物を1つだけ作って使い回す（テストが中身を見られる）。ふだんは Google の REST を呼ぶ本物
+if ($this-&gt;app-&gt;runningUnitTests()) {
+    $this-&gt;app-&gt;singleton(CalendarApi::class, FakeCalendarApi::class);
+} else {
+    $this-&gt;app-&gt;bind(CalendarApi::class, GoogleCalendarApi::class);
+}</code></pre></div>
+      <p>ふだんは本物（<code>App\Services\Google\CalendarApi</code>。ここでは <code>GoogleCalendarApi</code> という別名で読み込んでいます）、テストのときは偽物です（この章の 5）。</p>
+      <ul>
+        <li>持ち主の連携は、<b>タスクの <code>user_id</code></b> から探します。だから、他人の専用カレンダーに書くことはありません。</li>
+        <li>タスクがもう消えていた・持ち主がつないでいない・切れた・専用カレンダーがない、のどれかなら、何もせずに終わります（失敗ではなく「することがない」）。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4><code>push</code>：予定を作る・置き換える・消す</h4>
+      <div class="code"><div class="file">src/app/Jobs/PushTaskToCalendar.php</div><pre><code>private function push(CalendarApi $api, TaskEvent $taskEvent, Task $task, CalendarConnection $connection): void
+{
+    // 期日のない（いつかの）タスクは予定にしない。前に書いた予定があれば消して、つながりを外す
+    if (blank($task-&gt;due_on)) {
+        $this-&gt;unlink($api, $task, $connection);
+
+        return;
+    }
+
+    // 予定の ID がまだなければ、ハイフンを抜いた UUID を決めて先に保存する（試し直しでも同じ ID を使い、二重にならない）
+    if (blank($task-&gt;calendar_event_id)) {
+        $task-&gt;calendar_event_id = str_replace('-', '', (string) Str::uuid());
+        $task-&gt;saveQuietly();
+    }
+
+    $api-&gt;upsertEvent($connection, $connection-&gt;app_calendar_id, $task-&gt;calendar_event_id, $taskEvent-&gt;toEvent($task));
+    $task-&gt;forceFill(['calendar_synced_at' =&gt; now()])-&gt;saveQuietly();
+    $connection-&gt;forceFill(['last_synced_at' =&gt; now()])-&gt;save();
+}</code></pre></div>
+      <ol>
+        <li><b>期日がなくなった</b>（「いつか」に直した）なら、前に書いた予定を消して、つながりを外す。</li>
+        <li><b>予定の ID</b>：Google の予定の ID は、こちらで決めて渡せます。<dfn>UUID</dfn>（世界で重ならないように作るでたらめな番号）からハイフンを抜いた32文字にし、<b>Google に送る前に</b> <code>tasks.calendar_event_id</code> に保存します。送ったあとで失敗して試し直しても、同じ ID で送るので予定が2つになりません。ふつうはタスクを保存した時点で、見張る係の <code>saving</code> がもう決めています（<a href="#s3">3章</a>）。ここは、つなぐ前からあったタスクのためです。</li>
+        <li>予定を作るか置き換える（<code>upsertEvent</code>。このあと見ます）。</li>
+        <li>書き出した時刻を、タスクの <code>calendar_synced_at</code> と、連携の <code>last_synced_at</code> に入れる。</li>
+      </ol>
+      <p>タスクの保存に <code>saveQuietly</code> を使っているのは、見張る係に知らせないためです。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Database/Eloquent/Model.php</div><pre><code>public function saveQuietly(array $options = [])
+{
+    return static::withoutEvents(fn () =&gt; $this-&gt;save($options));
+}</code></pre></div>
+      <p><code>withoutEvents</code> の中の保存では、「保存した」という知らせ（イベント）が出ません。ふつうの <code>save</code> だと、見張る係が「タスクが直った、書き出さなきゃ」とまた仕事を積み、その仕事がまた保存して…と、終わらなくなってしまいます。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4><code>TaskEvent::toEvent</code>：送るのは題名・日時・戻るリンクと、見分けるための番号だけ</h4>
+      <p>タスクを Google の予定の形に変えるのは、計算だけをする係 <code>TaskEvent</code> です（Google にもデータベースにも触りません）。</p>
+      <div class="code"><div class="file">src/app/Services/Google/TaskEvent.php</div><pre><code>public function toEvent(Task $task): array
+{
+    $url = $this-&gt;link($task);
+
+    return [
+        'summary' =&gt; $this-&gt;summary($task),
+        'description' =&gt; config('suiri.calendar.link_label').$url,
+        ...$this-&gt;times($task),
+        'transparency' =&gt; $task-&gt;isVerify() ? 'transparent' : 'opaque',
+        'source' =&gt; ['title' =&gt; config('suiri.calendar.name'), 'url' =&gt; $url],
+        'extendedProperties' =&gt; ['private' =&gt; ['suiri_task_id' =&gt; (string) $task-&gt;id]],
+    ];
+}</code></pre></div>
+      <div class="data"><b>Google に送る予定の中身（これで全部）</b><ul>
+        <li><code>summary</code>（題名）：タスクの題名。ただし下の2つの例外がある。</li>
+        <li><code>description</code>（説明欄）：「推理手帳で開く：」＋アプリに戻るリンクだけ。メモは入れない。</li>
+        <li><code>start</code>・<code>end</code>：日時（次のステップ）。</li>
+        <li><code>transparency</code>：確かめるタスクは <code>transparent</code>（予定なし。時間を塞がない）、ふつうのタスクは <code>opaque</code>（予定あり）。</li>
+        <li><code>source</code>：「推理手帳」とリンク。</li>
+        <li><code>extendedProperties.private.suiri_task_id</code>：タスクの番号。利用者には見えない、アプリだけの印。取り込みのときに「これはアプリが作った、何番のタスクの予定か」を見分けるのに使う（この章の 3）。</li>
+      </ul></div>
+      <div class="code"><div class="file">src/app/Services/Google/TaskEvent.php</div><pre><code>private function summary(Task $task): string
+{
+    $title = $task-&gt;isVerify() ? config('suiri.calendar.verify_summary') : $task-&gt;title;
+
+    return ($task-&gt;isDone() ? config('suiri.calendar.done_prefix') : '').$title;
+}</code></pre></div>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'done_prefix' =&gt; '✓ ', // 済んだタスクの予定は消さずに、題名の頭にこの印を付ける
+'verify_summary' =&gt; '推理手帳：答え合わせの日', // 確かめるタスクの予定の題名（題名に予想の文が入るので、決まった言葉にする）
+'link_label' =&gt; '推理手帳で開く：', // 予定の説明欄で、アプリに戻るリンクの前に置く言葉</code></pre></div>
+      <ul>
+        <li><b>確かめるタスク</b>（予想を立てるとできるタスク。<a href="#s6">6章</a>）の題名には、予想の文が入っています。予想の文は本文なので送らず、題名を決まった言葉「推理手帳：答え合わせの日」に置き換えます。リンクは答え合わせの画面（<code>predictions.show</code>）です。</li>
+        <li><b>済んだタスク</b>は予定を消さず、題名の頭に「✓ 」を付けます。カレンダーを見返したとき、何を済ませたかが分かるようにです。</li>
+      </ul>
+      <div class="point"><b>ここが大事</b>この「題名と日時とリンクと番号だけ」は、読むだけの決まりではありません。テスト <code>test_no_body_text_is_sent_to_google</code>（<code>src/tests/Feature/Calendar/PushTaskToCalendarTest.php</code>）が、なぞ・手がかり・見立て・予想の文・メモに「秘密の…」と書いたタスクを書き出させ、送った中身にその言葉が1つも入っていないことと、送った項目が上の一覧だけであることを確かめています。さらに <code>bin/check</code> も、<code>Services/Google</code> と <code>Jobs</code> のコードに本文の列（<code>memo</code>・<code>statement</code> など）が出てきたら止めます。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4><code>TaskEvent::times</code>：終日の予定か、時刻つきの予定か</h4>
+      <div class="code"><div class="file">src/app/Services/Google/TaskEvent.php</div><pre><code>public function times(Task $task): array
+{
+    $timeZone = config('suiri.calendar.timezone');
+
+    // 開始時刻のない（終日の）タスクは、日付だけの予定にする
+    if (! $task-&gt;hasTime()) {
+        $day = CarbonImmutable::parse($task-&gt;due_on, $timeZone);
+
+        return ['start' =&gt; ['date' =&gt; $day-&gt;toDateString()], 'end' =&gt; ['date' =&gt; $day-&gt;addDay()-&gt;toDateString()]];
+    }
+
+    $start = CarbonImmutable::parse($task-&gt;due_on.' '.$task-&gt;starts_at, $timeZone);
+    $end = $start-&gt;addMinutes($task-&gt;duration_minutes ?: config('suiri.calendar.default_minutes'));
+
+    return [
+        'start' =&gt; ['dateTime' =&gt; $start-&gt;format('Y-m-d\TH:i:s'), 'timeZone' =&gt; $timeZone],
+        'end' =&gt; ['dateTime' =&gt; $end-&gt;format('Y-m-d\TH:i:s'), 'timeZone' =&gt; $timeZone],
+    ];
+}</code></pre></div>
+      <ul>
+        <li><b>開始時刻がない</b>タスク（期日だけ）は<b>終日の予定</b>にします。Google の決まりでは、終わりの日は「含まない」ので、11月3日の終日なら <code>start</code> が 11-03、<code>end</code> が 11-04 です。</li>
+        <li><b>開始時刻がある</b>タスクは、開始から「かかる時間」（なければ既定の30分。<code>default_minutes</code>）だけの予定にします。</li>
+      </ul>
+      <p><code>CarbonImmutable</code> は日時を計算する道具です。<code>Immutable</code>（変わらない）なので、<code>addDay()</code> は元の日時を書き換えず、新しい日時を返します。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4>窓口の本物 <code>CalendarApi::upsertEvent</code>：何度送っても予定は1つ</h4>
+      <div class="code"><div class="file">src/app/Services/Google/CalendarApi.php</div><pre><code>public function upsertEvent(CalendarConnection $connection, string $calendarId, string $eventId, array $event): void
+{
+    $path = $this-&gt;calendarPath($calendarId).'/events';
+    $response = $this-&gt;send($connection, 'post', $path, ['id' =&gt; $eventId] + $event);
+
+    // もう同じ id の予定があれば、作り直さずに中身を置き換える
+    if ($response-&gt;status() === 409) {
+        $response = $this-&gt;send($connection, 'put', $path.'/'.$eventId, $event);
+    }
+    $this-&gt;failUnless($connection, $response, 'upsertEvent');
+}</code></pre></div>
+      <ol>
+        <li>まず「この ID で予定を作って」（<code>POST /calendars/{カレンダー}/events</code>）と頼む。</li>
+        <li>Google が <code>409</code>（その ID はもうある）と返したら、「この ID の予定の中身を置き換えて」（<code>PUT …/events/{ID}</code>）と頼み直す。</li>
+      </ol>
+      <p>「なければ作る・あれば置き換える」を <dfn>upsert</dfn>（update と insert を合わせた言葉）と呼びます。タスクを直したときも、済ませたときも、試し直しのときも、同じこの関数で足ります。</p>
+      <div class="code"><div class="file">src/app/Services/Google/CalendarApi.php</div><pre><code>/** カレンダーの住所を返す（ID に @ などが入るので、住所に使える形にする） */
+private function calendarPath(string $calendarId): string
+{
+    return '/calendars/'.rawurlencode($calendarId);
+}</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4><code>send</code>：鍵を付けて Google に1回問い合わせる</h4>
+      <div class="code"><div class="file">src/app/Services/Google/CalendarApi.php</div><pre><code>private function send(CalendarConnection $connection, string $method, string $path, array $data = []): Response
+{
+    $http = $this-&gt;http($connection);
+
+    // Google に送る。つながらない・時間切れなら、あとで試し直せるよう GoogleApiFailed にする
+    try {
+        return $http-&gt;{$method}(config('suiri.calendar.urls.api').$path, $data);
+    } catch (ConnectionException) {
+        throw new GoogleApiFailed($method.' '.$path, 0);
+    }
+}
+
+/** access token と待ち時間を決めた HTTP の道具を返す */
+private function http(CalendarConnection $connection): PendingRequest
+{
+    return Http::withToken($this-&gt;tokens-&gt;accessToken($connection))
+        -&gt;acceptJson()
+        -&gt;timeout(config('suiri.calendar.timeout_seconds'));
+}</code></pre></div>
+      <p>Google の公式の PHP の道具は使わず、Laravel の HTTP の道具（<code>Http</code>）で、Google カレンダーの <dfn>REST API</dfn>（決まった住所に決まった形で頼むと、JSON で答えてくれる窓口。入口は <code>https://www.googleapis.com/calendar/v3</code>）を直接呼びます。</p>
+      <ul>
+        <li><code>withToken(...)</code>：お願いの見出しに <code>Authorization: Bearer {access token}</code> を付ける（「この鍵の持ち主として頼みます」）。</li>
+        <li><code>timeout(...)</code>：10秒（<code>timeout_seconds</code>）待っても返事がなければあきらめる。</li>
+        <li><code>$http-&gt;{$method}(...)</code>：<code>$method</code> が <code>'post'</code> なら <code>$http-&gt;post(...)</code> を呼ぶ、という書き方。</li>
+        <li>つながらない・時間切れ（<code>ConnectionException</code>）なら、このアプリの例外 <code>GoogleApiFailed</code> に替える。番号は 0（返事がなかった）。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4><code>GoogleTokens::accessToken</code>：切れそうなら、先に鍵を取り直す</h4>
+      <div class="code"><div class="file">src/app/Services/Google/GoogleTokens.php</div><pre><code>public function accessToken(CalendarConnection $connection): string
+{
+    $soon = now()-&gt;addSeconds(config('suiri.calendar.refresh_before_seconds'));
+
+    // 期限が分からないか、もうすぐ切れるなら、refresh token で取り直す
+    if ($connection-&gt;expires_at === null || $connection-&gt;expires_at-&gt;lte($soon)) {
+        $this-&gt;refresh($connection);
+    }
+
+    return (string) $connection-&gt;access_token;
+}</code></pre></div>
+      <p>access token は1時間ほどで使えなくなります。期限の5分前（<code>refresh_before_seconds</code> が 300 秒）を過ぎていたら、先に refresh token で取り直します（<code>lte</code> は「同じか、より前」）。</p>
+      <div class="code"><div class="file">src/app/Services/Google/GoogleTokens.php</div><pre><code>// 許可が取り消された・切れたなら、連携を「切れた」にして同期を止める（画面で「つなぎ直してください」と出る）
+if ($response-&gt;json('error') === 'invalid_grant') {
+    $this-&gt;markBroken($connection);
+    throw new GoogleAuthBroken;
+}
+
+// そのほかの失敗（Google の不調など）は、連携はそのままにして、あとで試し直す
+if ($response-&gt;failed() || blank($response-&gt;json('access_token'))) {
+    throw new GoogleApiFailed('token', $response-&gt;status());
+}
+
+$connection-&gt;forceFill([
+    'access_token' =&gt; $response-&gt;json('access_token'),
+    'expires_at' =&gt; now()-&gt;addSeconds((int) $response-&gt;json('expires_in', 3600)),
+]);</code></pre></div>
+      <p>取り直しの結果は3つに分かれます。</p>
+      <ol>
+        <li><code>invalid_grant</code>：利用者が Google の設定でこのアプリの許可を取り消した・長く使わず切れた。もう取り直せないので、連携を <code>broken</code>（切れた）にして <code>GoogleAuthBroken</code> を投げる。</li>
+        <li>そのほかの失敗（Google の不調など）：連携はそのままにして <code>GoogleApiFailed</code> を投げる（あとで試し直す）。</li>
+        <li>うまくいった：新しい access token と期限を入れて保存する（暗号にして）。</li>
+      </ol>
+      <div class="code"><div class="file">src/app/Services/Google/GoogleTokens.php</div><pre><code>private function markBroken(CalendarConnection $connection): void
+{
+    $connection-&gt;status = CalendarStatus::Broken;
+    $this-&gt;saveIfStored($connection);
+    Log::info('Google カレンダーの許可が切れた', ['connection_id' =&gt; $connection-&gt;id]);
+}</code></pre></div>
+      <p>ログには連携の番号だけを書き、鍵は書きません。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4><code>failUnless</code>：Google の返事がうまくいったか確かめる</h4>
+      <div class="code"><div class="file">src/app/Services/Google/CalendarApi.php</div><pre><code>private function failUnless(CalendarConnection $connection, Response $response, string $operation, array $ok = []): void
+{
+    // うまくいった、または気にしなくてよい番号なら、何もしない
+    if ($response-&gt;successful() || in_array($response-&gt;status(), $ok, true)) {
+        return;
+    }
+
+    // 鍵が通らなかったなら、次で取り直すよう期限切れにする
+    if ($response-&gt;status() === 401) {
+        $this-&gt;tokens-&gt;expire($connection);
+    }
+
+    throw new GoogleApiFailed($operation, $response-&gt;status());
+}</code></pre></div>
+      <ul>
+        <li><code>successful()</code>：返事の番号が 200 番台（うまくいった）。</li>
+        <li><code>$ok</code>：うまくいったものとして扱う番号。たとえば予定を消すときの <code>404</code>（もうない）は、消したかった結果と同じなので失敗にしない。</li>
+        <li><code>401</code>（鍵が通らない）：手元の期限を「もう切れた」にしておく。次に試し直すときは、<code>accessToken</code> が必ず取り直しから始める。</li>
+        <li>それ以外は <code>GoogleApiFailed</code> を投げる。</li>
+      </ul>
+      <div class="code"><div class="file">src/app/Services/Google/Exceptions/GoogleApiFailed.php</div><pre><code>public function __construct(public readonly string $operation, public readonly int $status = 0)
+{
+    parent::__construct("Google への問い合わせに失敗しました（{$operation}・{$status}）");
+}</code></pre></div>
+      <p>例外の文には「どの操作で、何番が返ったか」だけを入れます。トークンや題名は入れません。この文はログや <code>failed_jobs</code> 表に残ることがあるからです。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4>Google が止まっていたら：間を空けて5回まで試し直す</h4>
+      <p><code>GoogleApiFailed</code> が <code>handle</code> の外まで出ていくと、worker は「この仕事は失敗した」と受け取ります。何回試すか・どれだけ待つかは、仕事のクラスが決めています。</p>
+      <div class="code"><div class="file">src/app/Jobs/PushTaskToCalendar.php</div><pre><code>/** 試す回数（config） */
+public function tries(): int
+{
+    return config('suiri.calendar.tries');
+}
+
+/**
+ * 失敗したとき次に試すまで待つ秒数（config）
+ *
+ * @return list&lt;int&gt;
+ */
+public function backoff(): array
+{
+    return config('suiri.calendar.backoff');
+}</code></pre></div>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'tries' =&gt; 5, // 書き出し・取り込みの仕事を試す回数（Google が止まっていても、あとで再送する）
+'backoff' =&gt; [60, 300, 900, 3600], // 失敗したとき、次に試すまで待つ秒数（回ごと）</code></pre></div>
+      <p>仕事を積むとき、Laravel はこの <code>tries()</code> を読んで <code>payload</code> に書き込みます。<code>queue:work --tries=3</code> よりも、こちらが先に使われます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Queue/Queue.php</div><pre><code>if (method_exists($job, 'tries')) {
+    $tries = $job-&gt;tries();
+}</code></pre></div>
+      <p>失敗したとき、worker はまず「次に試すと回数を超えるか」を確かめ、超えないなら、待つ秒数を決めて列に戻します。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Queue/Worker.php</div><pre><code>if (! $job-&gt;isDeleted() &amp;&amp; ! $job-&gt;isReleased() &amp;&amp; ! $job-&gt;hasFailed()) {
+    $backoff = $this-&gt;calculateBackoff($job, $options);
+
+    $job-&gt;release($backoff);</code></pre></div>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Queue/Worker.php</div><pre><code>return (int) ($backoff[$job-&gt;attempts() - 1] ?? last($backoff));</code></pre></div>
+      <p><code>release</code> は「<code>available_at</code> を先の時刻にして、列に戻す」ことです。1回目の失敗なら <code>backoff</code> の1つ目（60秒）、2回目なら2つ目（300秒）…です。</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>試した回</th><th>失敗したら</th></tr></thead>
+        <tbody>
+          <tr><td>1回目</td><td>60秒（1分）待って、もう一度</td></tr>
+          <tr><td>2回目</td><td>300秒（5分）待って、もう一度</td></tr>
+          <tr><td>3回目</td><td>900秒（15分）待って、もう一度</td></tr>
+          <tr><td>4回目</td><td>3600秒（1時間）待って、もう一度</td></tr>
+          <tr><td>5回目</td><td>あきらめる（<code>failed_jobs</code> 表に移し、<code>failed()</code> を呼ぶ）</td></tr>
+        </tbody>
+      </table></div>
+      <div class="code"><div class="file">src/app/Jobs/PushTaskToCalendar.php</div><pre><code>/** 決めた回数を試してもだめだったときの記録。書くのはタスクの id とエラーの種類だけ（題名は書かない） */
+public function failed(Throwable $e): void
+{
+    Log::warning('カレンダーへの書き出しをあきらめた', ['task_id' =&gt; $this-&gt;taskId, 'error' =&gt; class_basename($e)]);
+}</code></pre></div>
+      <div class="point"><b>ここが大事</b>どれだけ Google が止まっていても、<b>タスクの保存はとっくに成功しています</b>。利用者がタスクを保存したときに待たされるのは、データベースへの保存と、列に1行足す時間だけです。テスト <code>test_a_google_outage_does_not_break_saving_the_task</code> が、Google を「止まっている」にした偽物でタスクを作り・直して、保存が成功することを確かめています。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4>許可が切れていたら：試し直さずにやめ、画面で知らせる</h4>
+      <p>取り直しで <code>invalid_grant</code> が返ったとき（前の前のステップ）は、<code>handle</code> の中で <code>GoogleAuthBroken</code> を受け止めて、そのまま終わります。</p>
+      <div class="code"><div class="file">src/app/Jobs/PushTaskToCalendar.php</div><pre><code>} catch (GoogleAuthBroken) {
+    return;
+}</code></pre></div>
+      <p>失敗として外に出さないので、試し直しもしません。利用者がつなぎ直さない限り、何度試しても同じだからです。連携はもう <code>broken</code> になっているので、このあとに積まれる仕事は、<code>handle</code> のはじめの確かめ（<code>! $connection-&gt;isActive()</code>）で何もせずに終わります。タスクを見張る係も、切れた人のタスクでは仕事を積みません。</p>
+      <div class="code"><div class="file">src/resources/views/components/settings/calendar-panel.blade.php</div><pre><code>@elseif ($connection-&gt;isBroken())
+  &lt;p class="mt-3 text-base font-bold text-accent"&gt;{{ $c['broken'] }}&lt;/p&gt;
+  &lt;p class="mt-1 text-sm leading-relaxed text-muted"&gt;{{ $c['broken_why'] }}&lt;/p&gt;</code></pre></div>
+      <p>設定の画面には赤い一文「連携が切れました。つなぎ直してください。」（<code>$c['broken']</code>。<code>.claude/rules/google.md</code> で決めた一文）と、そのわけ（Google で許可が取り消されたか期限が切れたこと、つなぎ直すまで書き出さないがタスクは残っていること）と「つなぎ直す」が出ます。つなぎ直しは、この章の 1 と同じ道をたどります。違うのは、<code>ConnectCalendar</code> が前の連携の行を使い、前の専用カレンダーが残っていればそれを使うこと、そして最後に <code>PushAllTasksToCalendar</code> で、まだ済んでいない期日つきのタスクを全部書き直すことです。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4>タスクを消したら：<code>RemoveTaskFromCalendar</code> が予定を消す</h4>
+      <p>タスクを消すと、見張る係の <code>deleted</code> が動きます。タスクの行はもうないので、持ち主の id と予定の ID だけを覚えた仕事を積みます。</p>
+      <div class="code"><div class="file">src/app/Observers/TaskObserver.php</div><pre><code>$this-&gt;safely($task, fn () =&gt; RemoveTaskFromCalendar::dispatch($task-&gt;user_id, $task-&gt;calendar_event_id)-&gt;afterCommit());</code></pre></div>
+      <div class="code"><div class="file">src/app/Jobs/RemoveTaskFromCalendar.php</div><pre><code>public function handle(CalendarApi $api): void
+{
+    $connection = CalendarConnection::where('user_id', $this-&gt;userId)-&gt;first();
+
+    // 持ち主がつないでいない・切れた・専用カレンダーがないなら、何もしない
+    if ($connection === null || ! $connection-&gt;isActive() || blank($connection-&gt;app_calendar_id)) {
+        return;
+    }
+
+    // 予定を消す。許可が切れていたら（連携は broken になっている）試し直さずに終える
+    try {
+        $api-&gt;deleteEvent($connection, $connection-&gt;app_calendar_id, $this-&gt;eventId);
+    } catch (GoogleAuthBroken) {
+        return;
+    }
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Services/Google/CalendarApi.php</div><pre><code>public function deleteEvent(CalendarConnection $connection, string $calendarId, string $eventId): void
+{
+    $response = $this-&gt;send($connection, 'delete', $this-&gt;calendarPath($calendarId).'/events/'.$eventId);
+    $this-&gt;failUnless($connection, $response, 'deleteEvent', [404, 410]);
+}</code></pre></div>
+      <p>予定がもうなかった（利用者が Google で先に消していた）ときの <code>404</code>・<code>410</code> は、うまくいったものとして扱います。試す回数と待つ秒数は <code>PushTaskToCalendar</code> と同じです。</p>
+    </li>
+  </ol>
+
+  <h3>3. 取り込む：15分ごとに、カレンダーで動かした日時をタスクへ写す</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4>予定の表 <code>routes/console.php</code>：15分ごとに取り込みの仕事を出す</h4>
+      <p>利用者が Google カレンダーの画面で「推理手帳」の予定を別の日に動かしても、Google はアプリに知らせてくれません。そこで、アプリのほうから15分ごとに「何か変わった？」と聞きに行きます。いつ何をするかは、<code>routes/console.php</code> に書いた<dfn>予定の表（スケジュール）</dfn>で決めています。</p>
+      <div class="code"><div class="file">src/routes/console.php</div><pre><code>// Google カレンダーの専用カレンダーで動かされた・消された予定を、15分ごと（config の pull_every_minutes）にタスクへ取り込む。
+// worker の箱の schedule:work が時刻を見て仕事を積み、queue:work が片づける
+Schedule::job(new PullCalendarChanges)-&gt;cron('*/'.config('suiri.calendar.pull_every_minutes').' * * * *');</code></pre></div>
+      <p><code>cron('*/15 * * * *')</code> は、時刻の決まりの書き方（<dfn>cron 式</dfn>）で「毎時 0・15・30・45 分」という意味です。左から「分 時 日 月 曜日」で、<code>*/15</code> は「15 で割り切れる分ごと」、<code>*</code> は「いつでも」です。<code>php artisan schedule:list</code> で確かめると、<code>*/15 * * * *  App\Jobs\PullCalendarChanges</code> と出ます。</p>
+      <p>同じファイルのもう1行（<code>cache:prune-expired</code> を5分ごと）は、今日の予定を覚えておいたキャッシュの掃除です（<a href="#s2">2章</a>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4><code>schedule:work</code>：毎分、時刻を見て仕事を積む</h4>
+      <p>worker の箱の <code>schedule:work</code> は、1分ごとに <code>schedule:run</code> を動かし、「今がその時刻か」を予定の表と比べます。時刻が合った <code>Schedule::job</code> は、その場で動かすのではなく、キューに積みます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Console/Scheduling/Schedule.php</div><pre><code>$job = is_string($job) ? Container::getInstance()-&gt;make($job) : $job;
+
+if ($job instanceof ShouldQueue) {
+    $this-&gt;dispatchToQueue($job, $queue ?? $job-&gt;queue, $connection ?? $job-&gt;connection);
+} else {
+    $this-&gt;dispatchNow($job);
+}</code></pre></div>
+      <p><code>PullCalendarChanges</code> は <code>ShouldQueue</code> なので、<code>jobs</code> 表に1行が足され、同じ worker の箱の <code>queue:work</code> が取り出します（この章の 2 と同じしくみ）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4><code>PullCalendarChanges</code>（全員の分）：1人ずつの仕事に分ける</h4>
+      <div class="code"><div class="file">src/app/Jobs/PullCalendarChanges.php</div><pre><code>/** 取り込む連携の id を覚えて作る（null なら、つながっている全員の分を出す係になる） */
+public function __construct(public ?int $connectionId = null) {}
+
+/** 同じ連携の取り込みは、待っている間は1つにまとめる */
+public function uniqueId(): string
+{
+    return (string) ($this-&gt;connectionId ?? 'all');
+}
+
+/** まとめておく秒数（次の予定の時刻まで） */
+public function uniqueFor(): int
+{
+    return config('suiri.calendar.pull_every_minutes') * 60;
+}</code></pre></div>
+      <p>予定の表で作った <code>new PullCalendarChanges</code> は、連携の id を持っていません（<code>null</code>）。この仕事は「全員の分を配る係」になります。</p>
+      <div class="code"><div class="file">src/app/Jobs/PullCalendarChanges.php</div><pre><code>// 連携の指定がなければ、つながっていて専用カレンダーのある人ごとに、この仕事を出し直す
+if ($this-&gt;connectionId === null) {
+    $this-&gt;dispatchEach();
+
+    return;
+}
+// …（省略）…
+private function dispatchEach(): void
+{
+    $ids = CalendarConnection::where('status', CalendarStatus::Active)-&gt;whereNotNull('app_calendar_id')-&gt;pluck('id');
+
+    // 連携の id を1つずつ取り出して、その人の取り込みの仕事を出す
+    foreach ($ids as $id) {
+        self::dispatch($id);
+    }
+}</code></pre></div>
+      <p>つながっていて専用カレンダーのある連携ごとに、同じ仕事を「その人の分」として積み直します。1人分ずつ別の仕事にするのは、だれか1人の取り込みが失敗しても、ほかの人は取り込めるようにするためです。</p>
+      <p><code>uniqueId</code> と <code>uniqueFor</code> は、この章の 2 で見た「1つにまとめる」と同じ考えです。Google が止まっていて前の取り込みがまだ試し直しの順番待ちをしている間は、同じ人の取り込みを重ねて積みません（まとめる長さは、次の予定の時刻までの15分）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4><code>PullCalendarChanges</code>（1人分）：取り込めるか確かめて、用事に任せる</h4>
+      <div class="code"><div class="file">src/app/Jobs/PullCalendarChanges.php</div><pre><code>$connection = CalendarConnection::find($this-&gt;connectionId);
+
+// 連携がもうない・切れた・専用カレンダーがないなら、何もしない
+if ($connection === null || ! $connection-&gt;isActive() || blank($connection-&gt;app_calendar_id)) {
+    return;
+}
+
+// 取り込む。許可が切れていたら（連携は broken になっている）試し直さずに終える
+try {
+    $apply-&gt;handle($connection);
+} catch (GoogleAuthBroken) {
+    return;
+}</code></pre></div>
+      <p>積んでから動くまでの間に、その人がつなぐのをやめたかもしれないので、もう一度確かめます。中身の仕事は用事 <code>ApplyCalendarChanges</code> に任せます。失敗したときの試し直し（5回・間を空けて）と、許可が切れたときにやめるのは、書き出しの仕事と同じです。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4>用事 <code>ApplyCalendarChanges</code>：しおり（sync token）から先だけを読む</h4>
+      <div class="code"><div class="file">src/app/Actions/Calendar/ApplyCalendarChanges.php</div><pre><code>public function handle(CalendarConnection $connection): int
+{
+    $startedAt = now();
+    $fullSync = blank($connection-&gt;sync_token);
+
+    // 前回の印から変わった予定を読む（印がなければ全件）。印が古くなっていたら、印を捨てて全件を読み直す
+    try {
+        $page = $this-&gt;api-&gt;listChangedEvents($connection, $connection-&gt;app_calendar_id, $connection-&gt;sync_token);
+    } catch (SyncTokenExpired) {
+        $fullSync = true;
+        $page = $this-&gt;api-&gt;listChangedEvents($connection, $connection-&gt;app_calendar_id, null);
+    }</code></pre></div>
+      <p>毎回、専用カレンダーの予定を全部読むのはむだです。Google には「前回からあとに変わった予定だけ」を返すしくみがあります。前回の終わりに Google がくれた <dfn>sync token</dfn>（しおり）を次の問い合わせで見せると、そのしおりから先に変わった予定だけが返ってきます。</p>
+      <div class="analogy"><b>たとえると</b>回覧板に挟むしおりです。前回どこまで読んだかの印を挟んでおけば、次はその先だけを読めば済みます。しおりをなくした（<code>sync_token</code> がない）とき、または古すぎて使えないと言われたときは、最初から全部読み直します。</div>
+      <ul>
+        <li><code>$fullSync</code>：しおりがない（初めての取り込み・つなぎ直したあと）なら、全件を読む。</li>
+        <li><code>SyncTokenExpired</code>：しおりが古すぎて Google に断られた（<code>410</code>）。しおりを捨てて全件を読み直す。</li>
+        <li><code>$startedAt</code>：読み始めた時刻。全件を読んだときの後始末で使う（このあと）。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4>窓口 <code>listChangedEvents</code>：ページを最後までたどる</h4>
+      <div class="code"><div class="file">src/app/Services/Google/CalendarApi.php</div><pre><code>public function listChangedEvents(CalendarConnection $connection, string $calendarId, ?string $syncToken): array
+{
+    $events = [];
+    $pageToken = null;
+
+    // 次のページの印（nextPageToken）がなくなるまで、1ページずつ読む
+    do {
+        $query = array_filter(['syncToken' =&gt; $syncToken, 'pageToken' =&gt; $pageToken, 'maxResults' =&gt; 250]);
+        $response = $this-&gt;send($connection, 'get', $this-&gt;calendarPath($calendarId).'/events', $query);
+
+        // 印が古くなっていれば、全件を取り直す合図を出す
+        if ($response-&gt;status() === 410) {
+            throw new SyncTokenExpired;
+        }
+        $this-&gt;failUnless($connection, $response, 'listChangedEvents');
+        $events = [...$events, ...$response-&gt;json('items', [])];
+        $pageToken = $response-&gt;json('nextPageToken');
+    } while (filled($pageToken));
+
+    return ['events' =&gt; $events, 'sync_token' =&gt; $response-&gt;json('nextSyncToken')];
+}</code></pre></div>
+      <ul>
+        <li>Google は一度に最大250件ずつ返します。続きがあれば <code>nextPageToken</code>（次のページの印）が付いてくるので、それがなくなるまでくり返し、1つの一覧につなげます（<code>[...$events, ...]</code> は2つの一覧をつなげる書き方）。</li>
+        <li><code>array_filter</code> は、空の値（しおりなしの <code>null</code> など）を一覧から抜きます。しおりがなければ <code>syncToken</code> を付けずに頼むので、全件が返ります。</li>
+        <li>最後のページに付いてくる <code>nextSyncToken</code> が、次回のしおりです。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4>予定を1つずつ見る：消された予定・アプリの予定・それ以外</h4>
+      <div class="code"><div class="file">src/app/Actions/Calendar/ApplyCalendarChanges.php</div><pre><code>// 予定を1つずつ取り出して、消された予定ならつながりを外し、アプリのタスクの予定ならタスクに写す
+foreach ($page['events'] as $event) {
+    $changed += $this-&gt;apply($connection, $event) ? 1 : 0;
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Actions/Calendar/ApplyCalendarChanges.php</div><pre><code>private function apply(CalendarConnection $connection, array $event): bool
+{
+    // ID のない予定は、どのタスクとも結びつけられないので何もしない
+    if (! isset($event['id'])) {
+        return false;
+    }
+
+    // 消された予定なら、アプリの印がなくても（ID だけの知らせでも）、その予定とつながっているタスクのつながりを外す
+    if (($event['status'] ?? null) === 'cancelled') {
+        return $this-&gt;unlink($connection, [$event['id']]) &gt; 0;
+    }
+
+    $taskId = $event['extendedProperties']['private']['suiri_task_id'] ?? null;
+
+    // アプリが作った印のない予定（Google 側で新しく作られたもの）は取り込まない
+    if ($taskId === null) {
+        return false;
+    }
+
+    // その人のタスクで、同じ予定とつながっているものだけを探す（他人のタスクや、つながりを外したタスクは触らない）
+    $task = Task::where('user_id', $connection-&gt;user_id)-&gt;whereKey($taskId)-&gt;where('calendar_event_id', $event['id'])-&gt;first();
+
+    // 見つからなければ何もしない
+    if ($task === null) {
+        return false;
+    }
+
+    return $this-&gt;moveTask($task, $event);
+}</code></pre></div>
+      <ol>
+        <li><b>消された予定</b>（<code>status</code> が <code>cancelled</code>）を先に見ます。消された知らせは、予定の ID しか付いてこないことがあるので、アプリの印（<code>suiri_task_id</code>）を待たずに、予定の ID でその人のタスクを探します。見つかったら<b>タスクは消さず</b>、予定とのつながりだけを外します。カレンダーで予定を消しただけで、手帳のタスクまで消えたら困るからです。</li>
+        <li><b>アプリの印がない予定</b>は、利用者が Google の画面で「推理手帳」カレンダーに新しく作った予定です。タスクにはしません。</li>
+        <li><b>アプリの予定</b>なら、印の番号のタスクを探します。条件は3つ：その人のタスク（<code>user_id</code>）・その番号（<code>whereKey</code>）・その予定とつながっている（<code>calendar_event_id</code>）。他人のタスクの番号を印に書かれても、さわりません。</li>
+      </ol>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4><code>moveTask</code>：予定の日時が動いていたら、タスクの期日を合わせる</h4>
+      <div class="code"><div class="file">src/app/Actions/Calendar/ApplyCalendarChanges.php</div><pre><code>private function moveTask(Task $task, array $event): bool
+{
+    $times = $this-&gt;taskEvent-&gt;timesFrom($event);
+
+    // 日時が読めない予定なら、何もしない
+    if ($times === null) {
+        return false;
+    }
+
+    // 終日の予定なら長さは今のまま。長さのない時刻つきタスクで、予定が既定の長さのままなら、長さは入れない
+    if ($times['starts_at'] === null || ($task-&gt;duration_minutes === null &amp;&amp; $times['duration_minutes'] === config('suiri.calendar.default_minutes'))) {
+        $times['duration_minutes'] = $task-&gt;duration_minutes;
+    }
+
+    $task-&gt;fill($times);
+
+    // 何も変わっていなければ（アプリが書いたままなら）保存しない
+    if (! $task-&gt;isDirty(['due_on', 'starts_at', 'duration_minutes'])) {
+        return false;
+    }
+
+    DB::transaction(function () use ($task) {
+        $task-&gt;saveQuietly();
+        $this-&gt;syncPredictionCheck-&gt;handle($task);
+    });
+
+    return true;
+}</code></pre></div>
+      <p>予定の日時をタスクの形に戻すのは、書き出しで見た <code>TaskEvent</code> の逆向きの関数 <code>timesFrom</code> です。</p>
+      <div class="code"><div class="file">src/app/Services/Google/TaskEvent.php</div><pre><code>// 終日の予定なら、日付だけを返す
+if (isset($event['start']['date'])) {
+    return ['due_on' =&gt; $event['start']['date'], 'starts_at' =&gt; null, 'duration_minutes' =&gt; null];
+}
+// …（省略）…
+$start = CarbonImmutable::parse($event['start']['dateTime'])-&gt;setTimezone($timeZone);
+$end = isset($event['end']['dateTime']) ? CarbonImmutable::parse($event['end']['dateTime']) : $start;
+$minutes = (int) max(1, min(65535, $start-&gt;diffInMinutes($end, true)));
+
+return ['due_on' =&gt; $start-&gt;toDateString(), 'starts_at' =&gt; $start-&gt;format('H:i'), 'duration_minutes' =&gt; $minutes];</code></pre></div>
+      <ul>
+        <li>終日の予定なら、期日だけ（時刻なし）。時刻つきなら、日本の時刻に直して、期日・開始時刻・長さ（分）にします。</li>
+        <li>長さを入れていなかったタスクを、Google が既定の30分の予定にしていただけなら、長さは空のままにします（勝手に「30分」と入れない）。</li>
+        <li><code>isDirty</code> は「読み込んだときから値が変わったか」です。アプリが書いたままの予定（ほかの予定が変わったついでに返ってきただけ）なら、保存しません。</li>
+        <li>変わっていたら、タスクを <code>saveQuietly</code> で保存し、同じトランザクションの中で予想の確かめる日も合わせます（次のステップ）。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>確かめるタスクなら、予想の確かめる日も一緒に合わせる</h4>
+      <div class="code"><div class="file">src/app/Actions/Tasks/SyncPredictionCheck.php</div><pre><code>public function handle(Task $task): bool
+{
+    // 答え合わせ待ちの予想を確かめるタスクでない・期日がないなら、写さない
+    if (! $task-&gt;checksPendingPrediction() || blank($task-&gt;due_on)) {
+        return false;
+    }
+
+    $prediction = $task-&gt;prediction;
+    $prediction-&gt;fill(['check_on' =&gt; $task-&gt;due_on, 'check_at' =&gt; $task-&gt;starts_at]);
+
+    // 予想の確かめる日・時刻がもう同じなら、保存しない
+    if (! $prediction-&gt;isDirty(['check_on', 'check_at'])) {
+        return false;
+    }
+
+    $prediction-&gt;save();
+
+    return true;
+}</code></pre></div>
+      <p>「推理手帳：答え合わせの日」の予定をカレンダーで次の日に動かしたら、予想（<a href="#s6">6章</a>）の確かめる日（<code>check_on</code>）と時刻（<code>check_at</code>）も次の日にします。今日の画面の「答え合わせ待ち」（<a href="#s2">2章</a>）に出る日がずれないようにするためです。この用事は、手帳の画面でタスクを直したとき（<a href="#s3">3章</a> の <code>UpdateTask</code>）にも使われます。</p>
+      <div class="point"><b>ここが大事</b>写すのは確かめる日と時刻だけで、<b>予想の文と確かさには触りません</b>。予想の文と確かさは、保存したあとに書き換えない決まりだからです（<a href="#s6">6章</a>）。また、答え合わせがもう済んだ予想（<code>checksPendingPrediction()</code> が偽）なら、何もしません。</div>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>書く：<code>tasks</code> の1行（<code>due_on</code>・<code>starts_at</code>・<code>duration_minutes</code>）</li>
+        <li>書く（確かめるタスクで、答え合わせ待ちのとき）：<code>predictions</code> の1行（<code>check_on</code>・<code>check_at</code>）</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4>全件を読んだときの後始末：Google にもうない予定とのつながりを外し、もうないタスクの予定を消す</h4>
+      <div class="code"><div class="file">src/app/Actions/Calendar/ApplyCalendarChanges.php</div><pre><code>// 全件を読んだときは、Google の一覧にない予定とのつながりを外し、もうないタスクの予定を消してから、新しい印を保存する
+if ($fullSync) {
+    $changed += $this-&gt;unlinkMissing($connection, $page['events'], $startedAt);
+    $this-&gt;sweepOrphans($connection, $page['events']);
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Actions/Calendar/ApplyCalendarChanges.php</div><pre><code>private function unlinkMissing(CalendarConnection $connection, array $events, Carbon $startedAt): int
+{
+    // Google にある予定の ID（消された印のものは除く）を、引きやすい形にする
+    $present = collect($events)-&gt;reject(fn (array $event) =&gt; ($event['status'] ?? null) === 'cancelled')-&gt;pluck('id')-&gt;filter()-&gt;flip();
+
+    $missing = Task::where('user_id', $connection-&gt;user_id)-&gt;whereNotNull('calendar_event_id')
+        -&gt;where('calendar_synced_at', '&lt;', $startedAt)
+        -&gt;pluck('calendar_event_id')
+        -&gt;reject(fn (string $eventId) =&gt; $present-&gt;has($eventId));
+
+    return $missing-&gt;chunk(self::UNLINK_CHUNK)-&gt;sum(fn ($ids) =&gt; $this-&gt;unlink($connection, $ids-&gt;values()-&gt;all()));
+}</code></pre></div>
+      <p>しおりが古すぎて全件を読み直したとき、その間に消された予定の「消された知らせ」は、もう受け取れていません。そこで、Google の一覧にある予定の ID と、手元のタスクの <code>calendar_event_id</code> を比べ、Google にないものはつながりを外します。</p>
+      <ul>
+        <li><code>flip()</code>：ID の一覧を「ID が見出しの表」に変えて、<code>has()</code> で速く引けるようにする。</li>
+        <li><code>where('calendar_synced_at', '&lt;', $startedAt)</code>：比べるのは、<b>読み始める前に書き出しが済んでいた</b>タスクだけ。まだ書き出していない・読んでいる間に書き出したタスクは、一覧になくて当たり前なので外さない。</li>
+        <li><code>chunk(500)</code>：一度に問い合わせる ID を500ずつに分ける。</li>
+      </ul>
+      <div class="code"><div class="file">src/app/Actions/Calendar/ApplyCalendarChanges.php</div><pre><code>private function unlink(CalendarConnection $connection, array $eventIds): int
+{
+    return Task::where('user_id', $connection-&gt;user_id)-&gt;whereIn('calendar_event_id', $eventIds)
+        -&gt;update(['calendar_event_id' =&gt; null, 'calendar_synced_at' =&gt; null]);
+}</code></pre></div>
+      <p>つながりを外すのは、いつも「その人のタスク」（<code>user_id</code>）だけです。タスクそのものは消しません。続けて、つなぎ直したときと同じ用事 <code>DeleteOrphanEvents</code> に、読んだ一覧を渡して、もうないタスクの予定を消します（<code>sweepOrphans</code>。この章の 1 の終わり）。消すのに Google が失敗しても、取り込み（日時の写しと新しいしおりの保存）は止めず、連携の id とエラーの種類だけを記録します。消せなかった分は、つなぎ直したときや次に全件を読んだときに片づきます。差分の取り込み（しおりが生きている）では、どちらもしません。</p>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>次のしおりを保存する／取り込んだ変更を Google に送り返さない</h4>
+      <div class="code"><div class="file">src/app/Actions/Calendar/ApplyCalendarChanges.php</div><pre><code>$connection-&gt;forceFill(['sync_token' =&gt; $page['sync_token'], 'last_synced_at' =&gt; now()])-&gt;save();
+
+return $changed;</code></pre></div>
+      <p>最後に、Google がくれた次のしおりと、取り込んだ時刻を連携の行に保存します。15分後の取り込みは、このしおりから先だけを読みます。</p>
+      <div class="point"><b>ここが大事：送り返さない仕組み</b>取り込みでタスクを直すと、ふつうなら見張る係が「タスクの期日が変わった、書き出さなきゃ」と仕事を積み、Google にまた送り、その変更をまた取り込み…と、行ったり来たりになりかねません。それを防ぐため、取り込みの保存はどれも見張る係に知らせない形にしています。
+        <ul>
+          <li>日時を合わせる保存は <code>saveQuietly()</code>（この章の 2 で見た、知らせを出さない保存）。</li>
+          <li>つながりを外すのは <code>Task::where(...)-&gt;update([...])</code>。これはデータベースへの一括の書き換えで、モデルを1件ずつ保存しないので、そもそも見張る係は呼ばれません。</li>
+        </ul>
+        日時はもう Google の側で動いているので、送り返す必要もありません。テスト <code>test_a_moved_event_moves_the_task</code> などが、取り込みの動きを確かめています（<code>src/tests/Feature/Calendar/PullCalendarChangesTest.php</code>）。</div>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>読む：Google の専用カレンダーの、前回から変わった予定（しおりがなければ全部）</li>
+        <li>書く：<code>tasks</code>（日時を合わせる・つながりを外す）、<code>predictions</code>（確かめる日・時刻）</li>
+        <li>書く：<code>calendar_connections</code> の <code>sync_token</code>・<code>last_synced_at</code></li>
+      </ul></div>
+    </li>
+  </ol>
+
+  <h3>4. やめる：つなぐのをやめて、鍵を消す</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>「つなぐのをやめる」を開いて「やめる」を押す</h4>
+      <p>つながっているときの枠には、確認の部品 <code>x-ui.confirm</code> があります。開く文字は「つなぐのをやめる」、確認の文は「Google の許可を取り消して、これからはタスクを書き出さないよ。」、本当にやめるボタンは「やめる」です（どれも <code>$c</code> から引きます）。中に「専用カレンダーも Google から消す」のチェックを入れています。</p>
+      <div class="code"><div class="file">src/resources/views/components/settings/calendar-panel.blade.php</div><pre><code>&lt;x-ui.confirm :action="route('calendar.disconnect')" :label="$c['stop']" :confirmLabel="$c['stop_confirm']" class="mt-2" :message="$c['stop_active']"&gt;
+  &lt;label class="mb-3 flex items-start gap-2"&gt;
+    &lt;input type="checkbox" name="delete_calendar" value="1" class="mt-1 size-5 shrink-0 accent-[var(--accent)]"&gt;
+    &lt;span&gt;{{ strtr($c['delete_calendar'], [':name' =&gt; $name]) }}&lt;/span&gt;
+  &lt;/label&gt;
+&lt;/x-ui.confirm&gt;</code></pre></div>
+      <p>切れたときの枠の「つなぐのをやめる」にはチェックがありません（もう鍵が使えず、Google の専用カレンダーを消せないため）。確認の文も「手元の連携の記録を消すよ。専用のカレンダーは、Google カレンダーの画面から消せるよ。」に変わります。</p>
+      <p>確認の部品は、HTML の <code>&lt;details&gt;</code>（押すと中身が開く箱）で作ってあり、JavaScript なしで動きます。開いた中にフォームがあります。</p>
+      <div class="code"><div class="file">src/resources/views/components/ui/confirm.blade.php</div><pre><code>&lt;form method="POST" action="{{ $action }}" class="mt-3"&gt;
+  @csrf
+  @method($method)
+  {{ $slot }}
+  &lt;x-ui.button variant="danger"&gt;{{ $confirmLabel }}&lt;/x-ui.button&gt;
+&lt;/form&gt;</code></pre></div>
+      <p>開く文字と「やめる」ボタンは、どちらも高さ 48px 以上にしてあります（子どもの指でも押しやすく）。<code>$method</code> の既定は <code>DELETE</code> です。HTML のフォームは GET と POST しか送れないので、<code>@method('DELETE')</code> が隠し欄 <code>_method=DELETE</code> を入れ、Laravel が DELETE として受け取ります（<a href="#s0">0章</a>）。<code>{{ $slot }}</code> の所に、上のチェックの欄が入ります。</p>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>送る：<code>POST /calendar</code>（中身に <code>_method=DELETE</code>・<code>_token</code>、チェックしたときだけ <code>delete_calendar=1</code>）</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>DisconnectCalendarController</code></h4>
+      <p>住所の表の <code>Route::delete('/calendar', DisconnectCalendarController::class)</code> に当たり、同じ見張り役（合言葉・ログイン・回数制限・同意）を通ってから、受付が呼ばれます。受付の関数は1つだけなので、<code>__invoke</code>（「呼ばれたらこれ」の決まった名前）に書いてあります。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Calendar/DisconnectCalendarController.php</div><pre><code>public function __invoke(Request $request, DisconnectCalendar $disconnect): RedirectResponse
+{
+    $disconnect-&gt;handle($request-&gt;user(), $request-&gt;boolean('delete_calendar'));
+
+    return redirect()-&gt;route('settings.show')-&gt;with('status', 'Google カレンダーとつなぐのをやめました。');
+}</code></pre></div>
+      <p><code>$request-&gt;boolean('delete_calendar')</code> は、その欄が <code>1</code>・<code>on</code>・<code>true</code> などなら真、なければ偽を返します。チェックを入れなかったときは欄そのものが送られないので、偽になります。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>用事 <code>DisconnectCalendar</code>：Google が止まっていても、手元の鍵は必ず消す</h4>
+      <div class="code"><div class="file">src/app/Actions/Calendar/DisconnectCalendar.php</div><pre><code>public function handle(User $user, bool $deleteCalendar = false): bool
+{
+    $connection = $user-&gt;calendarConnection;
+
+    // もともとつないでいなければ、何もしない
+    if ($connection === null) {
+        return false;
+    }
+
+    // 専用カレンダーも消すと選ばれ、まだつながっているなら、Google から消す
+    if ($deleteCalendar &amp;&amp; $connection-&gt;isActive() &amp;&amp; filled($connection-&gt;app_calendar_id)) {
+        // 専用カレンダーを消してみる。失敗しても（Google の不調・許可切れ）つなぐのをやめるのは続ける
+        try {
+            $this-&gt;api-&gt;deleteCalendar($connection, $connection-&gt;app_calendar_id);
+        } catch (Throwable $e) {
+            Log::info('専用カレンダーを消せなかった', ['connection_id' =&gt; $connection-&gt;id, 'error' =&gt; class_basename($e)]);
+        }
+    }
+
+    $this-&gt;tokens-&gt;revoke($connection);
+
+    DB::transaction(function () use ($user, $connection) {
+        $user-&gt;tasks()-&gt;whereNotNull('calendar_event_id')-&gt;update(['calendar_event_id' =&gt; null, 'calendar_synced_at' =&gt; null]);
+        $connection-&gt;delete();
+    });
+    $user-&gt;unsetRelation('calendarConnection');
+
+    return true;
+}</code></pre></div>
+      <ol>
+        <li>チェックがあり、まだつながっていれば、専用カレンダー「推理手帳」を Google から消す。失敗しても先へ進む。</li>
+        <li>Google の側で許可を取り消す（次のステップ）。</li>
+        <li>トランザクションの中で、その人のタスクと予定のつながりを全部外し、連携の行（暗号にした鍵が入っている）を消す。</li>
+        <li><code>unsetRelation</code>：この人の情報の中に覚えていた「連携」を忘れさせる（このあと同じお願いの中で読んでも、消えた行が出てこないように）。</li>
+      </ol>
+      <p>切れた（<code>broken</code>）連携でも、この用事で消せます（その場合、専用カレンダーは消しません。もう鍵が使えないからです）。退会のときも、用事 <code>DeleteAccount</code> がこの用事を使って連携を消します（<a href="#s11">11章</a>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>GoogleTokens::revoke</code>：Google の側の許可も取り消す</h4>
+      <div class="code"><div class="file">src/app/Services/Google/GoogleTokens.php</div><pre><code>public function revoke(CalendarConnection $connection): bool
+{
+    // refresh token を取り消す（対応する access token も一緒に無効になる）。つながらないなどの失敗は false にする
+    try {
+        return Http::asForm()-&gt;timeout(config('suiri.calendar.timeout_seconds'))
+            -&gt;post(config('suiri.calendar.urls.revoke'), ['token' =&gt; $connection-&gt;refresh_token])
+            -&gt;successful();
+    } catch (Throwable $e) {
+        Log::info('Google の許可の取り消しに失敗', ['connection_id' =&gt; $connection-&gt;id, 'error' =&gt; class_basename($e)]);
+
+        return false;
+    }
+}</code></pre></div>
+      <p>手元の鍵を消すだけでは、Google の側には「推理手帳に許可を出している」記録が残ります。<code>https://oauth2.googleapis.com/revoke</code> に refresh token を送ると、Google の側でその許可が取り消されます（対応する access token も一緒に使えなくなります）。</p>
+      <p>ここで失敗しても例外にしません。Google が止まっているせいで「やめられない」となるより、手元の鍵を確実に消すほうを大事にしているからです。</p>
+      <div class="analogy"><b>たとえると</b>引っ越しで合鍵を返すことです。管理人さん（Google）に返しに行けなくても、自分の手元の合鍵（暗号にした鍵）は必ず処分します。</div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>設定の画面に戻ると、「つないでいません」に戻っている</h4>
+      <p>設定の画面へ転送され、「Google カレンダーとつなぐのをやめました。」の知らせが出ます。連携の行はもうないので、枠は最初のステップと同じ「つないでいません」と「カレンダーとつなぐ」に戻ります。タスクはそのまま残っています。</p>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>書く：その人の <code>tasks</code> の <code>calendar_event_id</code>・<code>calendar_synced_at</code> を空に</li>
+        <li>消す：<code>calendar_connections</code> の1行</li>
+        <li>Google：許可の取り消し（と、選んだときは専用カレンダーの削除）</li>
+      </ul></div>
+    </li>
+  </ol>
+
+  <h3>5. テストのときは、本物の Google に一度もつながない</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>偽物の窓口 <code>FakeCalendarApi</code> と、外への通信の禁止</h4>
+      <p>テスト（<code>php artisan test</code>）で毎回本物の Google に書いたら、テスト用の予定が本物のカレンダーに増え、Google が止まっている日はテストが通りません。そこで、窓口の結びつけ（この章の 2）を、テストのときだけ偽物に替えています。</p>
+      <div class="code"><div class="file">src/app/Services/Google/FakeCalendarApi.php</div><pre><code>class FakeCalendarApi implements CalendarApiContract
+{
+// …（省略）…
+    /** 予定を書く（同じ ID なら上書き。二重にはならない） */
+    public function upsertEvent(CalendarConnection $connection, string $calendarId, string $eventId, array $event): void
+    {
+        $this-&gt;touch('upsertEvent');
+        $this-&gt;events[$calendarId][$eventId] = ['id' =&gt; $eventId] + $event;
+    }</code></pre></div>
+      <p>偽物は、本物と同じ約束（<code>CalendarApi</code> の interface）を守りながら、Google にはつながず、メモリの中の一覧に書くだけです。<code>failing</code> を真にすると「Google が止まっている」、<code>expiredSyncToken</code> を真にすると「しおりが古い（410）」のふりをします。テストは書いた中身を見て、「予定が1つだけできたか」「本文が入っていないか」などを確かめます。</p>
+      <p>さらに、偽物にしていない外への HTTP の問い合わせは、テストのときは全部失敗にしています。</p>
+      <div class="code"><div class="file">src/app/Providers/CalendarServiceProvider.php</div><pre><code>// テストのときは、Http::fake() で用意していない外への問い合わせを、すべて失敗にする
+if ($this-&gt;app-&gt;runningUnitTests()) {
+    Http::preventStrayRequests();
+}</code></pre></div>
+      <p>うっかり本物の Google（鍵の取り直しや取り消しの住所など）を呼ぶコードを書いても、テストが失敗して気づけます。本物の <code>CalendarApi</code> を確かめるテスト（<code>src/tests/Unit/Google/CalendarApiTest.php</code>）は、<code>Http::fake()</code> で Google の返事を用意してから動かします。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>予定を読む窓口 <code>CalendarAgenda</code> の偽物 <code>FakeCalendarAgenda</code></h4>
+      <p>予定を<b>読むだけ</b>の窓口 <code>CalendarAgenda</code> は、書き出しの窓口とは別の約束です。返すのは2つで、今日の画面の予定（<code>eventsOn</code>）と、確かめる日の候補に使うこれからの予定（<code>upcoming</code>）です。本物は <code>GoogleCalendarAgenda</code>（ふだんのカレンダーから題名と時刻だけを1回で読み、表に保存せず数分だけ覚える）で、<code>CalendarServiceProvider</code> がこれに結びつけます。</p>
+      <div class="code"><div class="file">src/app/Providers/CalendarServiceProvider.php</div><pre><code>$this-&gt;app-&gt;bind(CalendarAgenda::class, GoogleCalendarAgenda::class);</code></pre></div>
+      <p>テストでは、偽物 <code>FakeCalendarAgenda</code> に、そのテストに要る予定を渡して差し替えます。Google にはつながず、渡された予定をそのまま返すだけです。</p>
+      <div class="code"><div class="file">src/app/Services/Google/FakeCalendarAgenda.php</div><pre><code>class FakeCalendarAgenda implements CalendarAgenda
+{
+    public int $upcomingCalls = 0;
+// …（省略）…
+    public function __construct(public array $today = [], public array $upcoming = []) {}
+// …（省略）…
+    /** 用意したこれからの予定を返し、呼ばれた回数を数える */
+    public function upcoming(User $user, int $days): array
+    {
+        $this-&gt;upcomingCalls++;
+
+        return $this-&gt;upcoming;
+    }</code></pre></div>
+      <div class="code"><div class="file">src/tests/Feature/Today/TodayPageTest.php</div><pre><code>$this-&gt;app-&gt;instance(CalendarAgenda::class, new FakeCalendarAgenda($events));</code></pre></div>
+      <p><code>$this-&gt;app-&gt;instance</code> は「この約束を頼まれたら、この1つを渡して」と Laravel に覚えさせる命令です。<code>upcomingCalls</code> は <code>upcoming</code> が呼ばれた回数で、テストはこれを見て「つないでいない人のために、予定を問い合わせていないか」を確かめます。</p>
+    </li>
+  </ol>
+
+  <div class="recap"><b>この章のまとめ</b><ol>
+    <li>つなぐのは、ログインとは別の「段階的な許可」。説明の画面で送るもの・送らないものを見せてから、カレンダーの2つの小さなスコープと refresh token を Google に頼む。state と PKCE で、途中の横取りやなりすましの戻りを防ぐ。</li>
+    <li>戻りでは用事 <code>ConnectCalendar</code> が「同じアカウント・許可がそろった・refresh token がある」を確かめ、専用カレンダー「推理手帳」を用意し、鍵を暗号にして <code>calendar_connections</code> に1人1行で保存する。今までのタスクの書き出しと、切れている間に消したタスクの予定の片づけ（<code>DeleteOrphanEvents</code>）は後回しの仕事にする。</li>
+    <li>書き出しは、タスクを見張る係が保存の確定後に <code>jobs</code> 表へ積んだ仕事（タスクの id だけ）を、worker の箱が取り出して行う。送るのは題名・日時・戻るリンクと、見分けるための番号だけで、予定の ID はタスクごとに先に決めるので、何度送っても予定は1つ。</li>
+    <li>Google が止まっていても、タスクの保存は成功している。書き出しは1分・5分・15分・1時間と間を空けて5回まで試し直す。許可が切れたら <code>broken</code> にして止め、設定の画面で「つなぎ直してください」と出す。</li>
+    <li>15分ごとの取り込みは、しおり（sync token）から先に変わった予定だけを読み、動いた日時をタスク（と予想の確かめる日）に写し、消された予定はつながりだけを外す。取り込みの保存は見張る係に知らせない形なので、Google に送り返さない。</li>
+    <li>やめるときは、Google の許可を取り消し、つながりを外して、暗号にした鍵の行を消す。Google が止まっていても、手元の鍵は必ず消す。</li>
+    <li>予定を読むだけの窓口 <code>CalendarAgenda</code> は、今日の予定と確かめる日の候補に使う。題名と時刻だけを数分覚え、保存しない。テストでは書き出しの窓口も読む窓口も偽物に替え、本物の Google に一度もつながない。</li>
+  </ol></div>
+</section>

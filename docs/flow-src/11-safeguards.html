@@ -1,0 +1,615 @@
+<section class="story" id="s11">
+  <h2><span class="no">11</span>守りの仕組み（他人の記録・回数・ニセの送信・ヘッダ・ログ・退会）</h2>
+  <p class="userstory">推理手帳を使う人として、自分の記録をほかの人に見られたり、勝手に書き換えられたり、ログに残されたりしたくない。やめるときは全部消してほしい。だから、アプリがどこでどう守っているかを知りたい。</p>
+  <p class="summary">この章で追う道筋：①他人の記録 <code>-&gt;can('write', 'case')</code> → <code>SubstituteBindings</code>（<code>{case}</code> を行に）→ <code>Authorize</code> → <code>Gate</code> → <code>CaseFilePolicy</code>（<code>WritesOpenCase</code>・<code>OwnerOnly</code>）→ 403（閉じた事件も 403） ／ 一覧は <code>$user-&gt;tasks()</code> から始める ／ <code>CopiesOwnerFromCase</code> ②回数制限 <code>throttle:writes</code> → <code>ThrottleRequests</code> → <code>cache</code> 表 → 429 ③ニセの送信 <code>@csrf</code> → <code>PreventRequestForgery</code> → 419 ④守りの札 <code>SecurityHeaders</code> ⑤箱の入口（nginx・PHP） ⑥ログに本文を書かない ⑦<code>GET /settings/export</code> → <code>ExportUserData</code> ⑧<code>DELETE /account</code> → <code>DeleteAccountRequest</code> → <code>DeleteAccount</code>（カレンダーの許可の取り消し → <code>sessions</code>・<code>invitations</code>・AI の通行証・<code>users</code> を消す → 子の表もまとめて消える）</p>
+
+  <ol class="steps">
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>守りは何枚も重ねてある（この章の地図）</h4>
+      <p>推理手帳が持つのは、本人の観察・考え・予想という、外に出したくない記録です。そこで「1か所で守れば安心」ではなく、何枚もの守りを重ねています。どれか1枚がすり抜けられても、次の1枚で止まるようにするためです。</p>
+      <div class="analogy"><b>たとえると</b>銀行の貸金庫です。建物の入口に警備員（箱の入口の守り）、窓口で本人確認（ログイン）、混雑したら整理券（回数制限）、書類の偽造チェック（ニセの送信の確かめ）、金庫の扉は持ち主の鍵でしか開かない（Policy）。帰りの封筒には「中身を見せないで」と書いてあり（守りの札）、警備の日誌には客の書類の中身を書かない（ログ）。解約したら金庫の中身をすべて処分する（退会）。</div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>守り</th><th>何を防ぐか</th><th>どこで</th></tr></thead>
+        <tbody>
+          <tr><td>持ち主だけ（Policy・一覧の絞り込み）</td><td>他人の記録を見る・直す・消す</td><td><code>-&gt;can()</code>・<code>app/Policies</code>・<code>app/Queries</code></td></tr>
+          <tr><td>回数制限</td><td>連打・総当たり・機械での大量の送信</td><td><code>throttle:…</code>・<code>AppServiceProvider</code></td></tr>
+          <tr><td>ニセの送信の確かめ（CSRF）</td><td>ほかのサイトから勝手に送らせる</td><td><code>@csrf</code>・<code>PreventRequestForgery</code></td></tr>
+          <tr><td>守りの札（ヘッダ）</td><td>枠への埋め込み・取り置き・種類の取り違え</td><td><code>SecurityHeaders</code></td></tr>
+          <tr><td>箱の入口</td><td>ファイルを送る形を狙った攻撃・隠しファイルの読み出し</td><td><code>infra/nginx</code>・<code>infra/php</code></td></tr>
+          <tr><td>ログに本文を書かない</td><td>記録がログから漏れる</td><td><code>Log::</code> の書き方・<code>bin/check</code></td></tr>
+          <tr><td>書き出し・退会</td><td>自分の記録を持ち出せない・消せない</td><td><code>ExportUserData</code>・<code>DeleteAccount</code></td></tr>
+        </tbody>
+      </table></div>
+      <p>ログインの守り（Google・招待制のときの招待・同意・セッションの作り直し）は <a href="#s1">1章</a>、カレンダーの鍵の暗号化と「送るのは題名と日時とリンクと番号だけ」は <a href="#s9">9章</a>、予想の文と確かさを書き換えさせない決まりは <a href="#s6">6章</a> で追いました。ChatGPT・Claude の窓口の守り（通行証・読むだけ・仕事の場面と他人の記録を見せない）は <a href="#s13">13章</a> で追います。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>住所の表で <code>-&gt;can('write', 'case')</code> と書く</h4>
+      <p>例として、ほかの人が「自分の事件ではない事件」に手がかりを足そうとした場合を追います。手がかりを足す住所は、こう書いてあります。</p>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>Route::get('/cases/{case}', [CaseController::class, 'show'])-&gt;can('view', 'case')-&gt;name('cases.show');
+// …（省略）…
+// 手がかり（閉じた事件には足せない・直せない・消せない）
+Route::post('/cases/{case}/clues', [ClueController::class, 'store'])-&gt;can('write', 'case')-&gt;name('clues.store');</code></pre></div>
+      <p><code>-&gt;can('write', 'case')</code> は「住所の穴 <code>{case}</code> の記録に対して、ログイン中の人が <code>write</code>（書き込む）をしてよいか確かめてから通す」という意味です。<code>write</code> は推理手帳が足した能力の名前で、「持ち主で、しかも事件が捜査中か」を確かめます（見る・直す・消すの <code>view</code>・<code>update</code>・<code>delete</code> は持ち主かだけ）。Laravel 本体では、これは <code>can:write,case</code> という見張り役を1つ足すだけの書き方です。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Routing/Route.php</div><pre><code>public function can($ability, $models = [])
+{
+    $ability = enum_value($ability);
+
+    return empty($models)
+        ? $this-&gt;middleware(['can:'.$ability])
+        : $this-&gt;middleware(['can:'.$ability.','.implode(',', Arr::wrap($models))]);
+}</code></pre></div>
+      <p>Laravel に並べ替えさせた、この住所の見張り役の実際の順番は次のとおりです。</p>
+      <ol>
+        <li><code>EncryptCookies</code> → <code>AddQueuedCookiesToResponse</code> → <code>StartSession</code> → <code>ShareErrorsFromSession</code></li>
+        <li><code>PreventRequestForgery</code>：ニセの送信でないか（このあとのステップ）</li>
+        <li><code>Authenticate</code>（<code>auth</code>）：ログインしているか（<a href="#s1">1章</a>）</li>
+        <li><code>ThrottleRequests:writes</code>：回数（このあとのステップ）</li>
+        <li><code>SubstituteBindings</code>：<code>{case}</code> を事件の行に替える</li>
+        <li><code>EnsureAgreed</code>（<code>agreed</code>）：同意したか（<a href="#s1">1章</a>）</li>
+        <li><code>Authorize:write,case</code>：持ち主で、事件が捜査中か</li>
+      </ol>
+      <div class="point"><b>ここが大事</b>持ち主の確かめ（<code>Authorize</code>）は、<code>SubstituteBindings</code> より<b>あと</b>に動きます。穴の中身が「12」という文字のままでは、誰の事件か分からないからです。Laravel の並べ替えの表がこの順番を決めています。</div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>SubstituteBindings</code>：<code>{case}</code> の番号を事件の行に替える（まだ誰のものかは見ない）</h4>
+      <p>住所 <code>/cases/12/clues</code> の <code>12</code> を、<code>case_files</code> 表の1行（モデル <code>CaseFile</code>）に替えます。<code>case</code> は PHP の予約語（<code>switch</code> の <code>case</code>）なので、モデルの名前を <code>CaseFile</code> にしていて、穴の名前とモデルの名前がちがいます。そこで、結びつきを1行で教えています。</p>
+      <div class="code"><div class="file">src/app/Providers/AppServiceProvider.php</div><pre><code>// 住所の {case} は「事件」（CaseFile）。case は PHP の予約語なのでモデルの名前と住所の名前がちがう
+Route::model('case', CaseFile::class);</code></pre></div>
+      <p>これで、<code>12</code> が来ると <code>case_files</code> から <code>id = 12</code> の行を読みます。行がなければ 404（見つからない）です。</p>
+      <div class="point"><b>ここが大事</b>この段階では、<b>誰の事件でも</b>読めてしまいます。番号は1から順に付くので、ほかの人の事件の番号を当てるのは簡単です。だから、次の <code>Authorize</code> が欠かせません。</div>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>case_files</code> の1行（<code>id = 12</code>。まだ持ち主は問わない）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>Authorize</code>：<code>Gate</code> に「この人がこの事件に書き込んでよいか」を聞く</h4>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Auth/Middleware/Authorize.php</div><pre><code>public function handle($request, Closure $next, $ability, ...$models)
+{
+    $this-&gt;gate-&gt;authorize($ability, $this-&gt;getGateArguments($request, $models));
+
+    return $next($request);
+}
+// …（省略）…
+protected function getModel($request, $model)
+{
+    if ($this-&gt;isClassName($model)) {
+        return trim($model);
+    }
+
+    return $request-&gt;route($model, null) ??
+        ((preg_match("/^['\"](.*)['\"]$/", trim($model), $matches)) ? $matches[1] : null);
+}</code></pre></div>
+      <p><code>can:write,case</code> の <code>write</code> が <code>$ability</code>（したいこと）、<code>case</code> が <code>$models</code> です。<code>getModel</code> は、<code>case</code> という名前の穴の中身（前のステップで行に替わった <code>CaseFile</code>）を取り出します。そして <dfn>Gate</dfn>（「してよいか」を決める門番）に渡します。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Auth/Access/Gate.php</div><pre><code>public function authorize($ability, $arguments = [])
+{
+    return $this-&gt;inspect($ability, $arguments)-&gt;authorize();
+}</code></pre></div>
+      <p>門番は答えを調べ（<code>inspect</code>）、「だめ」なら <code>authorize()</code> が <code>AuthorizationException</code> を投げます。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>門番が <code>CaseFilePolicy</code> を見つける（名前の決まり）</h4>
+      <p><dfn>Policy</dfn> は「その種類の記録について、誰が何をしてよいか」を書いたクラスです。門番は、記録のクラスの名前から Policy の名前を推し量って探します。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Auth/Access/Gate.php</div><pre><code>public function getPolicyFor($class)
+{
+    // …（省略）…
+    foreach ($this-&gt;guessPolicyName($class) as $guessedPolicy) {
+        if (class_exists($guessedPolicy)) {
+            return $this-&gt;resolvePolicy($guessedPolicy);
+        }
+    }</code></pre></div>
+      <p><code>App\Models\CaseFile</code> の <code>\Models\</code> を <code>\Policies\</code> に、うしろに <code>Policy</code> を付けて、<code>App\Policies\CaseFilePolicy</code> を探します。手元で門番に聞くと、6つの記録すべてが自分の Policy に結びついていました。</p>
+      <div class="data"><b>記録と Policy の組（門番 <code>Gate::getPolicyFor</code> の答え）</b><ul>
+        <li><code>CaseFile</code>（事件）→ <code>CaseFilePolicy</code>、<code>Clue</code>（手がかり）→ <code>CluePolicy</code>、<code>Hypothesis</code>（見立て）→ <code>HypothesisPolicy</code></li>
+        <li><code>Prediction</code>（予想）→ <code>PredictionPolicy</code>、<code>Task</code>（タスク）→ <code>TaskPolicy</code>、<code>AtticNote</code>（屋根裏の棚）→ <code>AtticNotePolicy</code></li>
+      </ul></div>
+      <div class="code"><div class="file">src/app/Policies/CaseFilePolicy.php</div><pre><code>/**
+ * 事件を、持ち主だけが見る・直す・消すことができるようにする（view・update・delete）。閉じる・開き直すときも update で確かめる。
+ * 手がかりや見立てを足す・見せ合うときは write（持ち主で、事件が捜査中のときだけ。閉じた事件は「開き直してください」の 403）。
+ * App\Models\CaseFile に自動で結びつく（名前の決まりで Laravel が見つける）。使い方：ルートの -&gt;can('update', '…')
+ */
+class CaseFilePolicy
+{
+    use OwnerOnly, WritesOpenCase;
+}</code></pre></div>
+      <p>6つの Policy は、どれも中身が <code>use</code> の1行だけです。「持ち主か」の決まりは1か所（<code>OwnerOnly</code>）に、事件・手がかり・見立ての「捜査中の事件にだけ書き込める」は <code>WritesOpenCase</code> にまとめてあります（予想・タスク・棚の Policy は <code>OwnerOnly</code> だけ）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>OwnerOnly</code>：記録の <code>user_id</code> とログイン中の人の id を比べる</h4>
+      <div class="code"><div class="file">src/app/Policies/Concerns/OwnerOnly.php</div><pre><code>/** 直してよいか（持ち主だけ） */
+public function update(User $user, Model $record): bool
+{
+    return $this-&gt;owns($user, $record);
+}
+// …（省略）…
+/** 記録の持ち主がこの人かを返す（型をそろえて比べる） */
+protected function owns(User $user, Model $record): bool
+{
+    return (int) $record-&gt;getAttribute('user_id') === (int) $user-&gt;getKey();
+}</code></pre></div>
+      <p><code>view</code>（見る）・<code>update</code>（直す）・<code>delete</code>（消す）の3つとも、答えは同じ <code>owns</code> です。事件の <code>user_id</code> と、ログイン中の人の <code>id</code> が同じときだけ <code>true</code>（してよい）。<code>(int)</code> で数にそろえてから <code>===</code>（型まで同じか）で比べるので、「<code>'12'</code> と <code>12</code>」のような取り違えも起きません。</p>
+      <p>運営者だけが通れる裏口のような決まりはありません。運営者のアカウントでも、他人の記録は見られません。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>WritesOpenCase</code>：持ち主かを先に見て、次に事件が捜査中かを見る</h4>
+      <div class="code"><div class="file">src/app/Policies/Concerns/WritesOpenCase.php</div><pre><code>/** 書き込んでよいか（持ち主で、事件が捜査中のときだけ）。閉じた事件なら「開き直してください」の文つきで 403 にする */
+public function write(User $user, Model $record): Response
+{
+    // 持ち主でなければ断る（他人の記録は、閉じているかどうかを知らせずに 403）
+    if (! $this-&gt;owns($user, $record)) {
+        return Response::deny();
+    }
+
+    $case = $record instanceof CaseFile ? $record : $record-&gt;getAttribute('caseFile');
+
+    // 事件が捜査中なら通し、閉じていれば開き直すよう伝えて断る
+    return $case-&gt;isOpen() ? Response::allow() : Response::deny(config('suiri.cases.closed_message'));
+}</code></pre></div>
+      <p>まず、上の <code>owns</code> で持ち主かを確かめます。他人なら、閉じているかどうかを知らせない、ふつうの 403 にします（ほかの人の事件の様子を漏らさないため）。持ち主なら、手がかりや見立てのときはその事件（<code>caseFile</code>）を取り出し、捜査中（<code>isOpen()</code>）なら通します。閉じた（解決・迷宮入り）事件なら、<code>config/suiri.php</code> の <code>cases.closed_message</code>「この事件は閉じています。書き足すときは、事件を開き直してください。」を付けて断ります。</p>
+      <p>閉じた事件の画面には、手がかり・見立て・○×・予想を書く欄やボタンを出していません。それでも受付で断るのは、閉じる前に開いていた古いタブや、手で作った送信が通ってしまわないようにするためです。答え合わせと取り下げは <code>update</code>（持ち主かだけ）のままなので、閉じた事件でも、待っている予想の結果を書いたり取り下げたりできます。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>だめなら 403：受付は呼ばれず、何も書かれない</h4>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Foundation/Exceptions/Handler.php</div><pre><code>$e instanceof AuthorizationException &amp;&amp; ! $e-&gt;hasStatus() =&gt; new AccessDeniedHttpException($e-&gt;getMessage(), $e),</code></pre></div>
+      <p>門番が投げた <code>AuthorizationException</code> を、Laravel の例外の係が「403（してはいけない）」に変えます。画面は Laravel の既定の 403 のページで、閉じた事件のときは、<code>Response::deny()</code> に付けた「開き直してください」の文がそのページに出ます。受付（<code>ClueController::store</code>）まで届かないので、手がかりは1行も足されません。</p>
+      <p>テスト <code>src/tests/Feature/Cases/OwnershipTest.php</code> は、事件を見る・直す・消す・閉じる・開き直す・見せ合う、手がかりと見立ての足す・直す・消す、○×を付ける・外す、予想を立てる・答え合わせの画面・答え合わせ・取り下げ、ワトソンのひとことを閉じる、の19の操作それぞれについて、他人が送ると 403 になり、表の行の数も中身も変わらないことを確かめています。閉じた事件への書き込みが 403 になり、答え合わせと取り下げはできることは <code>src/tests/Feature/Cases/ClosedCaseWritesTest.php</code> が確かめています。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>2つの記録を一度に扱う住所：両方の持ち主と「同じ事件か」を確かめる</h4>
+      <p>見立てと手がかりに ○× を付ける住所は、穴が2つあります。</p>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>// ○×（見立てと手がかりの両方が自分のもので、事件が捜査中か確かめる。同じ事件かは UpdateFitRequest）
+Route::put('/hypotheses/{hypothesis}/clues/{clue}', [FitController::class, 'update'])
+    -&gt;can('write', 'hypothesis')-&gt;can('write', 'clue')-&gt;name('fits.update');</code></pre></div>
+      <p><code>-&gt;can()</code> を2回つなげて、見立ても手がかりも自分のもので、事件が捜査中かを確かめます。さらに、自分の「事件Aの見立て」と自分の「事件Bの手がかり」を組み合わせられないよう、形の検証の係が同じ事件かを見ます。</p>
+      <div class="code"><div class="file">src/app/Http/Requests/Cases/UpdateFitRequest.php</div><pre><code>/** 見立てと手がかりが同じ事件のものかを確かめる */
+public function authorize(): bool
+{
+    return $this-&gt;route('hypothesis')-&gt;case_file_id === $this-&gt;route('clue')-&gt;case_file_id;
+}</code></pre></div>
+      <p>FormRequest の <code>authorize()</code> が <code>false</code> を返すと、これも 403 になります。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>子の記録にも <code>user_id</code> を写しておく（<code>CopiesOwnerFromCase</code>）</h4>
+      <p>手がかりは事件の中の記録なので、「どの事件のものか」（<code>case_file_id</code>）が分かれば持ち主も分かります。それでも、手がかりの表にも <code>user_id</code> の列を持たせています。</p>
+      <div class="code"><div class="file">src/database/migrations/2026_10_31_000003_create_clues_table.php</div><pre><code>$table-&gt;foreignId('case_file_id')-&gt;constrained()-&gt;cascadeOnDelete();
+$table-&gt;foreignId('user_id')-&gt;constrained()-&gt;cascadeOnDelete(); // 持ち主で絞るための写し</code></pre></div>
+      <p>こうしておくと、<code>OwnerOnly</code> は手がかりの行だけを見て判断でき、手がかりの一覧も <code>user_id</code> で直接絞れます。ただ、写し忘れると持ち主のない手がかりができてしまいます。そこで、作る直前に自動で写す部品を、手がかり・見立て・閉じたひとことのモデルに付けています。</p>
+      <div class="code"><div class="file">src/app/Models/Concerns/CopiesOwnerFromCase.php</div><pre><code>/** モデルが起動するとき、「作る直前に持ち主を写す」決まりを登録する */
+protected static function bootCopiesOwnerFromCase(): void
+{
+    static::creating(function ($model) {
+        // user_id が渡されておらず、親の事件がわかるときは、事件の持ち主を写す
+        if ($model-&gt;user_id === null &amp;&amp; $model-&gt;case_file_id !== null) {
+            $model-&gt;user_id = CaseFile::whereKey($model-&gt;case_file_id)-&gt;value('user_id');
+        }
+    });
+}</code></pre></div>
+      <p><code>static::creating</code> は「この種類の行を表に書く直前に、いつもこれを動かす」という登録です。手がかりを足す用事は事件から作るだけで、<code>user_id</code> を書いていません。それでも持ち主がそろいます。</p>
+      <div class="code"><div class="file">src/app/Actions/Cases/AddClue.php</div><pre><code>/** 手がかりを足して返す。持ち主（user_id）は事件から写る */
+public function handle(CaseFile $case, string $kind, string $body): Clue
+{
+    $clue = $case-&gt;clues()-&gt;create(['kind' =&gt; $kind, 'body' =&gt; $body]);</code></pre></div>
+      <p>予想は、もとの見立てから持ち主を写して作ります（<a href="#s6">6章</a>）。</p>
+      <div class="code"><div class="file">src/app/Actions/Cases/MakePrediction.php</div><pre><code>$prediction = $hypothesis-&gt;predictions()-&gt;create([
+    'case_file_id' =&gt; $hypothesis-&gt;case_file_id,
+    'user_id' =&gt; $hypothesis-&gt;user_id,</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>一覧はいつも「この人の記録」から始める</h4>
+      <p>一つひとつの記録は Policy で守れますが、一覧（タスクの一覧・事件の一覧・ノーベリ帳など）は穴がないので、<code>-&gt;can()</code> では守れません。そこで一覧を組み立てる係（Query）は、必ず <code>$user-&gt;tasks()</code> のように<b>ログイン中の人から</b>たどって始めます。</p>
+      <div class="code"><div class="file">src/app/Queries/Tasks/TaskListQuery.php</div><pre><code>/** その種類の一覧のタスクを、並べる順に返す */
+public function list(User $user, string $view, string $today): Collection
+{
+    $tasks = $user-&gt;tasks();</code></pre></div>
+      <div class="code"><div class="file">src/app/Models/User.php</div><pre><code>/** この人のタスク */
+public function tasks(): HasMany
+{
+    return $this-&gt;hasMany(Task::class);
+}</code></pre></div>
+      <p><code>hasMany</code>（この人が持つたくさんの行）は、問い合わせの最初に「<code>user_id</code> がこの人の id の行だけ」という条件を自動で付けます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Database/Eloquent/Relations/HasOneOrMany.php</div><pre><code>public function addConstraints()
+{
+    if (static::$constraints) {
+        $query = $this-&gt;getRelationQuery();
+
+        $query-&gt;where($this-&gt;foreignKey, '=', $this-&gt;getParentKey());
+
+        $query-&gt;whereNotNull($this-&gt;foreignKey);
+    }
+}</code></pre></div>
+      <p>だから、どんな条件をあとから足しても、表に送られる SQL は <code>select * from tasks where user_id = ? and user_id is not null and …</code> になり、他人の行が混ざることはありません。今日の画面・事件の一覧・ノーベリ帳・屋根裏の棚・週のふりかえりの係も、すべて <code>$user-&gt;caseFiles()</code>・<code>$user-&gt;predictions()</code> などから始めています（テスト <code>test_lists_never_show_other_peoples_cases</code>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>回数制限：名前ごとに数え方を決める</h4>
+      <p>回数制限は、記録を書く住所・ログイン・退会・カレンダー・AI の窓口にだけ付けています。数え方は <code>AppServiceProvider</code> に名前つきで4つ、AI の窓口の分は <code>AiConnectServiceProvider</code> に3つあります。</p>
+      <div class="code"><div class="file">src/app/Providers/AppServiceProvider.php</div><pre><code>// 回数制限（連打・総当たり・自動化の対策）。種類ごとに別々に数える。ルートでは throttle:auth のように名前で使う
+$by = fn (Request $request) =&gt; $request-&gt;user()?-&gt;id ?? $request-&gt;ip(); // ログイン中は人ごと、ログイン前は IP ごとに数える
+RateLimiter::for('auth', fn (Request $r) =&gt; Limit::perMinute(10)-&gt;by($r-&gt;ip()));       // Google へのログイン・戻り
+RateLimiter::for('writes', fn (Request $r) =&gt; Limit::perMinute(60)-&gt;by($by($r)));      // 記録を書く（作る・直す・消す）
+RateLimiter::for('account', fn (Request $r) =&gt; Limit::perMinute(5)-&gt;by($by($r)));      // データのダウンロード・退会
+RateLimiter::for('calendar', fn (Request $r) =&gt; Limit::perMinute(10)-&gt;by($by($r)));    // カレンダーとつなぐ・やめる</code></pre></div>
+      <div class="code"><div class="file">src/app/Providers/AiConnectServiceProvider.php</div><pre><code>// AI の会社のサーバーの IP は、その会社の利用者みんなで同じなので、IP ごとの数はきつくしすぎない
+RateLimiter::for('mcp', fn (Request $r) =&gt; Limit::perMinute(120)-&gt;by($r-&gt;user()?-&gt;id ?? $r-&gt;ip()));  // 窓口の道具を呼ぶ
+RateLimiter::for('oauth', fn (Request $r) =&gt; Limit::perMinute(60)-&gt;by($r-&gt;ip()));                    // 案内・通行証の受け渡し
+RateLimiter::for('oauth-register', fn (Request $r) =&gt; Limit::perHour(20)-&gt;by($r-&gt;ip()));             // AI の自己登録</code></pre></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>名前</th><th>上限</th><th>誰の回数として数えるか</th><th>付けている住所</th></tr></thead>
+        <tbody>
+          <tr><td><code>auth</code></td><td>1分に10回</td><td>IP アドレス</td><td>Google へ送り出す・戻る（<a href="#s1">1章</a>）</td></tr>
+          <tr><td><code>writes</code></td><td>1分に60回</td><td>ログイン中の人</td><td>タスク・事件・手がかり・見立て・予想・棚・ふりかえり・設定・同意などの書き込み</td></tr>
+          <tr><td><code>account</code></td><td>1分に5回</td><td>ログイン中の人</td><td>データのダウンロード・退会</td></tr>
+          <tr><td><code>calendar</code></td><td>1分に10回</td><td>ログイン中の人</td><td>カレンダーとつなぐ・戻る・やめる（<a href="#s9">9章</a>）</td></tr>
+          <tr><td><code>mcp</code></td><td>1分に120回</td><td>通行証の持ち主</td><td>AI の窓口 <code>POST /mcp</code>（<a href="#s13">13章</a>）</td></tr>
+          <tr><td><code>oauth</code></td><td>1分に60回</td><td>IP アドレス</td><td>通行証の出し方の案内・自己登録・通行証の受け渡し（<a href="#s13">13章</a>）</td></tr>
+          <tr><td><code>oauth-register</code></td><td>1時間に20回</td><td>IP アドレス</td><td>AI の自己登録 <code>POST /oauth/register</code>（<a href="#s13">13章</a>）</td></tr>
+        </tbody>
+      </table></div>
+      <p>名前を分けているのは、別の種類の操作が同じ数に混ざらないようにするためです。たとえば手がかりをたくさん足していても、退会の数は増えません。ログイン前の <code>auth</code> は IP で数えるので、本番で本当のアクセス元の IP が分かるよう、<code>bootstrap/app.php</code> の <code>trustProxies(at: '*')</code> で CloudFront の付ける <code>X-Forwarded-For</code> を信じています（EC2 には CloudFront からしか届かない前提）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>ThrottleRequests</code>：先に数を確かめ、1足してから先へ進める</h4>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Routing/Middleware/ThrottleRequests.php</div><pre><code>protected function handleRequest($request, Closure $next, array $limits)
+{
+    foreach ($limits as $limit) {
+        if ($this-&gt;limiter-&gt;tooManyAttempts($limit-&gt;key, $limit-&gt;maxAttempts)) {
+            throw $this-&gt;buildException($request, $limit-&gt;key, $limit-&gt;maxAttempts, $limit-&gt;responseCallback);
+        }
+    }
+
+    foreach ($limits as $limit) {
+        if (! $limit-&gt;afterCallback) {
+            $this-&gt;limiter-&gt;hit($limit-&gt;key, $limit-&gt;decaySeconds);
+        }
+    }
+
+    $response = $next($request);</code></pre></div>
+      <ol>
+        <li>もう上限に届いていれば（<code>tooManyAttempts</code>）、先へ進めずに「429（多すぎる）」を投げます。画面は Laravel の既定の 429 のページです。</li>
+        <li>届いていなければ <code>hit</code> で1足して、次の見張り役へ進めます。返事には <code>X-RateLimit-Limit</code>（上限）と <code>X-RateLimit-Remaining</code>（残り）が付きます。</li>
+      </ol>
+      <p>数を覚えておく鍵は「名前＋誰か」を <code>md5</code> で記号の並びにしたものです。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Routing/Middleware/ThrottleRequests.php</div><pre><code>'key' =&gt; self::$shouldHashKeys ? md5($limiterName.$limit-&gt;key) : $limiterName.':'.$limit-&gt;key,</code></pre></div>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む・書く：<code>cache</code> 表（<code>.env</code> の <code>CACHE_STORE=database</code>）。鍵の行に回数、<code>:timer</code> の行にその1分の終わりの時刻。1分たつと数え直し</li></ul></div>
+      <div class="point"><b>ここが大事</b>回数制限は、Policy より前（<code>SubstituteBindings</code> より前）で動きます。他人の事件の番号を次々に試すような送り方は、403 になる前に回数で止まります。</div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>ニセの送信の確かめ（CSRF）①：フォームに合言葉を入れておく</h4>
+      <p><dfn>CSRF</dfn>（クロスサイト・リクエスト・フォージェリ）は、悪いサイトに置いたフォームから、推理手帳へ勝手に送信させる攻撃です。ブラウザはそのサイトの Cookie を自動で付けて送るので、利用者が推理手帳にログインしたままだと、本人の操作として届いてしまいます。</p>
+      <div class="analogy"><b>たとえると</b>銀行の窓口で、通帳（Cookie）だけでなく、その日に窓口で渡された整理券の番号（合言葉）も一緒に出さないと受け付けない、という決まりです。悪いサイトは通帳は勝手に使わせられても、整理券の番号は知りません。</div>
+      <p>推理手帳のフォームには、どれも <code>@csrf</code> が入っています。</p>
+      <div class="code"><div class="file">src/resources/views/components/ui/confirm.blade.php</div><pre><code>&lt;form method="POST" action="{{ $action }}" class="mt-3"&gt;
+  @csrf
+  @method($method)</code></pre></div>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/View/Compilers/Concerns/CompilesHelpers.php</div><pre><code>protected function compileCsrf()
+{
+    return '&lt;?php echo csrf_field(); ?&gt;';
+}</code></pre></div>
+      <p><code>@csrf</code> は <code>&lt;input type="hidden" name="_token" value="（この人の箱にある合言葉）"&gt;</code> に置き換わります。合言葉は、その人の預かり箱（セッション）に入っている、でたらめな40文字です。<code>@method('DELETE')</code> は隠し欄 <code>_method=DELETE</code> で、フォームでは送れない DELETE を表します。</p>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>ニセの送信の確かめ②：<code>PreventRequestForgery</code> が照らし合わせる → だめなら 419</h4>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Foundation/Http/Middleware/PreventRequestForgery.php</div><pre><code>public function handle($request, Closure $next)
+{
+    if (
+        $this-&gt;isReading($request) ||
+        $this-&gt;runningUnitTests() ||
+        $this-&gt;inExceptArray($request) ||
+        $this-&gt;hasValidOrigin($request) ||
+        $this-&gt;tokensMatch($request)
+    ) {
+        return tap($next($request), function ($response) use ($request) {
+            if ($this-&gt;shouldAddXsrfTokenCookie()) {
+                $this-&gt;addCookieToResponse($request, $response);
+            }
+        });
+    }
+
+    throw new TokenMismatchException('CSRF token mismatch.');
+}</code></pre></div>
+      <p>次のどれか1つに当たれば通します。</p>
+      <ul>
+        <li><code>isReading</code>：GET・HEAD・OPTIONS（読むだけで、記録を変えない頼み）。だから記録を変える操作は、必ず POST・PATCH・PUT・DELETE にしています（ログアウトも POST。<a href="#s1">1章</a>）。</li>
+        <li><code>hasValidOrigin</code>：ブラウザが付ける <code>Sec-Fetch-Site</code> が <code>same-origin</code>（同じサイトの画面から送った）なら通す。</li>
+        <li><code>tokensMatch</code>：送られた <code>_token</code>（または <code>X-CSRF-TOKEN</code> のヘッダ）が、預かり箱の合言葉と同じか。
+          <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Foundation/Http/Middleware/PreventRequestForgery.php</div><pre><code>protected function tokensMatch($request)
+{
+    $token = $this-&gt;getTokenFromRequest($request);
+
+    return is_string($request-&gt;session()-&gt;token()) &amp;&amp;
+           is_string($token) &amp;&amp;
+           hash_equals($request-&gt;session()-&gt;token(), $token);
+}</code></pre></div>
+        </li>
+      </ul>
+      <p>どれにも当たらなければ <code>TokenMismatchException</code> になり、例外の係が「419」に変えます（<code>$e instanceof TokenMismatchException =&gt; new HttpException(419, …)</code>）。手元で合言葉なしに <code>POST /logout</code> を送ると、419 が返りました。ログアウトや退会のあとに合言葉を作り直す（<code>regenerateToken()</code>）のは、古い合言葉を使えなくするためです。</p>
+      <p>AI の窓口（<code>POST /mcp</code>）だけは web のひとまとまりの外にあり、この合言葉を使いません。人のブラウザではなく AI の会社のサーバーが送ってくるからです。代わりに、毎回の通行証（<code>auth:api</code>）と、よその画面からの呼び出しを断る見張り役 <code>RejectForeignOrigin</code> で守ります（<a href="#s13">13章</a>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>守りの札 <code>SecurityHeaders</code>：どの返事にもヘッダを足す</h4>
+      <p>この見張り役は、<code>bootstrap/app.php</code> の <code>$middleware-&gt;append(SecurityHeaders::class)</code> で、全部のお願いに付けています（<a href="#s0">0章</a>）。多くの見張り役は先に確かめてから先へ進めますが、この見張り役は<b>先に受付に画面を作らせ</b>、できた返事にヘッダ（返事に付ける札）を足します。</p>
+      <div class="code"><div class="file">src/app/Http/Middleware/SecurityHeaders.php</div><pre><code>public function handle(Request $request, Closure $next): Response
+{
+    $response = $next($request);
+
+    $headers = [
+        // ファイルの種類をブラウザに推測させない
+        'X-Content-Type-Options' =&gt; 'nosniff',
+        // ほかのサイトの枠（iframe）の中に、この画面を表示させない（クリックをだます攻撃の対策）
+        'X-Frame-Options' =&gt; 'SAMEORIGIN',
+        // ほかのサイトへ移るとき、URL の詳しい部分を渡さない
+        'Referrer-Policy' =&gt; 'strict-origin-when-cross-origin',
+        // カメラ・マイク・位置情報などは使わない
+        'Permissions-Policy' =&gt; 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+    ];
+
+    // 「次からも必ず https で来て」と伝える。https で届いたときと本番のとき（本番は CloudFront の https からしか入れないが、
+    // CloudFront からサーバーまでは http なので、アプリからは https に見えない）。ローカルの http では付けない
+    if ($request-&gt;isSecure() || app()-&gt;isProduction()) {
+        $headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'; // 1年間覚えさせる
+    }
+
+    // 決めた札を1つずつ取り出して、応答に付ける
+    foreach ($headers as $name =&gt; $value) {
+        // まだ付いていない札だけ付ける。画面ごとに先に付けた値は上書きしない
+        if (! $response-&gt;headers-&gt;has($name)) {
+            $response-&gt;headers-&gt;set($name, $value);
+        }
+    }
+
+    // ログイン中の人への応答なら、自分の記録が端末や CloudFront に残らないよう、取り置きを禁じる
+    if ($request-&gt;hasSession() &amp;&amp; $request-&gt;user() !== null) {
+        $response-&gt;headers-&gt;set('Cache-Control', 'private, no-store');
+    }
+
+    return $response;
+}</code></pre></div>
+      <ul>
+        <li><code>X-Content-Type-Options: nosniff</code>：ブラウザに「中身を見てファイルの種類を推測する」ことをさせない（文字のファイルをプログラムとして動かされない）。</li>
+        <li><code>X-Frame-Options: SAMEORIGIN</code>：ほかのサイトが推理手帳の画面を透明な枠に入れ、ボタンを押させる攻撃を防ぐ。</li>
+        <li><code>Referrer-Policy</code>：ほかのサイトへのリンクを押したとき、<code>/cases/12</code> のような住所の詳しい部分を相手に渡さない。</li>
+        <li><code>Permissions-Policy</code>：カメラ・マイク・位置情報・支払い・USB を使わないと宣言する。</li>
+        <li><code>Strict-Transport-Security</code>（HSTS）：「1年間は必ず https で来て」とブラウザに覚えさせる。本番だけ。</li>
+        <li><code>Cache-Control: private, no-store</code>：ログイン中の人への返事は、ブラウザにも CloudFront にも取り置かせない。共有の端末で「戻る」を押して前の人の記録が出る、CloudFront が別の人に同じ画面を返す、を防ぐ。</li>
+      </ul>
+      <p>手元で <code>/about</code> の返事を見ると、<code>X-Content-Type-Options: nosniff</code>・<code>X-Frame-Options: SAMEORIGIN</code>・<code>Referrer-Policy</code>・<code>Permissions-Policy</code> が付いていました（ローカルの http なので HSTS はなし）。テストは <code>src/tests/Feature/Legal/PublicPagesTest.php</code> です。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>箱の入口の守り：nginx と PHP の設定</h4>
+      <p>Laravel に届く前の、web の箱（nginx）と app の箱（PHP）にも守りがあります。</p>
+      <div class="code"><div class="file">infra/nginx/default.conf</div><pre><code># ファイルを送る形（multipart/form-data）の送信は受け付けない。推理手帳にはファイルを上げる機能がないため。
+# 2026-10 の PHP 本体の脆弱性（php2shell）はこの形の送信を PHP が読むところを狙うので、PHP に届く前に止める。
+# ファイルを上げる機能を作るときは、この行を外す（その経路だけ通す）
+if ($http_content_type ~* "multipart/form-data") { return 415; }
+# …（省略）…
+location ~ /\.(?!well-known).* { deny all; }</code></pre></div>
+      <ul>
+        <li>推理手帳にはファイルを上げる機能がないので、ファイルを送る形の送信は nginx が「415（受け付けない形）」で止めます。手元で試すと 415 が返りました。</li>
+        <li><code>.</code> で始まる隠しファイル（<code>.env</code> など）は読ませません。</li>
+      </ul>
+      <div class="code"><div class="file">infra/php/php.ini</div><pre><code>; エラーの中身（ファイルの場所など）を画面に出さない。Laravel のエラー画面は APP_DEBUG で切り替わる
+display_errors = off
+; …（省略）…
+upload_max_filesize = 2M
+post_max_size = 8M</code></pre></div>
+      <p>PHP のエラーの中身（ファイルの場所など）は画面に出さず、送れる大きさも小さくしています。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>ログには id とエラーの種類だけを書く</h4>
+      <p><dfn>ログ</dfn>は、サーバーが「いつ何が起きたか」を書き残す日誌です。うまくいかなかったことを後で調べるのに使いますが、日誌に題名や本文を書くと、記録が日誌から漏れる道ができます。そこで推理手帳のログには、<b>id・種類・件数・エラーの種類</b>だけを書きます。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Auth/GoogleLoginController.php</div><pre><code>Log::info('Google ログインを中断', ['error' =&gt; class_basename($e)]); // メールアドレスなどはログに書かない</code></pre></div>
+      <div class="code"><div class="file">src/app/Observers/TaskObserver.php</div><pre><code>Log::warning('カレンダーへの書き出しの仕事を出せなかった', ['task_id' =&gt; $task-&gt;id, 'error' =&gt; class_basename($e)]);</code></pre></div>
+      <div class="code"><div class="file">src/app/Jobs/PushTaskToCalendar.php</div><pre><code>/** 決めた回数を試してもだめだったときの記録。書くのはタスクの id とエラーの種類だけ（題名は書かない） */
+public function failed(Throwable $e): void
+{
+    Log::warning('カレンダーへの書き出しをあきらめた', ['task_id' =&gt; $this-&gt;taskId, 'error' =&gt; class_basename($e)]);
+}</code></pre></div>
+      <p><code>class_basename($e)</code> は、エラーのクラスの名前の最後の部分（たとえば <code>ConnectionException</code>）だけを取り出します。エラーの文（<code>$e-&gt;getMessage()</code>）には、Google の返事の中身やメールアドレスが入ることがあるので書きません。</p>
+      <p>この決まりは機械でも確かめています。<code>bin/check</code> の決まりの表に、<code>src/app/</code> の中で <code>Log::</code> と本文の列（<code>title</code>・<code>body</code>・<code>statement</code>・<code>memo</code> など）や <code>$request-&gt;all()</code> が同じ行にあれば止める、という決まりがあります。</p>
+      <div class="code"><div class="file">bin/check（決まりの表 RULES）</div><pre><code>('ログに入力の本文を出さない',
+ r'^src/app/',
+ r'(Log::\w+|logger)\s*\(.*(\$request-&gt;(all|input|post|except|only)\(|validated\(|-&gt;(title|body|statement|answer|memo|rule|examples'
+ r'|abstraction|concrete|result_note|conclusion|origin_label)\b(?!\s*\())',
+ COMMENT_LINE,
+ 'ログには id・種類・件数・エラーの種類だけを書く（題名や本文は書かない。.claude/rules/privacy.md）'),</code></pre></div>
+      <p>ファイルを直した直後とコミットの前に、この決まりが自動で動きます。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>データのダウンロード（<code>GET /settings/export</code>）：自分の記録だけを JSON で</h4>
+      <p>設定の画面の「データをダウンロード」はリンクで、<code>GET /settings/export</code> を開きます。</p>
+      <div class="code"><div class="file">src/routes/web/settings.php</div><pre><code>Route::get('/settings/export', ExportUserDataController::class)-&gt;middleware('throttle:account')-&gt;name('settings.export');
+Route::delete('/account', DeleteAccountController::class)-&gt;middleware('throttle:account')-&gt;name('account.destroy');</code></pre></div>
+      <p>どちらも <code>['auth', 'agreed']</code> の囲みの中にあり、<code>throttle:account</code>（1人1分5回まで）が付いています。住所に利用者の番号は入っていません。いつも「ログイン中の本人」のデータだけを扱うので、他人の番号を入れて試す余地がありません。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Account/ExportUserDataController.php</div><pre><code>public function __invoke(Request $request, ExportUserData $export): JsonResponse
+{
+    $filename = config('suiri.review.export_filename').'-'.today()-&gt;toDateString().'.json';
+
+    return response()-&gt;json(
+        $export-&gt;handle($request-&gt;user()),
+        200,
+        ['Content-Disposition' =&gt; 'attachment; filename="'.$filename.'"'],
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES,
+    );
+}</code></pre></div>
+      <p><code>Content-Disposition: attachment</code> は「画面に出さず、ファイルとして保存させて」という札です。ファイル名は <code>suiri-techo-2026-10-31.json</code> のようになり、日本語は <code>推</code> のような記号にせず、そのまま読める形で書きます。</p>
+      <div class="code"><div class="file">src/app/Actions/Account/ExportUserData.php</div><pre><code>return [
+    'app' =&gt; config('app.name'),
+    'exported_at' =&gt; now()-&gt;toIso8601String(),
+    // google_id と remember_token はモデルの Hidden で出ない
+    'user' =&gt; $user-&gt;toArray(),
+    'tasks' =&gt; $user-&gt;tasks()-&gt;oldest('id')-&gt;get()-&gt;toArray(),
+    'cases' =&gt; $user-&gt;caseFiles()-&gt;oldest('id')-&gt;with([
+// …（省略）…
+    // トークンは決して書き出さない（列を1つずつ選ぶ）
+    'calendar' =&gt; [
+        'connected' =&gt; $connection !== null &amp;&amp; $connection-&gt;isActive(),
+        'app_calendar_id' =&gt; $connection?-&gt;app_calendar_id,
+    ],
+    // つないでいる AI。通行証の番号や中身は決して書き出さない（名前・住所・日時だけを選ぶ）
+    'ai_connections' =&gt; array_map(fn (array $app) =&gt; [
+        'name' =&gt; $app['name'],
+        'redirect_host' =&gt; $app['host'],
+        'last_connected_at' =&gt; $app['last_at']?-&gt;toIso8601String(),
+    ], $this-&gt;connectedApps-&gt;for($user)),
+];</code></pre></div>
+      <ul>
+        <li>どの表も <code>$user-&gt;tasks()</code> のように本人からたどるので、他人の記録は入りません。</li>
+        <li><code>users</code> の <code>google_id</code> と <code>remember_token</code> は、モデルの <code>#[Hidden(['google_id', 'remember_token'])]</code> で JSON に出ません。</li>
+        <li>カレンダー連携は「つながっているか」と専用カレンダーの ID だけ。Google の鍵（トークン）は出しません（<code>CalendarConnection</code> も鍵の列を <code>Hidden</code> にしています）。</li>
+        <li>つないでいる AI は、名前・許可したあとに戻る先の住所・最後につながった日時だけ。一覧は設定の画面と同じ係 <code>ConnectedAppsQuery</code> が作ります（<a href="#s13">13章</a>）。通行証の番号や中身は出しません。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>退会①：確認の言葉「退会する」を入れて送る</h4>
+      <p>危ない操作は、ふだんは目に入らないようにしています。設定の画面のいちばん下、ログインしているアカウントの欄（<code>&lt;x-settings.account&gt;</code>）の下に「データのダウンロードと退会」がたたんであり、開くと中身 <code>&lt;x-settings.danger-zone&gt;</code> が出ます。そこで「退会の手続きへ」を押すと、確認の欄が開きます。どちらも JavaScript を使わない <code>&lt;details&gt;</code>（押すと開く箱）でできています。</p>
+      <div class="code"><div class="file">src/resources/views/components/settings/danger-zone.blade.php</div><pre><code>@php($word = config('suiri.review.delete_confirmation'))
+@php($d = config('suiri.settings.danger'))
+{{-- …（省略）… --}}
+    &lt;x-ui.confirm :action="route('account.destroy')" :label="$d['delete_button']" :confirm-label="$word"
+      :message="strtr($d['delete_confirm'], [':word' =&gt; $word])" :open="$errors-&gt;has('confirmation')"&gt;
+      &lt;div class="mb-3"&gt;
+        &lt;x-ui.field name="confirmation" :label="strtr($d['delete_field'], [':word' =&gt; $word])" autocomplete="off" required /&gt;
+      &lt;/div&gt;
+    &lt;/x-ui.confirm&gt;</code></pre></div>
+      <p>文は <code>config('suiri.settings.danger')</code> から引きます（ボタンは「退会の手続きへ」、確認の文は「本当に退会する？ 確かめのため、下の欄に「退会する」と入れてね。」）。<code>strtr</code> は、文の中の <code>:word</code> を確認の言葉に置きかえる関数です。確認の部品 <code>&lt;x-ui.confirm&gt;</code> の中は、<code>@csrf</code> と <code>@method('DELETE')</code> 入りのフォームです（前のステップ）。欄に「退会する」（<code>config('suiri.review.delete_confirmation')</code>）と入れて「退会する」のボタンを押すと、<code>DELETE /account</code> が届きます。うっかり押しただけでは消えないよう、言葉を打ってもらう形にしています。</p>
+      <figure class="shot"><img data-img="screen-settings.png" alt="設定の画面。下の方に「データのダウンロードと退会」"><figcaption>設定の画面。いちばん下に「データのダウンロードと退会」がある</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>退会②：<code>DeleteAccountRequest</code> が確認の言葉を確かめる</h4>
+      <div class="code"><div class="file">src/app/Http/Requests/Account/DeleteAccountRequest.php</div><pre><code>/** 送る前に、前後の空白を取る */
+protected function prepareForValidation(): void
+{
+    $this-&gt;merge(['confirmation' =&gt; trim((string) $this-&gt;input('confirmation'))]);
+}
+
+/** 確認の言葉と同じ文字が入っていること */
+public function rules(): array
+{
+    return [
+        'confirmation' =&gt; ['required', Rule::in([config('suiri.review.delete_confirmation')])],
+    ];
+}</code></pre></div>
+      <p><code>prepareForValidation</code> は「確かめる前に、値を整える」場所です。前後の空白を取ってから、<code>Rule::in([...])</code>（一覧のどれかと同じか）で「退会する」とぴったり同じかを確かめます。ちがえば受付は呼ばれず、設定の画面へ戻されて「確認のため「退会する」と入力してください。」と出ます（確認の欄は <code>:open="$errors-&gt;has('confirmation')"</code> で開いたまま）。何も消えません（テスト <code>test_wrong_confirmation_keeps_everything</code>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>退会③：受付 <code>DeleteAccountController</code>：先にログアウトしてから消す</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Account/DeleteAccountController.php</div><pre><code>public function __invoke(DeleteAccountRequest $request, DeleteAccount $deleteAccount): RedirectResponse
+{
+    $user = $request-&gt;user();
+    Auth::logout();
+    $deleteAccount-&gt;handle($user);
+    $request-&gt;session()-&gt;invalidate(); // セッションの中身を捨てる
+    $request-&gt;session()-&gt;regenerateToken(); // フォームの合言葉（CSRF トークン）も作り直す
+
+    return redirect()-&gt;route('home')-&gt;with('status', '退会しました。記録はすべて消えました。');
+}</code></pre></div>
+      <p>順番に意味があります。先に <code>Auth::logout()</code> をするのは、ログアウトの処理が <code>users.remember_token</code> を書き換えて保存するからです。消したあとにログアウトすると、消したはずの利用者の行に書き込もうとしてしまいます。そのあと用事 <code>DeleteAccount</code> で消し、預かり箱を捨て、合言葉を作り直して、トップへ「退会しました。記録はすべて消えました。」の知らせつきで戻します。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>退会④：用事 <code>DeleteAccount</code>：カレンダーの許可を取り消し、全部の行を消す</h4>
+      <div class="code"><div class="file">src/app/Actions/Account/DeleteAccount.php</div><pre><code>/** その人のデータをすべて消す。表を消す途中で失敗したら、表への書き込みはなかったことにする */
+public function handle(User $user): void
+{
+    $this-&gt;disconnectCalendar-&gt;handle($user);
+
+    DB::transaction(function () use ($user) {
+        DB::table(config('session.table', 'sessions'))-&gt;where('user_id', $user-&gt;id)-&gt;delete();
+        Invitation::where('email', Invitation::normalize($user-&gt;email))-&gt;delete();
+        $this-&gt;forgetAiGrants($user);
+        $user-&gt;delete();
+    });
+}
+
+/** AI とつないだ許可の行（通行証・更新の札・引換券・デバイスの番号）を、その人の分だけ消す */
+private function forgetAiGrants(User $user): void
+{
+    $tokenIds = Passport::token()-&gt;newQuery()-&gt;where('user_id', $user-&gt;id)-&gt;pluck('id');
+    Passport::refreshToken()-&gt;newQuery()-&gt;whereIn('access_token_id', $tokenIds)-&gt;delete();
+    Passport::token()-&gt;newQuery()-&gt;where('user_id', $user-&gt;id)-&gt;delete();
+    Passport::authCode()-&gt;newQuery()-&gt;where('user_id', $user-&gt;id)-&gt;delete();
+    Passport::deviceCode()-&gt;newQuery()-&gt;where('user_id', $user-&gt;id)-&gt;delete();
+}</code></pre></div>
+      <ol>
+        <li><b>カレンダーとのつながりを外す</b>（<code>DisconnectCalendar</code>。<a href="#s9">9章</a>）：つないでいれば、Google に「許可を取り消す（revoke）」と頼み、タスクと予定のつながりを外し、暗号にして持っていた鍵の行（<code>calendar_connections</code>）を消します。Google が止まっていて取り消しに失敗しても、手元の鍵は必ず消します。利用者の Google にある専用カレンダー「推理手帳」そのものは消しません（本人の Google の持ち物なので。プライバシーポリシーに書いてあります）。
+          <div class="code"><div class="file">src/app/Actions/Calendar/DisconnectCalendar.php</div><pre><code>$this-&gt;tokens-&gt;revoke($connection);
+
+DB::transaction(function () use ($user, $connection) {
+    $user-&gt;tasks()-&gt;whereNotNull('calendar_event_id')-&gt;update(['calendar_event_id' =&gt; null, 'calendar_synced_at' =&gt; null]);
+    $connection-&gt;delete();
+});</code></pre></div>
+        </li>
+        <li><b>ほかの端末のログインの記録</b>：<code>sessions</code> 表の、この人の <code>user_id</code> の行を全部消します。スマホとパソコンの両方でログインしていても、両方とも切れます。</li>
+        <li><b>招待の行</b>（招待制のときに名簿に入れた人。ある場合）：メールアドレスを持っているので消します（招待制のままもう一度使うなら、運営者が招待し直す）。</li>
+        <li><b>ChatGPT・Claude とつないだ許可</b>（<code>forgetAiGrants</code>）：通行証（<code>oauth_access_tokens</code>）・更新の札（<code>oauth_refresh_tokens</code>）・引換券（<code>oauth_auth_codes</code>）・デバイスの番号（<code>oauth_device_codes</code>）の、この人の行を消します。これらは Passport の表で、「親を消したら子も消える」が付いていないので、自分で消します。更新の札は <code>user_id</code> を持たず、通行証の番号（<code>access_token_id</code>）で結びついているので、先にこの人の通行証の番号を集めてから消します。AI のサービスの登録の行（<code>oauth_clients</code>）は利用者の記録ではないので残します（だれにも使われなければ、毎日の <code>ai:prune-apps</code> が消します。<a href="#s13">13章</a>）。</li>
+        <li><b>利用者の行</b>：<code>$user-&gt;delete()</code>。これで子の表もまとめて消えます（次のステップ）。</li>
+      </ol>
+      <p>2〜5は1つのトランザクションなので、途中で失敗すれば全部なかったことになり、「半分だけ消えた」状態は残りません。</p>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>子の表は <code>cascadeOnDelete</code> でまとめて消える（物理削除）</h4>
+      <p>利用者の記録を持つ表は、どれも <code>user_id</code> を <code>users</code> に結び、<code>cascadeOnDelete()</code>（親の行が消えたら、自分の行も消す）を付けています。</p>
+      <div class="code"><div class="file">src/database/migrations/2026_10_31_000009_create_tasks_table.php</div><pre><code>$table-&gt;foreignId('user_id')-&gt;constrained()-&gt;cascadeOnDelete();</code></pre></div>
+      <div class="code"><div class="file">src/database/migrations/2026_10_31_000002_create_case_files_table.php</div><pre><code>$table-&gt;foreignId('user_id')-&gt;constrained()-&gt;cascadeOnDelete();</code></pre></div>
+      <p><code>users</code> の1行を消すと、データベース（MySQL）が自分で、タスク・事件・手がかり・見立て・○×・見立ての状態を変えた記録・予想・屋根裏の棚・週のふりかえり・名推理カードへの推理・閉じたひとこと・カレンダー連携の行を消します。「消した印を付けて残す」のではなく、行そのものを消す<dfn>物理削除</dfn>です。</p>
+      <div class="point"><b>ここが大事</b><code>sessions</code> と Passport の表の <code>user_id</code> は、Laravel の決まった形の表で <code>users</code> に結びついていません（<code>sessions</code> は <code>$table-&gt;foreignId('user_id')-&gt;nullable()-&gt;index();</code> だけ）。だから <code>cascadeOnDelete</code> では消えず、用事 <code>DeleteAccount</code> が自分で消しています。テスト <code>test_delete_removes_every_row_of_the_user</code> が、退会のあとにこの人の行がどの表にも残っていないことを確かめています。</div>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>消す：<code>calendar_connections</code>（先に。Google には revoke を送る）</li>
+        <li>消す：<code>sessions</code>（この人の全端末）・<code>invitations</code>（この人のメール）・<code>oauth_access_tokens</code>・<code>oauth_refresh_tokens</code>・<code>oauth_auth_codes</code>・<code>oauth_device_codes</code>（この人の分）・<code>users</code>（この人）</li>
+        <li>消える（cascade）：<code>tasks</code>・<code>case_files</code>・<code>clues</code>・<code>hypotheses</code>・<code>clue_hypothesis</code>・<code>hypothesis_status_logs</code>・<code>predictions</code>・<code>attic_notes</code>・<code>weekly_reflections</code>・<code>scene_attempts</code>・<code>dismissed_hints</code></li>
+      </ul></div>
+    </li>
+  </ol>
+
+  <div class="recap"><b>この章のまとめ</b><ol>
+    <li>他人の記録：<code>-&gt;can('write', 'case')</code> → <code>SubstituteBindings</code> が行に替える（ここでは誰のものでも読める）→ <code>Authorize</code> → 門番 <code>Gate</code> が名前の決まりで <code>CaseFilePolicy</code> を見つける → <code>WritesOpenCase</code> が <code>OwnerOnly</code> の <code>owns</code> で <code>user_id</code> を比べ、続けて事件が捜査中かを見る → ちがえば・閉じていれば 403 で、受付まで届かない。</li>
+    <li>子の記録にも <code>user_id</code> を写す（<code>CopiesOwnerFromCase</code>）。一覧は必ず <code>$user-&gt;tasks()</code> などから始め、<code>where user_id = ?</code> が自動で付く。</li>
+    <li>回数制限は名前ごと（<code>auth</code> 10・<code>writes</code> 60・<code>account</code> 5・<code>calendar</code> 10／分、AI の窓口は <code>mcp</code> 120／分・<code>oauth</code> 60／分・<code>oauth-register</code> 20／時）。<code>cache</code> 表で数え、上限で 429。</li>
+    <li>ニセの送信：<code>@csrf</code> の合言葉か <code>Sec-Fetch-Site: same-origin</code> がなければ 419。記録を変える操作は GET にしない。</li>
+    <li><code>SecurityHeaders</code> がどの返事にも守りの札を足し、ログイン中の返事は取り置かせない。nginx はファイルを送る形の送信と隠しファイルを止める。</li>
+    <li>ログには id とエラーの種類だけ。<code>bin/check</code> が本文の列との組み合わせを止める。</li>
+    <li>データのダウンロードは本人の記録だけ（カレンダーの鍵も AI の通行証も出さない）。退会は確認の言葉 → 先にログアウト → カレンダーの許可を取り消し → <code>sessions</code>・<code>invitations</code>・AI の通行証と更新の札・<code>users</code> を消し、子の表は <code>cascadeOnDelete</code> でまとめて物理削除。</li>
+  </ol></div>
+</section>

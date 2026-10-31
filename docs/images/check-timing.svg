@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 420" width="1000" height="420" font-family="'Hiragino Sans','Noto Sans JP','Yu Gothic',sans-serif">
+  <title>決まりのチェックが動く4つの時</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1e2a4a"/>
+    </marker>
+  </defs>
+  <rect width="1000" height="420" fill="#ffffff"/>
+  <text x="30" y="38" font-size="21" font-weight="bold" fill="#1e2a4a">決まりのチェック（bin/check）が動く4つの時</text>
+
+  <!-- 上のくくり -->
+  <path d="M30,84 L30,74 L745,74 L745,84" fill="none" stroke="#5b6475"/>
+  <text x="387" y="66" font-size="13.5" fill="#4a5263" text-anchor="middle">AI（Claude Code）がこのフォルダで作業するときだけ動く（.claude/settings.json のフック）</text>
+  <path d="M765,84 L765,74 L990,74 L990,84" fill="none" stroke="#a3352b"/>
+  <text x="877" y="66" font-size="13.5" fill="#a3352b" text-anchor="middle">人でも AI でも動く（git）</text>
+
+  <!-- 4つの箱 -->
+  <g font-size="12.5" fill="#4a5263">
+    <rect x="30" y="96" width="225" height="214" rx="6" fill="#fbfaf6" stroke="#b9b09a"/>
+    <rect x="30" y="96" width="225" height="34" rx="6" fill="#1e2a4a"/>
+    <text x="142" y="119" font-size="15" font-weight="bold" fill="#ffffff" text-anchor="middle">① コマンドを打つ前</text>
+    <text x="44" y="152" font-family="'SFMono-Regular',Consolas,monospace" fill="#1e2a4a">bin/hooks/guard-bash</text>
+    <text x="44" y="176">止めるもの：</text>
+    <text x="44" y="196">・サーバーへの SSH</text>
+    <text x="44" y="216">・記録が消えるコマンド</text>
+    <text x="44" y="236">・強制プッシュ・チェック飛ばし</text>
+    <text x="44" y="256">・.env を git に入れる</text>
+    <text x="44" y="276">・ホストでの php・composer</text>
+
+    <rect x="275" y="96" width="225" height="214" rx="6" fill="#fbfaf6" stroke="#b9b09a"/>
+    <rect x="275" y="96" width="225" height="34" rx="6" fill="#1e2a4a"/>
+    <text x="387" y="119" font-size="15" font-weight="bold" fill="#ffffff" text-anchor="middle">② ファイルを直した直後</text>
+    <text x="289" y="152" font-family="'SFMono-Regular',Consolas,monospace" fill="#1e2a4a">bin/hooks/after-edit</text>
+    <text x="289" y="176">1. PHP なら pint で整形</text>
+    <text x="289" y="196">2. bin/check rules に</text>
+    <text x="289" y="216">　直したファイル1つをかける</text>
+    <text x="289" y="246">違反があれば、理由と</text>
+    <text x="289" y="266">直し方をその場で AI に返す</text>
+
+    <rect x="520" y="96" width="225" height="214" rx="6" fill="#fbfaf6" stroke="#b9b09a"/>
+    <rect x="520" y="96" width="225" height="34" rx="6" fill="#1e2a4a"/>
+    <text x="632" y="119" font-size="15" font-weight="bold" fill="#ffffff" text-anchor="middle">③ 作業を終える前</text>
+    <text x="534" y="152" font-family="'SFMono-Regular',Consolas,monospace" fill="#1e2a4a">bin/hooks/before-stop</text>
+    <text x="534" y="176" font-weight="bold" fill="#1e2a4a">→ bin/check worktree</text>
+    <text x="534" y="196">・直したファイルの決まり</text>
+    <text x="534" y="216">・画面を直したらビルド</text>
+    <text x="534" y="236">・docs を直したらリンク</text>
+    <text x="534" y="256">・src を直したら整形とテスト</text>
+    <text x="534" y="286">通らなければ AI に直させる</text>
+
+    <rect x="765" y="96" width="225" height="214" rx="6" fill="#fbfaf6" stroke="#a3352b"/>
+    <rect x="765" y="96" width="225" height="34" rx="6" fill="#a3352b"/>
+    <text x="877" y="119" font-size="15" font-weight="bold" fill="#ffffff" text-anchor="middle">④ コミットの前</text>
+    <text x="779" y="152" font-family="'SFMono-Regular',Consolas,monospace" fill="#1e2a4a">.githooks/pre-commit</text>
+    <text x="779" y="176" font-weight="bold" fill="#1e2a4a">→ bin/check staged</text>
+    <text x="779" y="196">・入れるファイルの決まり</text>
+    <text x="779" y="216">・秘密の値（.env・鍵）</text>
+    <text x="779" y="236">・docs のリンクと HTML 版</text>
+    <text x="779" y="256">・src があれば整形とテスト</text>
+    <text x="779" y="286">通らなければコミットしない</text>
+  </g>
+
+  <!-- 矢印 -->
+  <g stroke="#1e2a4a" stroke-width="2" marker-end="url(#arrow)">
+    <line x1="257" y1="203" x2="273" y2="203"/>
+    <line x1="502" y1="203" x2="518" y2="203"/>
+    <line x1="747" y1="203" x2="763" y2="203"/>
+  </g>
+
+  <!-- 下の説明 -->
+  <rect x="30" y="330" width="960" height="72" rx="6" fill="#f4f1ea" stroke="#b9b09a"/>
+  <text x="50" y="358" font-size="14" fill="#1e2a4a">手で動かすとき：bin/check rules [ファイル…]（決まり）・bin/check docs（リンク切れ・使っていない画像・HTML 版）</text>
+  <text x="50" y="384" font-size="14" fill="#a3352b">止められたら：出てきた「→ 直し方」のとおりに直して、もう一度。飛ばす・弱める方向には直さない</text>
+</svg>

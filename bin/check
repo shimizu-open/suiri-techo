@@ -1,0 +1,615 @@
+#!/usr/bin/env python3
+"""
+推理手帳の決まりを機械で確かめる（.claude/rules/ に書いた決まりのうち、機械で判定できるもの）。
+AI のフック（.claude/settings.json）と git のコミット前チェック（.githooks/pre-commit）から呼ばれる。人が手で動かしてもよい。
+
+  bin/check rules [ファイル...]   決まりの違反を探す（ファイルを渡さなければ、git で管理している物とまだ入れていない新しい物の全部。
+                                  app.css の独自のクラス・行数の上限・言葉の決まり・コードのコメントの抜け＝bin/code_comments.py も）
+  bin/check docs                  ドキュメントのリンク切れ・使っていない画像・HTML 版（docs/guide.html・docs/flow.html）の作り直し忘れ
+  bin/check staged                コミット前：コミットするファイルの決まり＋秘密の値＋整形＋テスト（＋ドキュメント）
+  bin/check worktree              作業の終わり：直したファイルの決まり＋秘密の値＋画面のビルド＋整形＋テスト（＋ドキュメント）
+
+違反があれば理由と直し方を出して、終了コード 1 で終わる。PHP はホストにないので、整形とテストはコンテナの中で動かす。
+手本は Baker Street English の bin/check。決まりを足すときは、下の表（RULES・WORD_RULES・SIZE_LIMITS・CSS_OK_AT）に1行足し、
+理由と「→ 直し方」を必ず書く。例外は理由つきの表（ALLOW・WORD_ALLOW・ALLOW_SIZE）に書く（チェックそのものを弱めない）。
+"""
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+os.chdir(ROOT)
+sys.dont_write_bytecode = True  # bin/__pycache__ を作らない
+sys.path.insert(0, str(ROOT / 'bin'))
+import code_comments  # noqa: E402  コードのコメントの決まり（.claude/rules/code-comments.md）
+
+
+def sh(cmd):
+    """シェルのコマンドを動かして、結果（終了コード・出力）を返す"""
+    return subprocess.run(cmd, shell=True, capture_output=True, text=True)
+
+
+def git_files(args):
+    """git に聞いたファイルの一覧のうち、今あるものだけを返す（消したファイルは確かめようがないので外す）"""
+    out = sh(f"git {args}").stdout
+    return [f for f in out.split('\n') if f and Path(f).exists()]
+
+
+# 中身を読まないファイル（画像・フォント・ビルドしたもの・よそのライブラリ）
+SKIP_SUFFIX = ('.png', '.webp', '.jpg', '.jpeg', '.gif', '.ico', '.svg', '.woff', '.woff2', '.ttf', '.pdf', '.lock')
+SKIP_PATH = re.compile(r'(^|/)(vendor|node_modules)/|^src/public/build/|^src/storage/|^src/bootstrap/cache/|^docs/(guide|flow)\.html$')
+
+# コメントの行・コメントの部分（言葉の決まりでは、画面に出ないので見ない）
+COMMENT_LINE = r'^\s*(//|\*|/\*|#(?!\[))'
+COMMENT_PART = r'\{\{--.*?--\}\}|<!--.*?-->|\s//\s.*$|/\*.*?\*/'
+
+
+# ---------- 決まり（1行ずつ探せるもの） ----------
+# (名前, 対象のパスの正規表現, 探す正規表現, 見逃す行の正規表現 or None, 直し方)
+RULES = [
+    # --- 太らない MVC（.claude/rules/architecture.md） ---
+    ('コントローラーで検証しない',
+     r'^src/app/Http/Controllers/',
+     r'(?<![\w>$])validate\(|->validate\(|Validator::',
+     COMMENT_LINE,
+     '形の検証は app/Http/Requests/{機能}/ の FormRequest に書き、受付は $request->validated() を受け取るだけにする'),
+    ('コントローラーで DB を組み立てない',
+     r'^src/app/Http/Controllers/',
+     r'\bDB::',
+     COMMENT_LINE,
+     '書き込みは app/Actions/{機能}/ の Action、一覧・集計は app/Queries/{機能}/ の Query に移す'),
+    ('コントローラーから外の API を呼ばない',
+     r'^src/app/Http/Controllers/',
+     r'\bHttp::',
+     COMMENT_LINE,
+     '外とのやりとりは app/Services/{相手}/（インターフェースは app/Contracts/）に包み、Action から呼ぶ'),
+    ('ルートにクロージャで処理を書かない',
+     r'^src/routes/web(\.php$|/)',
+     r'(Route::|->)(get|post|put|patch|delete|options|any|match)\s*\(.*\b(function|fn)\s*\(',
+     COMMENT_LINE,
+     'app/Http/Controllers/{機能}/ のコントローラーにする（1つの動きなら __invoke の1アクションのコントローラー）'),
+    ('回数制限は名前つきで',
+     r'^src/(routes|app)/',
+     r'throttle:\d',
+     COMMENT_LINE,
+     'AppServiceProvider の RateLimiter::for で種類ごとに名前を付け、throttle:名前 で使う（名前なしは全部のルートで同じ数え方になる）'),
+    ('env() は config の中だけで読む',
+     r'^src/(app|routes|resources|database|bootstrap|tests)/.*\.php$',
+     r'(?<![\w>$:\\-])env\s*\(\s*[\'"]',  # PHP の env('名前')。CSS の env(safe-area-inset-bottom) は名前に引用符がないので当たらない
+     COMMENT_LINE,
+     'config/ のファイルで env() を読み、コードでは config(\'…\') で読む（config:cache のあとは env() が null になる）'),
+    ('Blade で @php のかたまりを書かない',
+     r'^src/resources/views/.*\.blade\.php$',
+     r'^\s*@php\s*$|<\?php',
+     None,
+     '計算は受付（コントローラー）か app/Queries/ で組み立てて、画面には出来上がった値を渡す'),
+    ('外部のファイル（CDN・書体）を読み込まない',
+     r'^src/(resources/(views|css|js)/|vite\.config\.js$)',
+     r'<script[^>]+src=["\']?(https?:)?//'
+     r'|<link(?=[^>]*rel=["\']?(stylesheet|preconnect|preload|modulepreload|dns-prefetch))[^>]*href=["\']?(https?:)?//'
+     r'|@import\s+(url\()?\s*["\']?(https?:)?//'
+     r'|fonts\.(googleapis|gstatic|bunny)|cdn\.jsdelivr|unpkg\.com|cdnjs\.|cdn\.tailwindcss|use\.typekit'
+     r'|laravel-vite-plugin/fonts|^\s*@fonts\b',  # Vite の書体の道具（ビルドのときに外から書体を取ってくる）と、その読み込み
+     None,
+     '書体は端末の書体（本文と見出しは BIZ UDPGothic・ヒラギノ角ゴ・Noto Sans JP の順、明朝体は事件のなぞだけ）、'
+     'CSS・JS は npm で入れて Vite でビルドする（.claude/rules/ui-design.md）'),
+    ('影・浮き上がり・ずっと続く動きを付けない',
+     r'^src/resources/(views|js)/',
+     r'hover:-?(translate|scale)|(?<![\w-])shadow(-(sm|md|lg|xl|2xl|inner))?(?![\w-])|\banimate-(spin|pulse|bounce|ping)\b',
+     r'^\s*\{\{--|^\s*(//|\*|/\*)',
+     '平らな紙の見た目にする（.claude/rules/ui-design.md）'),
+    ('Blade に <style> と dark: を書かない',
+     r'^src/resources/views/.*\.blade\.php$',
+     r'<style\b|(?<![\w-])dark:[\w\[!-]',  # dark:bg-… のような Tailwind のクラス（「dark: を書かない」という説明の文は当たらない）
+     r'^\s*\{\{--',
+     'ダークモードは app.css の :root の変数の入れ替えだけで切り替わる（dark: を書かない）。'
+     '見た目は Blade の Tailwind のクラスで。くり返す組み合わせは Blade の部品に。色は @theme に（.claude/rules/ui-design.md）'),
+    # --- 個人情報（.claude/rules/privacy.md・google.md） ---
+    ('ログに入力の本文を出さない',
+     r'^src/app/',
+     r'(Log::\w+|logger)\s*\(.*(\$request->(all|input|post|except|only)\(|validated\(|->(title|body|statement|answer|memo|rule|examples'
+     r'|abstraction|concrete|result_note|conclusion|origin_label)\b(?!\s*\())',
+     COMMENT_LINE,
+     'ログには id・種類・件数・エラーの種類だけを書く（題名や本文は書かない。.claude/rules/privacy.md）'),
+    ('Google カレンダーに本文を送らない',
+     r'^src/app/(Services/Google|Jobs)/',
+     r'->(memo|body|statement|answer|rule|examples|abstraction|concrete|result_note|conclusion|origin_label)\b(?!\s*\()',
+     COMMENT_LINE,
+     '予定に入れるのはタスクの題名・日時・アプリに戻るリンクだけ（.claude/rules/google.md）'),
+    # --- ドキュメント（.claude/rules/docs.md） ---
+    ('記録が消えるコマンドを手順に書かない',
+     r'^(docs/|README\.md|CLAUDE\.md|\.claude/)',
+     r'^\s*(\$\s*)?(docker compose exec (-T )?app )?php artisan (migrate:(fresh|reset|refresh)|db:wipe)',
+     None,
+     '本番の記録が消えるので手順に書かない（表の追加・直しは移行と php artisan migrate だけ）'),
+]
+
+# 決まりの例外（理由つき）：このファイルのこの決まりは見逃す（RULES の決まりと、下の CSS の決まり CSS_CLASS_RULE に効く）
+ALLOW = {
+    # ('決まりの名前', 'src/…'): '理由',
+}
+
+
+# ---------- 言葉の決まり（docs/design/words.md の「3. 使わない言葉」） ----------
+# 画面に出る文言から探す。否定の注意書き（「診断ではありません」など）と作品名『…』は、その部分を消してから探す。
+SCREEN_WORDS = (r'診断|治療|治[らりるれろ]|効[かきくけ]|処方|おすすめの施術|患者|顧客|カルテ'
+                r'|頭が良くなる|思考力が伸びる|脳トレ|認知症予防|無知の無知|連続\s*[0-9０-９]+\s*日|連続記録|ランキング')
+# 否定の言い方。下の段は、やわらかい話し言葉の否定（「連続記録やポイントはないよ」「連続記録なし」「点数はつけない」「順位は出さない」）。
+# 「〜がないと続かない」「〜しないと」のような、ほしがる・せかす言い方は否定ではないので通さない（後ろに「と」が続くものは外す）
+NEGATION = (r'(ではありません|ではない|ではなく|じゃない|しません|できません|行いません|いたしません|目的とし(て)?いません|目的としません'
+            r'|[はもが]ありません|使えません|使いません|使わない|使わず|書かない|書かず|入力しない|お約束しません|約束しません|保証しません|作りません|禁止'
+            r'|[はもが]な[いし](?!と)|(?<![ぁ-ゖ])なし|しない(?!と)|[付つ]けない|作らない|出さない|数えない)')
+SCREEN_MASK = [
+    COMMENT_PART,
+    r'『[^』]*』',                                    # 作品名（『入院患者』など）
+    r'"(story_ja|story_en|origin|quote_source|quote_en|chapter)"\s*:\s*"[^"]*"',  # 教材の JSON の作品名・出典・英語の引用の欄
+    rf'(?:{SCREEN_WORDS})[^。！？!?\n]{{0,30}}?{NEGATION}',  # 否定の注意書き（「病気の診断・治療・予防を目的としていません」）
+]
+CODE_MASK = [
+    COMMENT_PART,
+    r'(?i:\bclient[_ -]?(id|secret|ip)s?\b)|\bclient(Id|Secret|Ip)\b|GOOGLE_CLIENT_\w+|getClientIp|Http\\Client\b|\w*ClientException',
+    r'\bclient(X|Y|Width|Height|Left|Top)\b|getBoundingClientRect|getClientRects',  # 画面の位置（ブラウザの決まった名前）
+]
+# (名前, 対象のパスの正規表現, 探す正規表現, 消してから探す部分の正規表現の一覧, 見逃す行の正規表現 or None, 直し方)
+WORD_RULES = [
+    ('画面で使わない言葉',
+     r'^src/(resources/views/.*\.blade\.php|config/(suiri|watson|legal|ai_connect)\.php|database/data/guide/.*\.json)$',
+     SCREEN_WORDS,
+     SCREEN_MASK,
+     COMMENT_LINE,
+     'docs/design/words.md の「3. 使わない言葉」の「代わりに」の言葉にする（例：診断→見立て、効く→変化、患者・顧客・カルテ→作らない）。'
+     '否定の注意書きは「診断ではありません」「病気の診断・治療・予防を目的としていません」の形なら通る'),
+    ('コードの名前に他人を表す言葉を使わない',
+     r'^src/((app|routes|database/(migrations|factories|seeders)|resources/(views|js)|tests)/|config/(suiri|watson|legal|ai_connect)\.php$)',
+     r'(?i)patient|customer|karte|client',
+     CODE_MASK,
+     COMMENT_LINE,
+     'お客さま（他人）を表す表・列・クラスは作らない（docs/design/data-model.md の 1）。Google の client_id などの決まった名前は通る。'
+     'HTTP の道具を入れる変数は $http・$api などの名前にする'),
+    ('難しい言葉（演繹・帰納・アブダクション）は手引きの画面だけ',
+     r'^src/(resources/views/(?!guide/|components/guide/).*\.blade\.php|config/suiri\.php)$',
+     r'演繹|帰納|アブダクション',
+     [COMMENT_PART],
+     COMMENT_LINE,
+     '毎日の画面では「もしそうなら」「つまり？」などの言葉にし、説明は手引き（views/guide・components/guide）に置く'),
+    ('ドキュメントで使わない言葉',
+     r'^(docs/.*\.md|README\.md|CLAUDE\.md)$',
+     r'無知の無知',
+     [],
+     None,
+     '別の言い方にする（オーナーの決まり。.claude/rules/docs.md）'),
+]
+
+# 言葉の決まりの例外（理由つき）：このファイルの、この正規表現に当たる行は見逃す
+WORD_ALLOW = {
+    ('画面で使わない言葉', 'src/config/watson.php'): [
+        (r"^\s*'[^']{1,15}',?\s*$|^\s*'(words|patterns|terms|keywords|detect)'\s*=>",
+         'ワトソンのひとことが探す言葉の一覧（W-4 の「よくなった・楽になった」など）。画面には出ない'),
+        (r'ほかの治療', 'W-4 の問いかけ「施術のほかに考えられることは？…ほかの治療…」（効果を言うのではなく、ほかの原因を考えさせる）'),
+    ],
+    ('画面で使わない言葉', 'src/config/suiri.php'): [
+        (r"^\s*\['label' => 'ほかの治療',",
+         '別の説明の型（S-2）の仕事の場面の1つ。W-4 と同じ「施術のほかに考えられること」の型で、効果を言うのではなく、ほかの原因を考えさせる'),
+    ],
+    ('ドキュメントで使わない言葉', 'docs/design/words.md'): [
+        (r'.', '「使わない言葉」の表そのもの'),
+    ],
+    # ChatGPT・Claude とつなぐ（OAuth）の持ち場のファイルだけ。Passport の表の名前とモデルの呼び出しの形に絞る
+    **{('コードの名前に他人を表す言葉を使わない', f): [
+        (r"\boauth_clients\b|Passport::client\(\)",
+         'OAuth のクライアント＝つなぐ相手のアプリ（ChatGPT・Claude など）。お客さまではない（Laravel Passport の決まった表の名前・呼び出し）'),
+    ] for f in (
+        'src/database/migrations/2026_10_31_100004_create_oauth_clients_table.php',
+        'src/app/Support/Ai/ConsentView.php',
+        'src/app/Queries/Ai/ConnectedAppsQuery.php',
+        'src/app/Console/Commands/PruneAiApps.php',
+        'src/tests/Feature/Ai/PruneAiAppsTest.php',
+        'src/tests/Feature/Ai/RegisterAppTest.php',
+    )},
+    ('コードの名前に他人を表す言葉を使わない', 'src/tests/Feature/Ai/McpAuthTest.php'): [
+        (r"'clientInfo' =>", 'MCP の決まった項目名（つなぐ相手のアプリが自分を名乗る欄）。お客さまではない'),
+    ],
+}
+
+
+def read_lines(f):
+    """ファイルを行の一覧で読む。読めない（文字でない）ファイルは None"""
+    try:
+        return Path(f).read_text(encoding='utf-8').split('\n')
+    except (UnicodeDecodeError, OSError):
+        return None
+
+
+def target_files(files):
+    """中身を確かめるファイルだけに絞る（画像・ビルドしたもの・よそのライブラリを外す）"""
+    return [f for f in files if Path(f).is_file() and not f.endswith(SKIP_SUFFIX) and not SKIP_PATH.search(f)]
+
+
+def check_rules(files):
+    """RULES の決まりを1行ずつ確かめ、違反を「場所【決まり】その行 → 直し方」の形で返す"""
+    problems = []
+    # 1つずつファイルを開き、そのファイルに当てはまる決まりだけを確かめる
+    for f in target_files(files):
+        lines = read_lines(f)
+        # 読めないファイルは確かめない
+        if lines is None:
+            continue
+        # 決まりを1つずつ当てはめる（対象外のパス・例外の表にあるものは飛ばす）
+        for name, path_re, pat, skip_re, fix in RULES:
+            if not re.search(path_re, f) or (name, f) in ALLOW:
+                continue
+            # 1行ずつ探し、見逃す行（コメントなど）でなければ違反にする
+            for i, line in enumerate(lines, 1):
+                if re.search(pat, line) and not (skip_re and re.search(skip_re, line)):
+                    problems.append(f'{f}:{i}  【{name}】{line.strip()[:120]}\n    → {fix}')
+    return problems
+
+
+def check_words(files):
+    """WORD_RULES の言葉の決まりを確かめる。否定の注意書き・コメントなどの部分を消してから探す"""
+    problems = []
+    # 1つずつファイルを開き、そのファイルに当てはまる言葉の決まりだけを確かめる
+    for f in target_files(files):
+        lines = read_lines(f)
+        # 読めないファイルは確かめない
+        if lines is None:
+            continue
+        # 言葉の決まりを1つずつ当てはめる
+        for name, path_re, pat, masks, skip_re, fix in WORD_RULES:
+            if not re.search(path_re, f):
+                continue
+            allow = WORD_ALLOW.get((name, f), [])
+            # 1行ずつ、消してよい部分を消してから、使わない言葉が残っていないか探す
+            for i, line in enumerate(lines, 1):
+                # コメントの行と、例外の表に書いた行は見逃す
+                if (skip_re and re.search(skip_re, line)) or any(re.search(a, line) for a, _ in allow):
+                    continue
+                rest = line
+                # 否定の注意書き・作品名・コメントなどを消す
+                for m in masks:
+                    rest = re.sub(m, ' ', rest)
+                hit = re.search(pat, rest)
+                # 消したあとにも残っていれば違反
+                if hit:
+                    problems.append(f'{f}:{i}  【{name}：「{hit.group(0)}」】{line.strip()[:120]}\n    → {fix}')
+    return problems
+
+
+# ---------- 見た目は Tailwind のクラスで（.claude/rules/ui-design.md の「見た目の書き方」） ----------
+# app.css に独自のクラス（@layer components の中の .tone-clue { … } や、トップレベルの .card { … }）を足さない。
+# CSS は1行ずつでは判定できない（どの @ の中にあるかで決まる）ので、かっこ { } の入れ子をたどって確かめる。
+CSS_CLASS_RULE = ('app.css に独自のクラスを足さない',
+                  r'^src/resources/css/.*\.css$',
+                  '見た目は Blade の Tailwind のクラスで。くり返す組み合わせは Blade の部品に。色は @theme に'
+                  '（Tailwind のクラスで書けない切り替えは @custom-variant か @utility で。要素の基本の見た目は @layer base に要素の名前で）')
+# この @ の中に書いたものは通す（Tailwind の仕組みとして足すもの）。@layer base は、要素の名前（body・a・h1 など）だけなら通る
+CSS_OK_AT = ('@theme', '@utility', '@custom-variant', '@variant', '@keyframes')
+CSS_CLASS = re.compile(r'(?<![\w-])\.-?[A-Za-z_][\w-]*')  # セレクタの中のクラス（.prose-note など。0.5 のような数字は当たらない）
+
+
+def css_rules(text):
+    """CSS を読み、かっこ { } の入れ子をたどって、セレクタの規則を (行番号, セレクタ, 外側の @ やセレクタの一覧) で返す"""
+    text = re.sub(r'/\*.*?\*/', lambda m: re.sub(r'[^\n]', ' ', m.group(0)), text, flags=re.S)  # コメントを空白にする（行番号は保つ）
+    found, stack, start, i = [], [], 0, 0
+    # 1文字ずつ進み、{ で入れ子に入り、} で出る
+    while i < len(text):
+        c = text[i]
+        # 文字列（"…"・'…'）の中のかっこは数えないので、閉じる引用符まで飛ばす
+        if c in '"\'':
+            end = text.find(c, i + 1)
+            i = (end if end != -1 else len(text) - 1) + 1
+            continue
+        # ; と } は次の規則の始まりの目印。} なら1つ外の入れ子に戻る
+        if c in ';}':
+            if c == '}' and stack:
+                stack.pop()
+            start = i + 1
+        # { の手前の文字が、@ の規則（@layer components・@media など）かセレクタ
+        elif c == '{':
+            raw = text[start:i]
+            prelude = ' '.join(raw.split())
+            line = text.count('\n', 0, start + len(raw) - len(raw.lstrip())) + 1
+            # セレクタなら規則として控える（@ の規則は入れ子の外側として積むだけ）
+            if not prelude.startswith('@'):
+                found.append((line, prelude, list(stack)))
+            stack.append(prelude[:40])
+            start = i + 1
+        i += 1
+    return found
+
+
+def check_css(files):
+    """CSS のファイルに、Tailwind の仕組み（@theme・@utility・@custom-variant など）の外で独自のクラスの規則を書いていないか確かめる"""
+    name, path_re, fix = CSS_CLASS_RULE
+    problems = []
+    # 1つずつ CSS のファイルを開く（対象外のパス・例外の表にあるものは飛ばす）
+    for f in target_files(files):
+        if not re.search(path_re, f) or (name, f) in ALLOW:
+            continue
+        lines = read_lines(f)
+        # 読めないファイルは確かめない
+        if lines is None:
+            continue
+        # セレクタの規則を1つずつ見て、通す @ の外でクラスを使っていたら違反にする
+        for line, selector, outer in css_rules('\n'.join(lines)):
+            if CSS_CLASS.search(selector) and not any(o.startswith(CSS_OK_AT) for o in outer):
+                where = ' > '.join(outer) + ' の中' if outer else 'トップレベル'
+                problems.append(f'{f}:{line}  【{name}】{where}：{selector[:80]} {{\n    → {fix}')
+    return problems
+
+
+# ---------- 1ファイルの行数の上限（コメント込み）。上から順に当てはめ、最初に合ったものを使う ----------
+SIZE_LIMITS = [
+    (r'^src/tests/.*\.php$', 300, 'tests/Feature/{機能}/ に、確かめる動作ごとのファイルに分ける'),
+    (r'^src/app/Http/Controllers/.*\.php$', 150,
+     '受付は薄く：検証は FormRequest、用事は Action、一覧・集計は Query へ。7 アクションを超えたらコントローラーを分ける'),
+    (r'^src/routes/.*\.php$', 120, 'routes/web/{機能}.php に分ける（routes/web.php は読み込むだけ）'),
+    (r'^src/resources/views/.*\.blade\.php$', 150, 'くり返す塊・意味のまとまりを resources/views/components/{分類}/ の部品にする'),
+    (r'^src/(app|database/(migrations|factories|seeders))/.*\.php$', 200,
+     '1クラス＝1つの役目に分ける（用事は app/Actions、外とのやりとりは app/Services、一覧・集計は app/Queries）。移行は1つに1つの変更'),
+    (r'^src/resources/js/.*\.js$', 200, 'resources/js/parts/ に部品ごとに分ける（app.js は読み込むだけ）'),
+    (r'^src/resources/css/.*\.css$', 400, '@import で分ける（Tailwind CSS v4 は CSS の @import が使える）'),
+]
+# 行数の例外（理由つき）：'ファイル': (上限, '理由')
+ALLOW_SIZE = {
+    # 'src/resources/views/legal/privacy.blade.php': (400, '文章だけのページ。部品に分けるとかえって読みにくい'),
+}
+
+
+def check_size(files):
+    """1ファイルの行数が上限（コメント込み）を超えていないか確かめる"""
+    problems = []
+    # 1つずつファイルの行数を数え、最初に当てはまった上限と比べる
+    for f in target_files(files):
+        # 上限の表を上から見て、最初に合ったものだけを使う
+        for path_re, limit, fix in SIZE_LIMITS:
+            if not re.search(path_re, f):
+                continue
+            limit = ALLOW_SIZE.get(f, (limit, ''))[0]
+            n = len(Path(f).read_text(encoding='utf-8', errors='replace').splitlines())
+            # 上限を超えていたら、分け方を添えて返す
+            if n > limit:
+                problems.append(f'{f}  【ファイルが長すぎる：{n} 行（上限 {limit}・コメント込み）】\n    → {fix}'
+                                '（どうしても分けられないときは、理由つきで bin/check の ALLOW_SIZE に書く）')
+            break
+    return problems
+
+
+# ---------- 秘密の値 ----------
+SECRET_PATTERNS = [
+    (r'AKIA[0-9A-Z]{16}', 'AWS のアクセスキー'),
+    (r'-----BEGIN [A-Z ]*PRIVATE KEY-----', '秘密鍵'),
+    (r'GOCSPX-[\w-]{20,}', 'Google の OAuth クライアントの秘密の値'),
+]
+ENV_SECRET = re.compile(
+    r'(?m)^[ \t]*(?:export[ \t]+)?(GOOGLE_CLIENT_SECRET|APP_KEY|DB_PASSWORD|DB_ROOT_PASSWORD|AWS_SECRET_ACCESS_KEY|MAIL_PASSWORD|ORIGIN_SECRET)'
+    r'[ \t]*=[ \t]*["\']?([^\s"\'#]+)')
+# 手順書の見本の値（xxx・<パスワード>・（控えた値）・${DB_PASSWORD} など）は秘密の値ではない
+PLACEHOLDER = re.compile(r'^(x+|\*+|\.+|[<(（\[{$].*|null|your[\w-]*|change[\w-]*|example[\w-]*)$', re.I)
+
+
+def check_secrets(files):
+    """秘密の値のファイル（.env・鍵）と、ファイルの中の秘密の値（AWS のキー・秘密鍵・.env の値）を git に入れていないか確かめる"""
+    problems = []
+    # 1つずつ、名前と中身を確かめる
+    for f in files:
+        base = os.path.basename(f)
+        # .env 本体（.env.example 以外の .env.*）と、鍵のファイルは、名前だけで止める
+        if base == '.env' or (base.startswith('.env.') and base != '.env.example') or base.endswith('.pem') \
+                or re.match(r'^id_(rsa|ed25519|ecdsa)$', base):
+            problems.append(f'{f}  【秘密の値のファイルを git に入れない】→ git restore --staged {f}（.gitignore にも入っているか確かめる）')
+            continue
+        p = Path(f)
+        # 大きいファイル・読めないファイルは中身を見ない
+        if not p.is_file() or p.stat().st_size > 2_000_000 or SKIP_PATH.search(f):
+            continue
+        try:
+            text = p.read_text(encoding='utf-8')
+        except (UnicodeDecodeError, OSError):
+            continue
+        # 決まった形の秘密の値（AWS のキー・秘密鍵・Google の秘密）を探す
+        for pat, what in SECRET_PATTERNS:
+            if re.search(pat, text):
+                problems.append(f'{f}  【秘密の値を git に入れない：{what}】→ 消して、値は .env にだけ書く')
+        # .env の書き方（名前=値）で、空でも見本（xxx・<…>）でもない値が入っていたら止める
+        for m in ENV_SECRET.finditer(text):
+            if m.group(2).isascii() and not PLACEHOLDER.match(m.group(2)):
+                problems.append(f'{f}  【秘密の値を git に入れない：{m.group(1)} に値が入っている】→ 値を消し、.env にだけ書く')
+    return problems
+
+
+# ---------- ドキュメント ----------
+def check_docs():
+    """docs と README.md の Markdown のリンク切れと、docs/images の使っていない画像を探す"""
+    problems = []
+    md = [f for f in git_files('ls-files docs README.md') if f.endswith('.md')]
+    md += [str(p) for p in Path('docs').rglob('*.md')] if Path('docs').exists() else []
+    md += ['README.md'] if Path('README.md').exists() else []
+    used = set()
+    # 1つずつ文書を開き、中のリンクと画像の行き先があるか確かめる
+    for f in sorted(set(md)):
+        text = Path(f).read_text(encoding='utf-8')
+        # リンク（](…)）と、直接書いた <img src="…"> を1つずつ確かめる
+        for m in re.findall(r'\]\(([^)#\s]+)', text) + re.findall(r'<img[^>]+src="([^"]+)"', text):
+            # 外のサイトとメールは確かめない
+            if m.startswith(('http', 'mailto:')):
+                continue
+            target = os.path.normpath(os.path.join(os.path.dirname(f), m))
+            used.add(target)
+            # 行き先のファイルがなければリンク切れ
+            if not os.path.exists(target):
+                problems.append(f'{f}  【リンク切れ】{m}')
+    images = Path('docs/images')
+    # docs/images の画像が、どの文書からも使われていなければ知らせる
+    for img in sorted(images.glob('*')) if images.exists() else []:
+        if img.is_file() and img.name != '.gitkeep' and os.path.normpath(str(img)) not in used:
+            problems.append(f'{img}  【使っていない画像】→ 消すか、どこかの説明で使う')
+    return problems
+
+
+def check_docs_html():
+    """docs/guide.html（docs を1つにまとめた HTML）と docs/flow.html（流れ解説）が、今の元から作り直してあるか"""
+    # 道具（marked）が入っていなければ、入れ方を返す
+    if not Path('tools/docs-html/node_modules/marked').exists():
+        return ['【docs/guide.html の確認】道具が入っていません → (cd tools/docs-html && npm ci)']
+    want = sh('node tools/docs-html/build.mjs --hash').stdout.strip()
+    html = Path('docs/guide.html')
+    have = re.search(r'name="source-fingerprint" content="([0-9a-f]+)"', html.read_text(encoding='utf-8')) if html.exists() else None
+    problems = []
+    # 埋めてある指紋が今の元の指紋と違えば、作り直し忘れ
+    if not have or have.group(1) != want:
+        problems.append('docs/guide.html  【docs を変えたら HTML 版も作り直す】→ node tools/docs-html/build.mjs（作った docs/guide.html も一緒にコミット）')
+    # 流れ解説：断片（docs/flow-src）から作り直してあるか、住所の表（routes/web.php・routes/web/*.php）が変わっていないか
+    frags = sorted(Path('docs/flow-src').glob('[0-9][0-9]-*.html')) if Path('docs/flow-src').exists() else []
+    flow = Path('docs/flow.html')
+    # 断片があるのに HTML がまだなければ、作るように言う
+    if frags and not flow.exists():
+        problems.append('docs/flow.html  【流れ解説の HTML がまだない】→ node tools/docs-html/flow.mjs')
+    # HTML があれば、指紋を比べ、コードの抜き出しが本物と同じかも確かめる
+    if flow.exists():
+        src_hash, web_hash = (sh('node tools/docs-html/flow.mjs --hash').stdout.split() + ['', ''])[:2]
+        text = flow.read_text(encoding='utf-8')
+        have_src = re.search(r'name="source-fingerprint" content="([0-9a-f]+)"', text)
+        have_web = re.search(r'name="web-php-fingerprint" content="([0-9a-f]+)"', text)
+        # 住所の表が変わったなら、解説の書き足しが先。断片だけが変わったなら、作り直すだけ
+        if have_web and have_web.group(1) != web_hash:
+            problems.append('docs/flow.html  【住所の表 src/routes/web.php・src/routes/web/*.php が変わった】'
+                            '→ 変わった住所の流れを docs/flow-src の章に書き足し・直してから node tools/docs-html/flow.mjs')
+        elif not have_src or have_src.group(1) != src_hash:
+            problems.append('docs/flow.html  【流れ解説の断片を変えたら作り直す】→ node tools/docs-html/flow.mjs（作った docs/flow.html も一緒にコミット）')
+        problems += check_flow_code()
+    return problems
+
+
+def check_flow_code():
+    """流れ解説の断片（docs/flow-src）のコードの抜き出しが、本物のファイルと一字一句同じか（行ごとに、そのファイルの中にあるか）"""
+    import html as _html
+    problems = []
+    # 断片を1つずつ開く
+    for frag in sorted(Path('docs/flow-src').glob('*.html')):
+        text = frag.read_text(encoding='utf-8')
+        last = None
+        # 「ファイル名の札＋コード」の組を1つずつ取り出す
+        for label, code in re.findall(r'<div class="file">(.*?)</div>\s*<pre><code>(.*?)</code></pre>', text, flags=re.S):
+            label = _html.unescape(re.sub(r'<[^>]+>', '', label))
+            m = re.search(r'((?:src|infra|docs)/[\w./@-]+|docker-compose\.yml)', label)
+            path = m.group(1) if m else (last if '同じファイル' in label else None)
+            # どのファイルの抜き出しか分からなければ確かめない
+            if not path:
+                continue
+            last = path
+            target = Path(path)
+            # 抜き出し元のファイルがなければ知らせる
+            if not target.is_file():
+                problems.append(f'{frag}  【抜き出し元のファイルがない】{path}')
+                continue
+            src = '\n'.join(l.strip() for l in target.read_text(encoding='utf-8', errors='replace').split('\n'))
+            # 抜き出しの1行ずつが、元のファイルにそのままあるか（省略の印は飛ばす）
+            for line in _html.unescape(code).split('\n'):
+                l = line.strip()
+                if not l or '…（省略）…' in l or l in ('...', '…'):
+                    continue
+                if l not in src:
+                    problems.append(f'{frag}  【コードの抜き出しが本物と違う】{path}：{l[:90]}')
+                    break
+    return problems
+
+
+def docs_touched(files):
+    """ドキュメント・道具・住所の表のどれかを変えたか（変えたときだけドキュメントの確認をする）"""
+    return any(f.startswith(('docs/', 'README', 'tools/docs-html/')) or re.match(r'^src/routes/web(\.php$|/)', f) for f in files)
+
+
+# ---------- コンテナの中で動かすもの（整形・テスト・ビルド） ----------
+def run(title, cmd):
+    """コマンドを動かし、失敗したら最後の出力を添えて返す"""
+    r = sh(cmd)
+    # 失敗したときだけ、色の印や進み具合の点を除いた出力の終わりの部分を返す
+    if r.returncode != 0:
+        out = re.sub(r'\x1b\[[0-9;]*m', '', r.stdout + r.stderr)
+        tail = '\n'.join(l for l in out.strip().split('\n') if l.strip() and set(l.strip()) - set('.⨯─'))[-2500:]
+        return [f'【{title}】に失敗しました：{cmd}\n{tail}']
+    return []
+
+
+def container(cmd):
+    """コンテナ（app）の中で動かすコマンドにする（ホストに PHP はない）"""
+    return f'docker compose exec -T app {cmd}'
+
+
+def tests():
+    """テストをすべて動かす（sqlite in-memory）"""
+    return run('テスト', container('php artisan test --compact'))
+
+
+def pint_test(files):
+    """PHP のファイルが整形（pint）の決まりどおりか確かめる"""
+    php = [f[len('src/'):] for f in files if f.startswith('src/') and f.endswith('.php') and Path(f).is_file()]
+    # PHP のファイルがなければ何もしない
+    if not php:
+        return []
+    # 整っていなければ、整える方法を返す
+    if sh(container('vendor/bin/pint --test ' + ' '.join(php))).returncode != 0:
+        return ['【整形（pint）】整っていないファイルがあります → docker compose exec -T app vendor/bin/pint ' + ' '.join(php)]
+    return []
+
+
+def report(problems):
+    """違反を出して終了コードを返す（違反があれば 1）"""
+    # 違反があれば stderr に一覧を出す
+    if problems:
+        print(f'チェックが通りません（{len(problems)} 件。決まりは .claude/rules/、直し方は各行の → ）：\n', file=sys.stderr)
+        for p in problems:
+            print('- ' + p, file=sys.stderr)
+        return 1
+    print('決まりのチェック：問題なし')
+    return 0
+
+
+def lint(files):
+    """ファイルごとの決まり（1行ずつの決まり・言葉・行数・コメントの抜け）をまとめて確かめる"""
+    return check_rules(files) + check_css(files) + check_words(files) + check_size(files) + code_comments.check(files)
+
+
+def main():
+    """モード（rules・docs・staged・worktree）に分けて確かめる"""
+    mode = sys.argv[1] if len(sys.argv) > 1 else 'rules'
+    # rules：渡したファイル（なければ全部）の決まり
+    if mode == 'rules':
+        files = sys.argv[2:] or git_files('ls-files --cached --others --exclude-standard')
+        files = [os.path.relpath(os.path.abspath(f), ROOT) for f in files]
+        return report(lint(files))
+    # docs：ドキュメントのリンクと HTML 版
+    if mode == 'docs':
+        return report(check_docs() + check_docs_html())
+    # staged：コミットするファイルの決まり・秘密の値、変えた所に応じてドキュメント・整形・テスト
+    if mode == 'staged':
+        files = git_files('diff --cached --name-only --diff-filter=ACMR')
+        problems = lint(files) + check_secrets(files)
+        if docs_touched(files):
+            problems += check_docs() + check_docs_html()
+        if any(f.startswith('src/') for f in files):
+            problems += pint_test(files) + tests()
+        return report(problems)
+    # worktree：作業の終わり。直したファイル（まだコミットしていない物と新しい物）を確かめる
+    if mode == 'worktree':
+        files = sorted(set(git_files('diff --name-only HEAD') + git_files('ls-files --others --exclude-standard')))
+        # 何も直していなければ、確かめることはない
+        if not files:
+            return report([])
+        problems = lint(files) + check_secrets([f for f in files if os.path.basename(f).startswith('.env') or f.endswith('.pem')])
+        if any(re.match(r'^src/resources/(views|css|js)/', f) for f in files):
+            problems += run('画面のビルド', container('npm run build'))
+        if docs_touched(files):
+            problems += check_docs() + check_docs_html()
+        if any(f.startswith('src/') for f in files):
+            problems += pint_test(files) + tests()
+        return report(problems)
+    print(__doc__)
+    return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())

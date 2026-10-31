@@ -1,0 +1,553 @@
+<section class="story" id="s7">
+  <h2><span class="no">7</span>答え合わせ：予想が当たったか確かめる</h2>
+  <p class="userstory">予想を立てた人として、確かめる日が来たら、実際はどうだったかを記録して、見立てを直したい。だから、答え合わせの画面を開いて4つの大きなボタンから1つを選び、保存する。</p>
+  <p class="summary">この章で追う道筋：今日の画面の「答え合わせしよう」・事件の画面の「答え合わせをしよう」などの入口 → <code>GET /predictions/{prediction}</code>（<code>can:view,prediction</code>）→ 受付 <code>PredictionController::show</code> → 画面（前に書いた予想 <code>prediction-original</code> ＋「実際はどうだった？」のカード <code>resolve-form</code>）→ <code>POST /predictions/{prediction}/result</code> → 形の検証 <code>ResolvePredictionRequest</code> → 受付 <code>ResolvePredictionController</code> → 用事 <code>ResolvePrediction</code>（結果を書く ＋ 確かめるタスクを済みにする）→ 同じ画面へ転送 →「確かめた」のはんこと次の一手（<code>resolve-result</code>）→ 見立てを直す <code>PATCH /hypotheses/{hypothesis}</code>（<code>ChangeHypothesisStatus</code>）</p>
+
+  <h3>入口：確かめる日が来ると、答え合わせが「いまやること」になる</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>答え合わせの画面への入口</h4>
+      <p>答え合わせの画面（<code>/predictions/{prediction}</code>）へは、次のボタンやリンクから来られます。どれも同じ住所へのリンク（GET）です。</p>
+      <ol>
+        <li><b>今日の画面のいちばん上のカード</b>（部品 <code>today/next-step</code>。<a href="#s2">2章</a>）：確かめる日が来た予想があると、今日の画面の「いまやること」のカードが「答え合わせしよう」になり、横いっぱいの「答え合わせする」が出る。出すのはいちばん古い1件だけで、ほかは下に「ほかにも◯件あるよ」とたたむ（部品 <code>today/due-predictions</code>）。</li>
+        <li><b>事件の画面の「答え合わせをしよう」のカード</b>（部品 <code>case-step/resolve-card</code>）：その事件に確かめる日が来た予想があると、事件の画面の1枚だけのカードがこれになる。</li>
+        <li><b>事件の画面の「◯月◯日に確かめよう」のカード</b>（部品 <code>case-step/wait-card</code>。<a href="#s6">6章</a>）：確かめる日の前でも、下の小さなリンク「先に答え合わせをする」から来られる。</li>
+        <li><b>タスクの一覧の確かめるタスク</b>（部品 <code>task/item</code>。<a href="#s3">3章</a>）：まだ済んでいない確かめるタスクの行に「答え合わせ」がある。</li>
+        <li><b>Google カレンダーの予定</b>（<a href="#s9">9章</a>）：確かめるタスクの予定に入れたリンクが、答え合わせの画面を指している。</li>
+      </ol>
+      <div class="code"><div class="file">src/resources/views/components/today/next-step.blade.php</div><pre><code>@php($first = collect($predictions)-&gt;first())
+@php($rest = collect($predictions)-&gt;slice(1))
+{{-- …（省略）… --}}
+{{-- 予想の画面があれば、答え合わせへ進む大きなボタンを出す --}}
+@if (Route::has('predictions.show'))
+  &lt;x-slot:action&gt;
+    &lt;x-ui.big-button :href="route('predictions.show', $first)" icon="check" tone="answer"&gt;{{ $words['button'] }}&lt;/x-ui.big-button&gt;
+  &lt;/x-slot:action&gt;
+@endif</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/components/case-step/resolve-card.blade.php</div><pre><code>&lt;x-ui.big-button :href="route('predictions.show', $prediction)" tone="answer" icon="check"&gt;{{ $t('resolve.button') }}&lt;/x-ui.big-button&gt;</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/components/case-step/wait-card.blade.php</div><pre><code>&lt;a href="{{ route('predictions.show', $prediction) }}" class="inline-flex min-h-12 items-center font-semibold"&gt;{{ $t('wait.early') }}&lt;/a&gt;</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/components/task/item.blade.php</div><pre><code>{{-- まだ済んでいない確かめるタスクは、予想の画面の「答え合わせ」へ。ふつうのやることは、頼まれていて済んでいれば「気になる」を出す --}}
+@if ($byPrediction &amp;&amp; ! $done &amp;&amp; Route::has('predictions.show'))
+  &lt;a href="{{ route('predictions.show', $task-&gt;prediction_id) }}" class="inline-flex min-h-11 shrink-0 items-center rounded-full border-2 border-answer px-3 text-sm font-bold text-answer no-underline hover:bg-answer-soft"&gt;{{ $words['resolve'] }}&lt;/a&gt;</code></pre></div>
+      <div class="code"><div class="file">src/app/Services/Google/TaskEvent.php</div><pre><code>// 確かめるタスクで、もとの予想が残っていれば、答え合わせの画面へ
+if ($task-&gt;answeredByPrediction() &amp;&amp; Route::has('predictions.show')) {
+    return route('predictions.show', $task-&gt;prediction_id);
+}</code></pre></div>
+      <p>確かめるタスクの行や予定から行けるのは、タスクの <code>prediction_id</code>（どの予想から作ったか。<a href="#s6">6章</a>）があるからです。</p>
+      <figure class="shot"><img data-img="screen-today-answer.png" alt="今日の画面・答え合わせの日が来たとき。深い赤の「答え合わせしよう」のカードに、なぞ・あなたの予想・自信・確かめる日と「答え合わせする」"><figcaption>今日の画面のいちばん上が「答え合わせしよう」のカードになったところ（スマホ）</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>今日の画面のカードは、どの予想を集めるか（<code>DuePredictionsQuery</code>）</h4>
+      <p>今日の画面のカードに出す予想は、一覧を集める係 <code>DuePredictionsQuery</code> が作ります（今日の画面の全体は <a href="#s2">2章</a>）。カードの部品は、その1件目（いちばん古いもの）を大きく出し、2件目からをたたみます（上の <code>$first</code> と <code>$rest</code>）。</p>
+      <div class="code"><div class="file">src/app/Queries/Today/DuePredictionsQuery.php</div><pre><code>public function for(User $user, string $today): Collection
+{
+    return $user-&gt;predictions()
+        -&gt;whereNull('result')
+        -&gt;whereNull('withdrawn_at')
+        -&gt;where('check_on', '&lt;=', $today)
+        -&gt;with('caseFile:id,title,scene')
+        -&gt;orderBy('check_on')-&gt;orderBy('check_at')-&gt;orderBy('id')
+        -&gt;get();
+}</code></pre></div>
+      <ul>
+        <li><code>$user-&gt;predictions()</code>：この人の予想だけ（<code>user_id</code> で絞る。他人の予想は混ざらない）。</li>
+        <li><code>whereNull('result')</code>・<code>whereNull('withdrawn_at')</code>：まだ結果がなく、取り下げてもいない＝答え合わせ待ち。</li>
+        <li><code>where('check_on', '&lt;=', $today)</code>：確かめる日が今日まで（過ぎたものも含む）。</li>
+        <li>並びは、確かめる日の古い順（過ぎているものが先）→ 時刻の早い順。だから、カードに大きく出るのは、いちばん長く待っている予想です。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>predictions</code>（この人の答え合わせ待ちで、確かめる日が来たもの）と、その事件の <code>case_files</code> の題名・場面</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>事件の画面では、答え合わせがいちばん先（<code>NextStep</code>）</h4>
+      <p>事件の画面は、いまやることを1枚のカードだけで見せます。どのカードにするかは「いまの一手」を決める係 <code>NextStep</code> が、上から順に確かめて最初に当てはまったものを選びます（事件の画面の組み立ての全体は <a href="#s5">5章</a>）。閉じた事件と、相棒モードで見せ合う前（<a href="#s8">8章</a>）を除けば、<b>確かめる日が来た予想があるかを、手がかりや見立てより先に</b>確かめます。</p>
+      <div class="code"><div class="file">src/app/Queries/Cases/NextStep.php</div><pre><code>$pending = $case-&gt;predictions-&gt;filter-&gt;isPending()-&gt;sortBy('check_on');
+$due = $pending-&gt;first(fn ($p) =&gt; $p-&gt;isDue($today));
+// 確かめる日が来た予想があれば、まず答え合わせ
+if ($due !== null) {
+    return ['key' =&gt; 'resolve', 'prediction' =&gt; $due];
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Models/Prediction.php</div><pre><code>public function isDue(string $today): bool
+{
+    return $this-&gt;isPending() &amp;&amp; $this-&gt;check_on &lt;= $today;
+}</code></pre></div>
+      <ul>
+        <li><code>filter-&gt;isPending()</code>：この事件の予想のうち、答え合わせ待ちだけを残します。<code>sortBy('check_on')</code> で確かめる日の早い順に並べます。</li>
+        <li><code>isDue($today)</code>：答え合わせ待ちで、確かめる日が今日まで来ているか。最初に当てはまった1件を、答え合わせのカード（<code>case-step/resolve-card</code>）に渡します。</li>
+        <li>確かめる日がまだ来ていなければ、ほかの段（手がかり・見立て・予想）を確かめたあと、最後に「◯月◯日に確かめよう」のカード（<code>wait</code>）になります。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-case-step-resolve.png" alt="事件の画面・確かめる日が来たとき。深い赤のカード「答え合わせをしよう」に、もしそうならの文と「10月30日に書いた予想・自信 75%」、横いっぱいの「答え合わせをする」"><figcaption>事件の画面の1枚だけのカードが「答え合わせをしよう」になったところ（スマホ）</figcaption></figure>
+    </li>
+  </ol>
+
+  <h3>答え合わせの画面を開く</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>住所の表：見る住所は回数制限の囲みの外</h4>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>// 答え合わせの画面
+Route::get('/predictions/{prediction}', [PredictionController::class, 'show'])-&gt;can('view', 'prediction')-&gt;name('predictions.show');</code></pre></div>
+      <p>この行は <code>auth</code>・<code>agreed</code> の囲みの中ですが、書き込み用の <code>throttle:writes</code> の囲みの外にあります。見るだけの住所なので、書き込みの回数には数えません。Laravel に並びを出させると、動く見張り役は次の順でした。</p>
+      <ol>
+        <li><code>EncryptCookies</code> → <code>AddQueuedCookiesToResponse</code> → <code>StartSession</code> → <code>ShareErrorsFromSession</code> → <code>PreventRequestForgery</code>（GET は「読むだけ」なので合言葉は要らない）</li>
+        <li><code>Authenticate</code>（<code>auth</code>）：ログインしているか</li>
+        <li><code>SubstituteBindings</code>：穴 <code>{prediction}</code> の番号を、<code>predictions</code> 表の行に替える（なければ 404）</li>
+        <li><code>EnsureAgreed</code>（<code>agreed</code>）：同意しているか</li>
+        <li><code>Authorize:view,prediction</code>（<code>can</code>）：この予想の持ち主か</li>
+      </ol>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>can:view,prediction</code>：他人の予想は見られない</h4>
+      <p>しくみは <a href="#s6">6章</a> の <code>can:write,hypothesis</code> と同じです。門番（<code>Gate</code>）が <code>Prediction</code> の決まりの係 <code>PredictionPolicy</code> を見つけ、その <code>view</code> を呼びます。</p>
+      <div class="code"><div class="file">src/app/Policies/PredictionPolicy.php</div><pre><code>class PredictionPolicy
+{
+    use OwnerOnly;
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Policies/Concerns/OwnerOnly.php</div><pre><code>/** 見てよいか（持ち主だけ） */
+public function view(User $user, Model $record): bool
+{
+    return $this-&gt;owns($user, $record);
+}</code></pre></div>
+      <p>予想の行の <code>user_id</code> がログイン中の人と違えば「403」です。住所の番号を1つずつ変えて他人の予想をのぞこうとしても、見られません（<a href="#s11">11章</a>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>PredictionController::show</code>：関係する行をまとめて読んで画面へ</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/PredictionController.php</div><pre><code>public function show(Request $request, Prediction $prediction): View
+{
+    $prediction-&gt;load(['hypothesis', 'caseFile', 'atticNote']);
+
+    return view('predictions.show', ['prediction' =&gt; $prediction, 'case' =&gt; $prediction-&gt;caseFile, 'kid' =&gt; $request-&gt;user()-&gt;prefersKidWords()]);
+}</code></pre></div>
+      <ul>
+        <li><code>load([...])</code>：画面で使う「つながった行」を、先にまとめて読んでおきます（<dfn>先読み（eager load）</dfn>）。この予想を導いた見立て（<code>hypothesis</code>）・事件（<code>caseFile</code>）・使った屋根裏の知識（<code>atticNote</code>）です。</li>
+        <li><code>kid</code>：子ども向けの言葉を出すか。ふだんの場面を「親子」にしている人なら <code>true</code> で、結果のボタンが「あたり・はずれ・わからない・そもそもちがった」になります。</li>
+        <li><code>view('predictions.show', …)</code>：画面の型紙 <code>resources/views/predictions/show.blade.php</code> に、予想と事件を渡して HTML を作ります。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>hypotheses</code>・<code>case_files</code>・<code>attic_notes</code>（あれば）のそれぞれ1行</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>画面の骨組み：答え合わせ待ち・済み・取り下げで出し分ける</h4>
+      <div class="code"><div class="file">src/resources/views/predictions/show.blade.php</div><pre><code>@php($w = config('suiri.resolve'))
+&lt;x-layouts.app :title="$w['title']"&gt;
+  &lt;a href="{{ route('cases.show', $case) }}" class="-mt-1 mb-3 flex min-h-11 min-w-0 items-center gap-1.5 text-sm text-muted no-underline"&gt;
+  {{-- …（省略）… --}}
+  &lt;x-case.prediction-original :prediction="$prediction" :case="$case" :kid="$kid" /&gt;
+
+  {{-- 答え合わせ待ちなら欄を、済んだなら結果と次の一手を、取り下げたならその知らせを出す --}}
+  @if ($prediction-&gt;isPending())
+    &lt;x-case.resolve-form class="mt-6" :prediction="$prediction" :scene="$case-&gt;scene" :kid="$kid" /&gt;
+  @elseif ($prediction-&gt;isResolved())
+    &lt;x-case.resolve-result class="mt-4" :prediction="$prediction" :case="$case" :kid="$kid" /&gt;
+  @else
+    &lt;div class="mt-6 space-y-4"&gt;
+      &lt;p class="text-base"&gt;{{ __($w['withdrawn'], ['date' =&gt; $prediction-&gt;withdrawn_at-&gt;isoFormat('M月D日')]) }}&lt;/p&gt;</code></pre></div>
+      <ul>
+        <li>画面の言葉は、コードに直書きせず設定ファイル <code>config/suiri.php</code> の <code>resolve</code> の欄からまとめて引きます（<code>$w</code>）。</li>
+        <li>いちばん上に「‹ 事件 No.2」と事件のなぞ（事件の画面へ戻るリンク）、その下にいつも「前に書いた予想」（次の手順）。</li>
+        <li>その下は、予想の状態で3つに分かれます：答え合わせ待ち → 「実際はどうだった？」のカード、答え合わせ済み → 確かめた日と次の一手、取り下げ済み → 「この予想は◯月◯日に取り下げたよ」の知らせ。</li>
+      </ul>
+      <p>どの状態でも、画面でしてほしいことは1つだけ（結果を1つ選ぶ・次の一手を選ぶ・事件にもどる）にしてあります。事件の画面の「1画面にいまやること1つ」と同じ考え方です。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>前に書いた予想を、書いた日時つきで大きく見せる（<code>prediction-original</code>）</h4>
+      <div class="code"><div class="file">src/resources/views/components/case/prediction-original.blade.php</div><pre><code>{{-- 答え合わせが済んでいれば、右上に「確かめた」のはんこを押す --}}
+@if ($prediction-&gt;isResolved())
+  &lt;x-ui.stamp class="float-right mt-1 mb-2 ml-3" :result="$prediction-&gt;result" :label="$kid ? $prediction-&gt;result-&gt;kidLabel() : $prediction-&gt;result-&gt;label($case-&gt;scene)" /&gt;
+@endif
+&lt;p class="flex items-center gap-1.5 text-sm font-bold text-prediction"&gt;
+  &lt;x-ui.step-icon name="arrow" class="size-5 shrink-0" /&gt;
+  &lt;span&gt;{{ __($w['written'], ['date' =&gt; $prediction-&gt;created_at-&gt;isoFormat($w['written_format'])]) }}&lt;/span&gt;
+&lt;/p&gt;
+&lt;p class="mt-2 text-xl leading-snug font-bold break-words"&gt;「{{ $prediction-&gt;statement }}」&lt;/p&gt;
+&lt;details class="group clear-both mt-1"&gt;
+  {{-- …（省略）… --}}
+  &lt;dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 pb-3 text-sm"&gt;
+    &lt;dt class="text-muted"&gt;{{ $w['detail']['confidence'] }}&lt;/dt&gt;
+    &lt;dd&gt;{{ __($w['confidence'], ['value' =&gt; $prediction-&gt;confidence]) }}{{ $choice ? '（'.($kid ? $choice['kid'] : $choice['hint']).'）' : '' }}&lt;/dd&gt;
+    {{-- …（省略）… --}}
+    &lt;dd class="break-words"&gt;{{ $prediction-&gt;hypothesis-&gt;body }}&lt;/dd&gt;</code></pre></div>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'written' =&gt; 'この予想を書いたのは :dateだよ',
+'written_format' =&gt; 'M月D日（ddd）H:mm',
+'frozen' =&gt; 'あとから変えられないよ',</code></pre></div>
+      <p>答え合わせをするとき、人は結果に引っぱられて「最初からそう思っていた」と感じやすいものです（<dfn>後知恵</dfn>）。そこで、答えを選ぶカードより上に、<b>書いた日時</b>（<code>created_at</code>）と予想の文をかぎかっこで大きく見せ、鍵の絵と「あとから変えられないよ」を添えます。文と確かさが保存後に変わらない仕組みは <a href="#s6">6章</a> で見ました。</p>
+      <ul>
+        <li>確かさ（自信）・書いた日時（年まで）・確かめる日・見立て・使った屋根裏の知識は、<code>&lt;details&gt;</code>（押すと開く HTML の箱）の「くわしく」の中にたたんであります。いちばん大事な「いつ・何と書いたか」が埋もれないようにするためです。</li>
+        <li>答え合わせが済んでいれば、右上に「確かめた」の丸いはんこ（部品 <code>ui/stamp</code>）を押した形にします。はんこは結果ごとに色と輪の形が違い（当たり＝赤い二重の輪、外れ＝紺の輪、どちらとも言えない＝からし色の輪、前提が崩れた＝灰色の点線の輪）、文字を読まなくてもひと目でわかります。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-resolve-due.png" alt="答え合わせの画面。上に事件 No.2 のなぞ、白い枠に「この予想を書いたのは 10月30日（金）21:30だよ」と予想の文、「あとから変えられないよ」「くわしく」。その下に「実際はどうだった？」の4つの大きなボタンと「結果を保存する」"><figcaption>答え合わせ待ちの画面（スマホ）。上が前に書いた予想、下が「実際はどうだった？」のカード</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>「実際はどうだった？」：4つの大きなボタン（<code>resolve-form</code>）</h4>
+      <p>答え合わせの欄は、いまやることのカード（部品 <code>ui/step-card</code>。事件の画面で使うのと同じ、問いの見出し・中身・主なボタンを1枚にまとめたカード）の形です。</p>
+      <div class="code"><div class="file">src/resources/views/components/case/resolve-form.blade.php</div><pre><code>&lt;form id="resolve-form" method="POST" action="{{ route('predictions.resolve', $prediction) }}" {{ $attributes-&gt;class(['group/resolve']) }}&gt;
+  @csrf
+  &lt;x-ui.step-card icon="check" tone="answer" :title="$w['question']" :hint="$w['question_hint']"&gt;
+    {{-- …（省略）… --}}
+        {{-- 結果を1つずつ取り出し、はんこの形の輪と言葉の大きなボタンにする --}}
+        @foreach (\App\Enums\PredictionResult::cases() as $result)
+          &lt;label class="group/opt cursor-pointer"&gt;
+            &lt;input type="radio" name="result" value="{{ $result-&gt;value }}" class="peer sr-only" required @checked($picked === $result-&gt;value)&gt;
+            {{-- …（省略）… --}}
+              &lt;span class="min-w-0 text-base leading-snug font-bold [word-break:auto-phrase]"&gt;{{ $kid ? $result-&gt;kidLabel() : $result-&gt;label($scene) }}&lt;/span&gt;
+            {{-- …（省略）… --}}
+        @endforeach</code></pre></div>
+      <ul>
+        <li><code>@csrf</code>：フォームに合言葉（CSRF のしるし）を入れます（<a href="#s11">11章</a>）。</li>
+        <li>ボタンの正体は、見えなくした（<code>sr-only</code>）ラジオボタンと、それを包む大きな札です。札を押すとラジオボタンが選ばれ、CSS の <code>peer-checked</code>（「となりのラジオボタンが選ばれていたら」）で、はんこと同じ色に塗られます。<code>@checked($picked === …)</code> で、入力の誤りで画面に戻ったときも選んだまま戻ります。</li>
+        <li>4つのボタンは、列挙 <code>PredictionResult</code> の値を <code>cases()</code> で1つずつ取り出して作ります。</li>
+      </ul>
+      <p><dfn>列挙（enum）</dfn>は「この中のどれか」と値を決めておく型です。たとえると、答えの欄に4つの選択肢がはじめから印刷してあるマークシートです。</p>
+      <div class="code"><div class="file">src/app/Enums/PredictionResult.php</div><pre><code>case Hit = 'hit';
+case Miss = 'miss';
+case Unclear = 'unclear';
+case Void = 'void';</code></pre></div>
+      <p>ボタンの言葉（<code>label()</code>）は、列挙の共通部品 <code>HasLabel</code> が設定ファイルの言葉を引きます。場面を渡すとその場面の言い方に、<code>kidLabel()</code> なら子ども向けの言い方になります。</p>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'prediction_result' =&gt; ['hit' =&gt; '当たり', 'miss' =&gt; '外れ', 'unclear' =&gt; 'どちらとも言えない', 'void' =&gt; '前提が崩れた'],
+'miss_reason' =&gt; [
+    'few_clues' =&gt; '手がかりが足りなかった',
+    'single_hypothesis' =&gt; '見立てが1つだけだった',
+    'assumption' =&gt; '思い込みがあった',
+    'wrong_check' =&gt; '確かめ方がずれていた',
+    'chance' =&gt; '偶然',
+],</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>選んだ結果に合わせて、次の欄だけを出す（JavaScript なし）</h4>
+      <div class="code"><div class="file">src/resources/views/components/case/resolve-form.blade.php</div><pre><code>{{-- どちらとも言えない・前提が崩れた を選んだときだけ、当たり外れに数えないことを出す --}}
+&lt;p class="mt-2 hidden text-sm text-muted group-has-[input[name=result][value=unclear]:checked]/resolve:block group-has-[input[name=result][value=void]:checked]/resolve:block"&gt;{{ $w['not_counted'] }}&lt;/p&gt;
+{{-- …（省略）… --}}
+{{-- 「外れ」を選んだときだけ、どこで見落としたかを選ぶ欄を出す --}}
+&lt;div class="hidden rounded-xl bg-clue-soft p-3 group-has-[input[name=result][value=miss]:checked]/resolve:block"&gt;
+  &lt;x-ui.choices name="miss_reason" :label="$kid ? \App\Support\Label::kidWord('miss_reason') : $w['miss_label']"
+    :options="$kid ? config('suiri.labels.kid.miss_reason') : \App\Enums\MissReason::options($scene)" :hint="$w['miss_hint']" /&gt;
+&lt;/div&gt;
+{{-- どれかの結果を選んだら、ひとことメモの欄を出す（書かなくても保存できる） --}}
+&lt;div class="hidden group-has-[input[name=result]:checked]/resolve:block"&gt;
+  &lt;x-ui.textarea name="result_note" :label="$w['note_label']" rows="2" :maxlength="config('suiri.limits.result_note')" :placeholder="$w['note_placeholder']" /&gt;
+&lt;/div&gt;
+
+&lt;x-slot:action&gt;
+  &lt;x-ui.big-button tone="answer" icon="check"&gt;{{ $w['save'] }}&lt;/x-ui.big-button&gt;
+&lt;/x-slot:action&gt;</code></pre></div>
+      <ul>
+        <li>はじめは、4つのボタンと「結果を保存する」しか見えません。ほかの欄はふだん <code>hidden</code>（隠す）です。</li>
+        <li>CSS の <code>:has</code>（「中にこういう要素を持っているか」で見た目を変える書き方）を使い、フォーム（<code>group/resolve</code>）の中でどのラジオボタンが選ばれているかで <code>block</code>（見せる）に切り替えます。
+          <ul>
+            <li><b>外れ</b>を選んだときだけ：「どこで見落とした？」の5つの札（列挙 <code>MissReason</code>）と「外れは、次の推理の材料だよ。」</li>
+            <li><b>どちらとも言えない・前提が崩れた</b>を選んだときだけ：「この2つは、当たり外れに数えないよ。」（確かさの答え合わせの数え方。<a href="#s10">10章</a>）</li>
+            <li><b>どれかを選んだら</b>：「ひとことメモ（書けたら）」の欄</li>
+          </ul>
+        </li>
+        <li>選ぶ前に欄を全部見せないのは、ここでも「いまやること（結果を1つ選ぶ）」をはっきりさせるためです。たとえると、「外れ」と答えた人にだけ「どこで？」と聞き返す、聞き上手な問い方です。</li>
+        <li>主なボタン「結果を保存する」はカードの下に横いっぱいに置き、フォームの下には、ほかの人がわかる情報を書かないよう注意書き（<code>ui/privacy-note</code>）を必ず置きます。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-resolve-pick-miss.png" alt="答え合わせで「外れ」を選んだところ。外れのボタンが紺で塗られ、「どこで見落とした？」の5つの札と「外れは、次の推理の材料だよ。」、ひとことメモの欄、「結果を保存する」"><figcaption>「外れ」を選ぶと、「どこで見落とした？」とメモの欄が現れる（スマホ）</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>結果を選んで「結果を保存する」を押す</h4>
+      <p>たとえば「外れ」を押すと「どこで見落とした？」が現れ、「思い込みがあった」を選び、メモを書いて送ります。</p>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>送る：<code>POST /predictions/{prediction}/result</code></li>
+        <li>送る：<code>_token</code>・<code>result=miss</code>・<code>miss_reason=assumption</code>・<code>result_note</code>（例：お知らせはどこにもなかった）</li>
+      </ul></div>
+      <figure class="shot"><img data-img="screen-resolve-desktop.png" alt="答え合わせの画面（パソコン）。左に縦のナビ、中央に前に書いた予想の枠と「実際はどうだった？」のカード（4つのボタンが2列）"><figcaption>パソコンで開いたとき。左にナビ、中央に同じ順で並ぶ</figcaption></figure>
+    </li>
+  </ol>
+
+  <h3>結果を保存する</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>住所の表と見張り役：書き込みなので回数制限つき</h4>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>Route::post('/predictions/{prediction}/result', ResolvePredictionController::class)-&gt;can('update', 'prediction')-&gt;name('predictions.resolve');</code></pre></div>
+      <p>こちらは <code>throttle:writes</code> の囲みの中です。Laravel に並びを出させると、<code>EncryptCookies</code> → <code>AddQueuedCookiesToResponse</code> → <code>StartSession</code> → <code>ShareErrorsFromSession</code> → <code>PreventRequestForgery</code>（合言葉）→ <code>Authenticate</code> → <code>ThrottleRequests:writes</code>（1分に60回まで）→ <code>SubstituteBindings</code> → <code>EnsureAgreed</code> → <code>Authorize:update,prediction</code> の順でした。答え合わせは予想の行に書き込むことなので、持ち主かを <code>update</code> の権利で確かめます（<code>PredictionPolicy</code>。中身は同じ <code>OwnerOnly</code>）。手がかりや見立ての <code>write</code>（捜査中の事件だけ）とちがい、事件が閉じていても答え合わせはできます。確かめる日を待たずに事件を閉じても、待っている予想の結果を残せるように（残さないと、ノーベリ帳と確かさの集計に入らない）するためです。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>形の検証 <code>ResolvePredictionRequest</code>：答え合わせは1回だけ</h4>
+      <div class="code"><div class="file">src/app/Http/Requests/Cases/ResolvePredictionRequest.php</div><pre><code>/** 答え合わせ待ちの予想かを確かめる（持ち主かはルートで確かめ済み） */
+public function authorize(): bool
+{
+    return $this-&gt;route('prediction')-&gt;isPending();
+}
+
+/** 送る前に、一言の前後の空白を取る */
+protected function prepareForValidation(): void
+{
+    $this-&gt;merge(['result_note' =&gt; trim((string) $this-&gt;input('result_note'))]);
+}
+
+/** 項目ごとの決まり */
+public function rules(): array
+{
+    return [
+        'result' =&gt; ['required', Rule::enum(PredictionResult::class)],
+        'result_note' =&gt; ['nullable', 'string', 'max:'.config('suiri.limits.result_note')],
+        'miss_reason' =&gt; ['nullable', 'required_if:result,'.PredictionResult::Miss-&gt;value, Rule::enum(MissReason::class)],
+    ];
+}
+// …（省略）…
+/** 外れのときに原因がなかった場合のエラーの文 */
+public function messages(): array
+{
+    return ['miss_reason.required_if' =&gt; '外れたときは、何を見落としたかを選んでください。'];
+}</code></pre></div>
+      <ul>
+        <li><b>authorize</b>：答え合わせ待ち（<code>isPending()</code>＝結果がなく、取り下げてもいない）のときだけ通します。もう答え合わせした予想に別の結果を送り直したり、取り下げた予想に送ったりすると「403」です。結果を知ったあとで何度も選び直せないようにするためです。</li>
+        <li><b>result</b>：必ず要る。<code>Rule::enum</code> で、列挙の4つの値（<code>hit</code>・<code>miss</code>・<code>unclear</code>・<code>void</code>）のどれかだけを受け付けます。画面のボタンにも <code>required</code> を付けていますが、ブラウザの確かめは書きかえられるので、サーバーでも必ず確かめます。</li>
+        <li><b>result_note</b>（メモ）：なくてもよい。前後の空白を取って300字まで。</li>
+        <li><b>miss_reason</b>（どこで見落とした？）：<code>required_if:result,miss</code> で、「結果が外れのときだけ必ず要る」。値は列挙 <code>MissReason</code> の5つのどれか。選ばずに外れを送ると、<code>messages()</code> の文が欄の下に出て、画面に戻ります（選んだ結果は <code>old()</code> で選ばれたまま戻る）。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>ResolvePredictionController</code>：用事に頼んで、同じ画面へ戻す</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/ResolvePredictionController.php</div><pre><code>/** 答え合わせを記録して、答え合わせの画面へ戻す */
+public function __invoke(ResolvePredictionRequest $request, Prediction $prediction, ResolvePrediction $resolve): RedirectResponse
+{
+    $resolve-&gt;handle($prediction, $request-&gt;validated());
+
+    return redirect()-&gt;route('predictions.show', $prediction)-&gt;with('status', config('suiri.resolve.saved'));
+}</code></pre></div>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'saved' =&gt; '答え合わせしたよ。はんこを押しておいたね。', // 保存したときのお知らせ（確かめるやることも済みになる）</code></pre></div>
+      <p>1つの用だけの受付なので、関数は <code>__invoke</code> だけです。用事 <code>ResolvePrediction</code> に確かめ済みの入力を渡し、終わったら答え合わせの画面（同じ住所）へ戻します。お知らせの文も設定ファイルから引きます。戻った画面は「答え合わせ済み」の形で出ます。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>用事 <code>ResolvePrediction</code>：鍵をかけて読み直してから、結果を書く（文と確かさには触らない）</h4>
+      <div class="code"><div class="file">src/app/Actions/Cases/ResolvePrediction.php</div><pre><code>public function handle(Prediction $prediction, array $data): bool
+{
+    $result = PredictionResult::from($data['result']);
+
+    return DB::transaction(function () use ($prediction, $data, $result) {
+        // 保存されている今の状態を、ほかの書き込みを待たせて読み直す（同時の取り下げや二重の送信と食い違わないように）
+        $current = Prediction::whereKey($prediction-&gt;getKey())-&gt;lockForUpdate()-&gt;first();
+
+        // もう答え合わせ済み・取り下げ済み（または消えた）なら、何もしない（先に書いた結果を上書きしない）
+        if ($current === null || ! $current-&gt;isPending()) {
+            return false;
+        }
+
+        $prediction-&gt;update([
+            'result' =&gt; $result,
+            'result_note' =&gt; $data['result_note'] ?? null,
+            'miss_reason' =&gt; $result-&gt;isMiss() ? $data['miss_reason'] : null, // 外れのときだけ原因を残す
+            'resolved_at' =&gt; now(),
+        ]);</code></pre></div>
+      <ul>
+        <li><code>PredictionResult::from('miss')</code>：送られた文字を列挙の値（<code>PredictionResult::Miss</code>）に変えます。</li>
+        <li><code>DB::transaction</code>：中の書き込みを「全部するか、全部しないか」のひとまとまりにします（<dfn>トランザクション</dfn>）。途中で失敗したら、それまでの書き込みも取り消されます。</li>
+        <li><code>lockForUpdate()</code>：予想の行に鍵をかけて、データベースから読み直します。検証の係（<code>ResolvePredictionRequest</code>）が「答え合わせ待ち」を確かめたあとに、別のタブで取り下げられたり、同じ送信が二重に届いたりしても、あとから来たほうはこの鍵が外れるのを待ち、読み直した行がもう答え合わせ待ちでなければ何もせず <code>false</code> を返します。先に書いた結果が残ります（取り下げの用事 <code>WithdrawPrediction</code> と同じ形）。</li>
+        <li>書くのは、結果・メモ・見落とし・答え合わせした日時（<code>resolved_at</code>）だけです。</li>
+        <li><code>miss_reason</code> は外れのときだけ残します。「どちらとも言えない」で原因が送られてきても、<code>null</code> にして捨てます（ノーベリ帳の数え方を食い違わせないため）。</li>
+        <li>文（<code>statement</code>）と確かさ（<code>confidence</code>）には触らないので、モデルの <code>updating</code> の見張り（<a href="#s6">6章</a>）を通って保存されます。</li>
+      </ul>
+      <div class="code"><div class="file">src/app/Enums/PredictionResult.php</div><pre><code>/** 外れ（ノーベリ帳に載る結果）かを返す */
+public function isMiss(): bool
+{
+    return $this === self::Miss;
+}</code></pre></div>
+      <div class="data"><b>このとき動くデータ</b><ul><li>書く：<code>predictions</code> のこの行（<code>result='miss'</code>・<code>result_note</code>・<code>miss_reason='assumption'</code>・<code>resolved_at</code>）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>確かめるタスクを済みにする（カレンダーにも伝わる）</h4>
+      <p>同じトランザクションの中で、予想から作った確かめるタスク（<a href="#s6">6章</a>）を済みにします。</p>
+      <div class="code"><div class="file">src/app/Actions/Cases/ResolvePrediction.php</div><pre><code>$task = $prediction-&gt;task;
+// 確かめるタスクがまだ済んでいなければ、完了にする（カレンダーにも見張り役が知らせる）
+if ($task !== null &amp;&amp; ! $task-&gt;isDone()) {
+    $task-&gt;update(['done_at' =&gt; now()]);
+}
+$prediction-&gt;caseFile-&gt;touch();</code></pre></div>
+      <ul>
+        <li><code>$prediction-&gt;task</code>：モデルの <code>task()</code>（<code>hasOne</code>＝この予想に1つだけつながるタスク）で、<code>tasks.prediction_id</code> がこの予想の行を読みます。</li>
+        <li>まだ済んでいなければ <code>done_at</code>（済んだ日時）を入れます。確かめるタスクは丸を押して済みにできない決まり（タスクの一覧では、丸の代わりに押せない点線の丸と虫めがねの印を出し、「答え合わせをすると、済むよ」と添える。<a href="#s3">3章</a>）なので、済みになる道はここだけです。</li>
+        <li><code>caseFile-&gt;touch()</code>：事件の「最後に動いた日時」を今にします。</li>
+      </ul>
+      <p>タスクを直したので、見張り係 <code>TaskObserver</code> の <code>updated</code> が動きます。</p>
+      <div class="code"><div class="file">src/app/Observers/TaskObserver.php</div><pre><code>/** 予定の中身に関わる列。これ以外（メモ・かかった時間など）だけが変わったときは書き出さない */
+private const SENT_COLUMNS = ['title', 'due_on', 'starts_at', 'duration_minutes', 'done_at', 'kind', 'prediction_id'];
+// …（省略）…
+public function updated(Task $task): void
+{
+    // 予定に出る列が変わっていなければ、書き出さない
+    if (! $task-&gt;wasChanged(self::SENT_COLUMNS)) {
+        return;
+    }
+
+    $this-&gt;push($task);
+}</code></pre></div>
+      <p><code>done_at</code> は予定の中身に関わる列なので、カレンダーとつないでいる人なら、書き出しの仕事 <code>PushTaskToCalendar</code> を（トランザクションの確定のあとに）積みます。専用カレンダーの予定が「済んだ」形に書きかわります（<a href="#s9">9章</a>）。</p>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>書く：<code>tasks</code> の確かめるタスクの行（<code>done_at</code>）</li>
+        <li>書く：<code>case_files</code> のこの事件の <code>updated_at</code></li>
+        <li>書く（つないでいる人だけ・確定のあと）：<code>jobs</code> に書き出しの仕事1件</li>
+      </ul></div>
+    </li>
+  </ol>
+
+  <h3>保存したあと：はんこと次の一手</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>同じ画面に戻ると、「確かめた」のはんこが押してある（<code>resolve-result</code>）</h4>
+      <p>転送で答え合わせの画面をもう一度開くと、予想はもう答え合わせ待ちではないので、前に書いた予想の右上にはんこが押され（<code>prediction-original</code> の <code>isResolved()</code>）、カードの代わりに結果の部品 <code>resolve-result</code> が出ます（骨組みの出し分け）。</p>
+      <div class="code"><div class="file">src/resources/views/components/case/resolve-result.blade.php</div><pre><code>&lt;p class="text-sm font-semibold text-answer"&gt;{{ __($w['resolved_on'], ['date' =&gt; $prediction-&gt;resolved_at?-&gt;isoFormat('M月D日（ddd）')]) }}&lt;/p&gt;
+{{-- 外れの原因が選んであれば出す --}}
+@if ($prediction-&gt;miss_reason)
+{{-- …（省略）… --}}
+{{-- 外れなら、ノーベリ帳に入ったことを知らせる（画面があれば開くリンクも） --}}
+@if ($result-&gt;isMiss())
+  &lt;x-ui.hint icon="norbury" tone="clue"&gt;
+    {{ __($w['norbury'], ['book' =&gt; $book]) }}
+    {{-- ノーベリ帳の画面があれば、開くリンクを置く --}}
+    @if (Route::has('norbury.index'))
+      &lt;a href="{{ route('norbury.index') }}" class="font-semibold"&gt;{{ __($w['norbury_open'], ['book' =&gt; $book]) }}&lt;/a&gt;
+    @endif
+  &lt;/x-ui.hint&gt;
+@endif</code></pre></div>
+      <ul>
+        <li>「10月31日（土）に確かめたよ」と、見落とし・メモがあればその下に。</li>
+        <li>外れなら、吹き出し（部品 <code>ui/hint</code>）で「この外れは『ノーベリ帳』に入ったよ。名探偵も外すよ。直せるのが強さだよ。」と知らせ、ノーベリ帳へのリンクを置きます。外れを責めずに、次の推理の材料として残す、という考え方です。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-resolve-miss.png" alt="答え合わせを済ませたあと・外れ。紺の丸いはんこ「確かめた 外れ」、「どこで見落とした？ 思い込みがあった」とメモ、吹き出し「この外れは『ノーベリ帳』に入ったよ。…ノーベリ帳を開く」、「事件にもどる」"><figcaption>外れを保存したあと（スマホ）。はんこ・見落とし・ノーベリ帳の吹き出し</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>次の一手：結果に合わせて、見立ての直しを1つだけ勧める</h4>
+      <p>結果の下に、次の一手を1つだけ大きく出します。何を勧めるかは、結果から決めます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case/resolve-result.blade.php</div><pre><code>@php($suggest = match ($result) { \App\Enums\PredictionResult::Hit =&gt; \App\Enums\HypothesisStatus::Confirmed, \App\Enums\PredictionResult::Miss =&gt; \App\Enums\HypothesisStatus::Eliminated, default =&gt; null })
+{{-- …（省略）… --}}
+{{-- 結果に合う見立ての状態があり、まだその状態でなければ見立ての直しを、外れ以外で続けられるなら新しい予想を、それ以外は事件に戻るボタンを出す --}}
+@if ($suggest !== null &amp;&amp; $hypothesis-&gt;status !== $suggest &amp;&amp; $case-&gt;isOpen())
+  @php($status = $kid ? $suggest-&gt;kidLabel() : $suggest-&gt;label())
+  &lt;form method="POST" action="{{ route('hypotheses.update', $hypothesis) }}"&gt;
+    @csrf
+    @method('PATCH')
+    {{-- …（省略）… --}}
+        &lt;x-ui.big-button tone="hypothesis" name="status" :value="$suggest-&gt;value"&gt;{{ __($w['suggest_button'], ['status' =&gt; $status]) }}&lt;/x-ui.big-button&gt;
+    {{-- …（省略）… --}}
+      &lt;x-slot:later&gt;&lt;a href="{{ route('cases.show', $case) }}" class="inline-flex min-h-11 items-center"&gt;{{ $w['suggest_keep'] }}&lt;/a&gt;&lt;/x-slot:later&gt;
+    {{-- …（省略）… --}}
+@elseif ($suggest === null &amp;&amp; $case-&gt;isOpen() &amp;&amp; ! $hypothesis-&gt;isEliminated())
+  {{-- …（省略）… --}}
+      &lt;x-ui.big-button tone="prediction" icon="arrow" :href="route('cases.show', ['case' =&gt; $case, 'open' =&gt; 'predict-'.$hypothesis-&gt;id])"&gt;{{ $w['again_button'] }}&lt;/x-ui.big-button&gt;
+  {{-- …（省略）… --}}
+@else
+  &lt;x-ui.big-button tone="secondary" :href="route('cases.show', $case)"&gt;{{ $w['back_button'] }}&lt;/x-ui.big-button&gt;
+@endif</code></pre></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>結果</th><th>次の一手</th></tr></thead>
+        <tbody>
+          <tr><td>当たり（見立てがまだ「当たり」でない）</td><td>カード「見立てを『当たり』にする？」と見立ての本文、「『当たり』にする」（<code>Confirmed</code>）。下に小さく「このままにして事件にもどる」</td></tr>
+          <tr><td>外れ（見立てがまだ「消えた」でない）</td><td>「見立てを『消えた』にする？」（<code>Eliminated</code>。同じ形）</td></tr>
+          <tr><td>どちらとも言えない・前提が崩れた</td><td>「もう一度、予想してみる？」と「新しい予想を立てる」（<code>?open=predict-12</code> で、その見立ての予想のカードを開いた事件の画面へ。<a href="#s6">6章</a>）</td></tr>
+          <tr><td>どれにも当たらない（見立てがもうその状態・消えた見立て・閉じた事件）</td><td>「事件にもどる」だけ</td></tr>
+        </tbody>
+      </table></div>
+      <ul>
+        <li><code>match</code>：値に合わせて1つを選ぶ PHP の書き方です。当たり → 「当たり」、外れ → 「消えた」、ほか → なし（<code>null</code>）。</li>
+        <li>勧めるのは、事件が捜査中で、見立てがまだその状態になっていないときだけです。</li>
+        <li>勧めるだけで、勝手には変えません。押すかどうかは本人が決めます（「このままにして事件にもどる」もある）。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-resolve-hit.png" alt="答え合わせを済ませたあと・当たり。予想の枠の右上に赤い丸いはんこ「確かめた 当たり」、「10月31日（土）に確かめたよ」とメモ、からし色のカード「見立てを『当たり』にする？」と見立ての本文、「『当たり』にする」"><figcaption>当たりを保存したあと（スマホ）。次の一手は「見立てを『当たり』にする？」の1枚だけ</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>「当たり」にする・「消えた」にする → 考えを変えた記録が残る</h4>
+      <p>「『消えた』にする」を押すと、<code>PATCH /hypotheses/{hypothesis}</code> に <code>status=eliminated</code> が送られます（フォームは POST で、<code>@method('PATCH')</code> の隠し欄で PATCH を表す。ボタンの <code>name="status"</code> と <code>:value</code> が、押したボタンの値として送られる）。</p>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>Route::patch('/hypotheses/{hypothesis}', [HypothesisController::class, 'update'])-&gt;can('write', 'hypothesis')-&gt;name('hypotheses.update');</code></pre></div>
+      <p>見張り役は、結果を保存したときと同じ並びで、最後が <code>can:write,hypothesis</code>（持ち主で、事件が捜査中か）です。だから、事件を閉じたあとの答え合わせの画面には、このボタンを出していません。形の検証 <code>UpdateHypothesisRequest</code> は「本文か状態のどちらかが要る」（<code>required_without</code>）で、状態は列挙 <code>HypothesisStatus</code> の値だけを受け付けます。</p>
+      <div class="code"><div class="file">src/app/Http/Requests/Cases/UpdateHypothesisRequest.php</div><pre><code>'body' =&gt; ['required_without:status', 'string', 'max:'.config('suiri.limits.hypothesis_body')],
+'status' =&gt; ['required_without:body', Rule::enum(HypothesisStatus::class)],</code></pre></div>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/HypothesisController.php</div><pre><code>// 状態が送られていれば、状態を変えて記録を残す
+if ($request-&gt;has('status')) {
+    $changeStatus-&gt;handle($hypothesis, HypothesisStatus::from($request-&gt;validated('status')));
+}
+
+return $this-&gt;backToCase($hypothesis-&gt;caseFile, '見立てを直しました。', [$hypothesis-&gt;body], 'hyp-'.$hypothesis-&gt;id, $this-&gt;turnOf($hypothesis));</code></pre></div>
+      <div class="code"><div class="file">src/app/Actions/Cases/ChangeHypothesisStatus.php</div><pre><code>public function handle(Hypothesis $hypothesis, HypothesisStatus $to): bool
+{
+    $from = $hypothesis-&gt;status;
+    // 同じ状態を選んだだけなら、記録を増やさない
+    if ($from === $to) {
+        return false;
+    }
+
+    DB::transaction(function () use ($hypothesis, $from, $to) {
+        $hypothesis-&gt;update(['status' =&gt; $to]);
+        $hypothesis-&gt;statusLogs()-&gt;create([
+            'user_id' =&gt; $hypothesis-&gt;user_id,
+            'from_status' =&gt; $from,
+            'to_status' =&gt; $to,
+        ]);
+        $hypothesis-&gt;caseFile-&gt;touch();
+    });
+
+    return true;
+}</code></pre></div>
+      <ul>
+        <li>見立ての状態を書きかえ、同じトランザクションで「考えを変えた記録」（<code>hypothesis_status_logs</code> 表）に、前の状態と新しい状態を1行残します。</li>
+        <li>この記録は、週のふりかえりの「考えを変えた」回数に数えられます（<a href="#s10">10章</a>）。考えを変えることを、よいこととして数えるための記録です。</li>
+        <li>終わったら、受付は事件の画面へ戻します（<code>backToCase</code>）。事件の画面は「いまの一手」を決め直すので、カードが次の段に変わります。たとえば見立てが「当たり」になり、ほかに答え合わせ待ちの予想がなければ「事件を閉じる？」のカード（<code>NextStep</code> の <code>close</code>）、外れで見立てが「消えた」になれば、残っている見立てから予想を立てるカード、全部消えたら「見立てを足す」カードです。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>書く：<code>hypotheses</code> のこの行（<code>status</code>）</li>
+        <li>書く：<code>hypothesis_status_logs</code> に1行（<code>from_status</code>・<code>to_status</code>・<code>user_id</code>）</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>外れはノーベリ帳へ：別の表には写さず、予想の行をそのまま読む</h4>
+      <p>「ノーベリ帳に入ったよ」といっても、別の表に行を写すわけではありません。ノーベリ帳の画面（<a href="#s10">10章</a>）は、予想の表から「結果が外れの行」を読むだけです。</p>
+      <div class="code"><div class="file">src/app/Queries/Review/NorburyQuery.php</div><pre><code>public function misses(User $user): LengthAwarePaginator
+{
+    return $user-&gt;predictions()
+        -&gt;where('result', PredictionResult::Miss-&gt;value)
+        -&gt;with('caseFile:id,user_id,title,scene')
+        -&gt;latest('resolved_at')-&gt;latest('id')
+        -&gt;paginate(config('suiri.review.norbury_per_page'));
+}</code></pre></div>
+      <p>確かさの答え合わせ（「70％ と書いた予想は、本当に7割くらい当たっているか」）も、同じ予想の行の <code>confidence</code> と <code>result</code> を読みます。数えるのは当たりと外れだけで、取り下げた予想は外します。</p>
+      <div class="code"><div class="file">src/app/Services/Review/Calibration.php</div><pre><code>$query = $user-&gt;predictions()
+    -&gt;whereIn('result', [PredictionResult::Hit-&gt;value, PredictionResult::Miss-&gt;value])
+    -&gt;whereNull('withdrawn_at');</code></pre></div>
+      <div class="point"><b>ここが大事</b>答え合わせの記録が1か所（<code>predictions</code> の行）にしかないので、ノーベリ帳・確かさの答え合わせ・今日の画面の「答え合わせしよう」・事件の画面のカードが食い違いません。だからこそ、答え合わせは1回だけ（<code>isPending</code> の確かめ）、文と確かさは書き換えない（<a href="#s6">6章</a>）、答え合わせ済みは取り下げられない、という守りが効いてきます。</div>
+    </li>
+  </ol>
+
+  <div class="recap"><b>この章のまとめ</b><ol>
+    <li>確かめる日が来ると、今日の画面のいちばん上のカード（<code>DuePredictionsQuery</code> のいちばん古い1件）と、事件の画面の1枚だけのカード（<code>NextStep</code> がいちばん先に確かめる）が「答え合わせ」になる。確かめるタスクの行・カレンダーの予定・待つカードの「先に答え合わせをする」からも来られる。</li>
+    <li><code>GET /predictions/{prediction}</code> は持ち主だけ（<code>PredictionPolicy</code> の <code>view</code>）。画面は、書いた日時と予想の文を「あとから変えられないよ」と大きく上に見せ、ほかは「くわしく」にたたむ。</li>
+    <li>「実際はどうだった？」は4つの大きなボタン（当たり・外れ・どちらとも言えない・前提が崩れた）。外れのときだけ「どこで見落とした？」が CSS の <code>:has</code> で現れ、サーバーでも <code>required_if</code> で必須にする。</li>
+    <li><code>ResolvePredictionRequest</code> は答え合わせ待ちの予想だけを受け付ける（2回目・取り下げ後は 403）。</li>
+    <li><code>ResolvePrediction</code> が、1つのトランザクションで結果を書き、確かめるタスクを済みにする。<code>TaskObserver</code> がカレンダーへの書き出しを積む。</li>
+    <li>保存すると「確かめた」のはんこが押され、結果に合わせた次の一手を1つだけ出す（当たり → 「当たり」、外れ → 「消えた」、ほか → 新しい予想）。押すと <code>ChangeHypothesisStatus</code> が「考えを変えた記録」を残し、事件の画面のカードが次の段に変わる。</li>
+    <li>ノーベリ帳と確かさの答え合わせは、同じ予想の行を読むだけ（<a href="#s10">10章</a>）。</li>
+  </ol></div>
+</section>

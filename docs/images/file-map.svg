@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 690" width="1000" height="690" font-family="'Hiragino Sans','Noto Sans JP','Yu Gothic',sans-serif">
+  <title>推理手帳のフォルダの地図</title>
+  <rect width="1000" height="690" fill="#ffffff"/>
+  <text x="30" y="42" font-size="22" font-weight="bold" fill="#1e2a4a">推理手帳のフォルダの地図（どこに何があるか）</text>
+
+  <!-- 左：プロジェクト直下 -->
+  <text x="30" y="96" font-size="16" font-weight="bold" fill="#1e2a4a">プロジェクト直下（suiri-techo/）</text>
+  <g font-size="13" fill="#4a5263">
+    <rect x="30" y="110" width="330" height="80" rx="6" fill="#f4f1ea" stroke="#b9b09a"/>
+    <text x="46" y="136" font-size="15" font-weight="bold" fill="#1e2a4a">docker-compose.yml</text>
+    <text x="46" y="158">4つの箱（app・worker・web・db）の</text>
+    <text x="46" y="177">設計図。番号は .env の WEB_LISTEN・DB_PORT</text>
+
+    <rect x="30" y="202" width="330" height="80" rx="6" fill="#f4f1ea" stroke="#b9b09a"/>
+    <text x="46" y="228" font-size="15" font-weight="bold" fill="#1e2a4a">infra/</text>
+    <text x="46" y="250">箱の中身の設定</text>
+    <text x="46" y="269">（PHP・nginx・MySQL）</text>
+
+    <rect x="30" y="294" width="330" height="80" rx="6" fill="#f4f1ea" stroke="#b9b09a"/>
+    <text x="46" y="320" font-size="15" font-weight="bold" fill="#1e2a4a">.claude/</text>
+    <text x="46" y="342">AI への分野ごとの決まり（rules）と</text>
+    <text x="46" y="361">フックの設定（settings.json）</text>
+
+    <rect x="30" y="386" width="330" height="80" rx="6" fill="#f4f1ea" stroke="#b9b09a"/>
+    <text x="46" y="412" font-size="15" font-weight="bold" fill="#1e2a4a">bin/・.githooks/</text>
+    <text x="46" y="434">決まりを機械で確かめる bin/check と、</text>
+    <text x="46" y="453">それを呼ぶ見張り（フック）</text>
+
+    <rect x="30" y="478" width="330" height="80" rx="6" fill="#f4f1ea" stroke="#b9b09a"/>
+    <text x="46" y="504" font-size="15" font-weight="bold" fill="#1e2a4a">docs/・tools/docs-html/</text>
+    <text x="46" y="526">説明書（この本・設計書・調査）と、</text>
+    <text x="46" y="545">1つの HTML にまとめる道具</text>
+
+    <rect x="30" y="570" width="330" height="80" rx="6" fill="#f4f1ea" stroke="#b9b09a"/>
+    <text x="46" y="596" font-size="15" font-weight="bold" fill="#1e2a4a">CLAUDE.md・README.md</text>
+    <text x="46" y="618">AI と人の入口の案内</text>
+    <text x="46" y="637">（AGENTS.md は CLAUDE.md と同じ中身）</text>
+  </g>
+
+  <!-- 右：src -->
+  <rect x="390" y="70" width="580" height="600" rx="8" fill="#fbfaf6" stroke="#1e2a4a" stroke-width="2"/>
+  <text x="406" y="96" font-size="16" font-weight="bold" fill="#a3352b">src/（アプリ本体。箱の中では /data）</text>
+
+  <g font-size="12.5" fill="#4a5263">
+    <rect x="405" y="110" width="250" height="80" rx="6" fill="#ffffff" stroke="#b9b09a"/>
+    <text x="419" y="134" font-size="14" font-weight="bold" fill="#1e2a4a">routes/　住所の表</text>
+    <text x="419" y="155">web.php は読み込むだけ</text>
+    <text x="419" y="174">中身は web/{機能}.php</text>
+
+    <rect x="405" y="202" width="250" height="80" rx="6" fill="#ffffff" stroke="#b9b09a"/>
+    <text x="419" y="226" font-size="14" font-weight="bold" fill="#1e2a4a">config/　設定値と文言</text>
+    <text x="419" y="247">suiri.php・watson.php</text>
+    <text x="419" y="266">legal.php（ほかは雛形）</text>
+
+    <rect x="405" y="294" width="250" height="80" rx="6" fill="#ffffff" stroke="#b9b09a"/>
+    <text x="419" y="318" font-size="14" font-weight="bold" fill="#1e2a4a">resources/　画面</text>
+    <text x="419" y="339">views（画面と部品）</text>
+    <text x="419" y="358">css・js（Vite でビルド）</text>
+
+    <rect x="405" y="386" width="250" height="80" rx="6" fill="#ffffff" stroke="#b9b09a"/>
+    <text x="419" y="410" font-size="14" font-weight="bold" fill="#1e2a4a">database/　表とデータ</text>
+    <text x="419" y="431">migrations・factories</text>
+    <text x="419" y="450">seeders・data/guide（教材）</text>
+
+    <rect x="405" y="478" width="250" height="80" rx="6" fill="#ffffff" stroke="#b9b09a"/>
+    <text x="419" y="502" font-size="14" font-weight="bold" fill="#1e2a4a">tests/　自動テスト</text>
+    <text x="419" y="523">Feature（機能ごと）</text>
+    <text x="419" y="542">Unit（係ごと）</text>
+
+    <rect x="405" y="570" width="250" height="80" rx="6" fill="#ffffff" stroke="#b9b09a"/>
+    <text x="419" y="594" font-size="14" font-weight="bold" fill="#1e2a4a">bootstrap/・public/ ほか</text>
+    <text x="419" y="615">起動の設定・入口の index.php</text>
+    <text x="419" y="634">lang（日本語の文）・storage</text>
+  </g>
+
+  <!-- app の中 -->
+  <rect x="670" y="110" width="285" height="540" rx="6" fill="#eef1f7" stroke="#1e2a4a"/>
+  <text x="684" y="136" font-size="15" font-weight="bold" fill="#1e2a4a">app/　アプリの中心</text>
+  <line x1="684" y1="148" x2="941" y2="148" stroke="#b9b09a"/>
+  <g font-size="12.5">
+    <g font-family="'SFMono-Regular',Consolas,'Liberation Mono',monospace" fill="#1e2a4a">
+      <text x="684" y="172">Http/Controllers</text>
+      <text x="684" y="202">Http/Requests</text>
+      <text x="684" y="232">Http/Middleware</text>
+      <text x="684" y="262">Policies</text>
+      <text x="684" y="292">Actions</text>
+      <text x="684" y="322">Queries</text>
+      <text x="684" y="352">Services</text>
+      <text x="684" y="382">Contracts</text>
+      <text x="684" y="412">Models</text>
+      <text x="684" y="442">Enums</text>
+      <text x="684" y="472">Observers</text>
+      <text x="684" y="502">Jobs</text>
+      <text x="684" y="532">Providers</text>
+      <text x="684" y="562">Support</text>
+      <text x="684" y="592">Console/Commands</text>
+      <text x="684" y="622">Exceptions</text>
+    </g>
+    <g fill="#4a5263">
+      <text x="822" y="172">受付（薄く）</text>
+      <text x="822" y="202">形の検証</text>
+      <text x="822" y="232">関所</text>
+      <text x="822" y="262">持ち主の確認</text>
+      <text x="822" y="292">用事（1つ1クラス）</text>
+      <text x="822" y="322">画面に出す一覧</text>
+      <text x="822" y="352">外とのやりとり・計算</text>
+      <text x="822" y="382">窓口の約束</text>
+      <text x="822" y="412">表の窓口</text>
+      <text x="822" y="442">種類と状態</text>
+      <text x="822" y="472">見張り役</text>
+      <text x="822" y="502">後回しの仕事</text>
+      <text x="822" y="532">準備係</text>
+      <text x="822" y="562">小さな道具</text>
+      <text x="822" y="592">コマンド</text>
+      <text x="822" y="622">うまくいかないしるし</text>
+    </g>
+  </g>
+</svg>

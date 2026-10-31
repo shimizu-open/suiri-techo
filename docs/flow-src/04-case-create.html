@@ -1,0 +1,824 @@
+<section class="story" id="s4">
+  <h2><span class="no">4</span>事件を作る</h2>
+  <p class="userstory">気になる出来事に出会った人として、それを「なぞ」にして考え始めたい。だから、事件を作る画面で、1問ずつ「何が気になった？」「見たこと・聞いたことを1つ」「どうしてだと思う？」に答えて「事件を作る」を押す。</p>
+  <p class="summary">この章で追う道筋：入口（事件の一覧の「新しい事件を作る」／練習メニューの「この練習を始める」<code>GET /cases/create?origin=practice&amp;practice=…</code>／予定・タスクの「気になる」<code>POST /cases/draft</code> → 転送）→ <code>GET /cases/create</code> → 受付 <code>CaseController::create</code> → 組み立て係 <code>NewCaseDraft::for</code> → 画面 <code>cases/create-steps.blade.php</code>（4つの段を1つのフォームに。<code>stepper.js</code> が1問ずつ見せる・提案のチップ）→ <code>POST /cases</code> → 見張り役（<code>throttle:writes</code>）→ 形の検証 <code>StoreCaseRequest</code> → 受付 <code>CaseController::store</code> → 用事 <code>CreateCase</code>（<code>case_files</code>・<code>clues</code>・<code>hypotheses</code> に書く）→ 転送 <code>/cases/{case}</code> → <code>{case}</code> を事件の行に替える → 権限 <code>CaseFilePolicy::view</code> → 組み立て係 <code>CaseBoardQuery</code>（いまの一手 <code>NextStep</code>・ワトソン・提案）→ 画面 <code>cases/board.blade.php</code>（机の部品 <code>desk</code> が「いまやること」のカードを1枚だけ選ぶ）。終わりに、なぞを直す <code>PATCH</code>・事件を消す <code>DELETE</code>・一覧 <code>GET /cases</code> も見ます。</p>
+
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>入口は3つある</h4>
+      <p><dfn>事件</dfn>は、このアプリの記録の単位です。「気になる出来事」と、その「なぜ？」（<dfn>なぞ</dfn>）を1つの束にしたもので、表では <code>case_files</code>、コードでは <code>CaseFile</code> と呼びます（<code>case</code> は PHP の予約語＝プログラムの文法で使う言葉なので、モデルの名前に使えません）。</p>
+      <p>事件を作る画面へは、3つの道から来ます。</p>
+      <div class="data"><b>3つの入口</b><ul>
+        <li><b>事件の一覧の「新しい事件を作る」</b>：ふつうのリンク。<code>GET /cases/create</code> へ。</li>
+        <li><b>練習メニューの「この練習を始める」</b>：手引きの練習メニュー（<code>GET /guide/practices</code>）から。住所に練習のキーを付けて <code>GET /cases/create?origin=practice&amp;practice=seventeen-steps</code> のように来ます（今日の画面の「きょうの練習」の「やってみる」も同じ住所です。<a href="#s2">2章</a>）。</li>
+        <li><b>予定・タスクの行の「気になる」</b>：今日の画面（<a href="#s2">2章</a>）やタスクを済ませたあと（<a href="#s3">3章</a>）から。いったん <code>POST /cases/draft</code> に送り、そこから <code>GET /cases/create</code> へ転送されます。</li>
+      </ul></div>
+      <p>1つ目のリンクは、事件の一覧のいちばん上にある横いっぱいの大きなボタンです。事件がまだ1つもない人には、代わりに絵と一言と「最初の事件を作ってみよう」のボタンだけの画面を出します。</p>
+      <div class="code"><div class="file">src/resources/views/cases/index.blade.php</div><pre><code>@php($w = config('suiri.case_list'))
+{{-- …（省略）… --}}
+  {{-- 事件がまだ1つもない（場面でしぼってもいない）ときは、空の画面と主なボタンだけを、あれば作るボタンと引き出しを出す --}}
+  @if (array_sum($counts) === 0 &amp;&amp; ! $scene)
+    &lt;x-ui.empty-state icon="sparkle" :title="$w['empty']['none']['title']" :action-href="route('cases.create')" :action-label="$w['empty']['none']['action']"&gt;
+      {{ $w['empty']['none']['body'] }}
+    &lt;/x-ui.empty-state&gt;
+  @else
+    &lt;x-ui.big-button :href="route('cases.create')" icon="plus"&gt;{{ $w['create'] }}&lt;/x-ui.big-button&gt;</code></pre></div>
+      <ul>
+        <li><code>config('suiri.case_list')</code> は、一覧の画面の言葉を集めた設定です（<code>src/config/suiri.php</code>。<code>create</code> は「新しい事件を作る」）。画面の文言をコードに直接書かず、設定に集める決まりです。</li>
+        <li><code>route('cases.create')</code> は、ルート名 <code>cases.create</code> から住所 <code>/cases/create</code> を作る関数です（<a href="#s0">0章</a>）。<code>&lt;x-ui.big-button&gt;</code> は <code>href</code> を渡すとリンク（<code>&lt;a&gt;</code>）になる大きなボタンの部品なので、押すとブラウザは <code>GET /cases/create</code> を送ります。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-cases-empty.png" alt="事件がまだ1つもないときの一覧の画面"><figcaption>事件がまだ1つもないとき（スマホ）。絵と一言と「最初の事件を作ってみよう」だけ</figcaption></figure>
+      <div class="analogy"><b>たとえると</b>捜査ファイルを新しく作る窓口に、「ふらっと来た人」「練習帳を持って来た人」「予定表のメモを持って来た人」の3通りの人が来るようなものです。窓口は1つで、持ってきたものに合わせて用紙の書き出しを変えます。</div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>入口2：練習メニューの「この練習を始める」</h4>
+      <p>練習メニューの1件ごとの部品 <code>&lt;x-guide.practice-item&gt;</code> の下に、始めるボタンがあります。</p>
+      <div class="code"><div class="file">src/resources/views/components/guide/practice-item.blade.php</div><pre><code>{{-- 事件を作る画面があれば始めるボタン、まだなければ準備中の札を出す --}}
+@if (Route::has('cases.create'))
+  &lt;x-ui.big-button :href="route('cases.create', ['origin' =&gt; 'practice', 'practice' =&gt; $practice['key']])" tone="secondary" icon="plus" class="mt-3"&gt;{{ $words['start'] }}&lt;/x-ui.big-button&gt;
+@else
+  &lt;x-ui.badge class="mt-3"&gt;{{ $words['soon'] }}&lt;/x-ui.badge&gt;
+@endif</code></pre></div>
+      <p><code>route('cases.create', [...])</code> に、住所の表に穴（<code>{…}</code>）のない名前の値を渡すと、Laravel はそれを <dfn>クエリ文字列</dfn>（住所の <code>?</code> のあとに付く「名前=値」の並び）にします。なので住所は <code>/cases/create?origin=practice&amp;practice=seventeen-steps</code> になります。<code>Route::has('cases.create')</code> は「そのルート名が住所の表にあるか」を確かめるもので、手引きを先に作り、事件の画面をあとから足した名残です（今はいつもボタンが出ます）。<code>$words['start']</code> は設定の「この練習を始める」、<code>tone="secondary"</code> は枠だけの控えめな色です。</p>
+      <p>練習メニューの中身は、表ではなくファイル <code>src/database/data/guide/practices.json</code> にあります。利用者のデータではなく「本の中身」だからです。1件は、キー（<code>key</code>）・名前（<code>name</code>）・説明・<b>問いかけ</b>（<code>prompts</code>：なぞ・手がかり・見立て・予想の欄の案内）を持っています。</p>
+      <figure class="shot"><img data-img="screen-practices.png" alt="練習メニューの画面"><figcaption>練習メニュー（スマホ）。メニューごとに「この練習を始める」がある</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>入口3：予定・タスクの「気になる」は、題名を住所に載せない</h4>
+      <p>「気になる」ボタンは、予定やタスクの題名（たとえば「歯医者（10:00）」）を、事件の<dfn>きっかけ</dfn>として作る画面へ持っていきます。ここで練習メニューと同じように <code>?label=歯医者</code> と住所に書くと、題名が住所に入ってしまいます。住所は、ブラウザの履歴やサーバーのアクセスの記録（だれがどの住所を開いたかの帳面）に残ります。そこで、題名は住所ではなくフォームの中身として <code>POST</code> で送ります。</p>
+      <div class="code"><div class="file">src/resources/views/components/task/curious.blade.php</div><pre><code>@if (Route::has('cases.draft'))
+  &lt;form method="POST" action="{{ route('cases.draft') }}" {{ $attributes-&gt;class(['shrink-0']) }}&gt;
+    @csrf
+    &lt;input type="hidden" name="origin" value="{{ $origin }}"&gt;
+    &lt;input type="hidden" name="label" value="{{ Str::substr($label, 0, config('suiri.limits.origin_label')) }}"&gt;
+    &lt;button type="submit" aria-label="{{ __(config('suiri.today.curious_label'), ['label' =&gt; $label]) }}" title="{{ config('suiri.today.curious_hint') }}"</code></pre></div>
+      <ul>
+        <li><code>type="hidden"</code> の欄は、画面には見えないが一緒に送られる欄です。<code>origin</code> には <code>task</code>（タスク）か <code>event</code>（予定）、<code>label</code> には題名を入れます。</li>
+        <li><code>Str::substr(…, 0, config('suiri.limits.origin_label'))</code> は、題名を先頭から 150 字（<code>src/config/suiri.php</code> の <code>limits</code>）までに切ります。</li>
+        <li><code>aria-label</code> は、画面の読み上げで「『歯医者（10:00）』から気になることを記録」と読ませるための説明です（文は設定の <code>today.curious_label</code>）。</li>
+        <li><code>@csrf</code> は、ほかのサイトからの勝手な送信でないことを示す合言葉の欄です（くわしくは <a href="#s11">11章</a>）。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul><li>送る：<code>POST /cases/draft</code>、中身は <code>_token</code>・<code>origin=event</code>・<code>label=歯医者（10:00）</code></li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>POST /cases/draft</code>：まだ作らずに、入力を預けて転送する</h4>
+      <p>住所の表 <code>src/routes/web/cases.php</code> では、事件の住所は全部 <code>auth</code>（ログインした人だけ）と <code>agreed</code>（同意した人だけ）の囲みの中にあります（<a href="#s1">1章</a>）。</p>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>Route::middleware(['auth', 'agreed'])-&gt;group(function () {
+    // 事件：一覧・作る・詳細・なぞと場面を直す・消す
+    Route::get('/cases', [CaseController::class, 'index'])-&gt;name('cases.index');
+    Route::get('/cases/create', [CaseController::class, 'create'])-&gt;name('cases.create');
+    // 予定・タスクの「気になる」：題名を URL に載せずに、作る画面へ持っていく（まだ作らない）
+    Route::post('/cases/draft', DraftCaseController::class)-&gt;name('cases.draft');
+    Route::get('/cases/{case}', [CaseController::class, 'show'])-&gt;can('view', 'case')-&gt;name('cases.show');</code></pre></div>
+      <p><code>/cases/draft</code> の行き先は <code>DraftCaseController</code> というクラスそのものです。関数名を書かずにクラスだけを書くと、Laravel はそのクラスの <code>__invoke</code> という関数を呼びます（仕事が1つだけの受付の書き方）。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/DraftCaseController.php</div><pre><code>/** 入力を持って、事件を作る画面へ移る（長さや種類を確かめるのは、画面の組み立て NewCaseDraft と、作るときの StoreCaseRequest） */
+public function __invoke(Request $request): RedirectResponse
+{
+    return redirect()-&gt;route('cases.create')-&gt;withInput($request-&gt;only(['origin', 'label']));
+}</code></pre></div>
+      <p>この受付は何も保存しません。<code>$request-&gt;only(['origin', 'label'])</code> で送られた中から2つの欄だけを取り出し、<code>withInput</code> で<dfn>セッション</dfn>（サーバーがこの人のために持つ預かり箱。<a href="#s1">1章</a>）に「一度きりの入力」として預け、<code>/cases/create</code> へ転送します。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Http/RedirectResponse.php</div><pre><code>public function withInput(?array $input = null)
+{
+    $this-&gt;session-&gt;flashInput($this-&gt;removeFilesFromInput(
+        ! is_null($input) ? $input : $this-&gt;request-&gt;input()
+    ));
+
+    return $this;
+}</code></pre></div>
+      <p><code>flashInput</code> の <dfn>フラッシュ</dfn>は「次のお願い1回だけ取り出せて、そのあと消える」預け方です。転送されたブラウザが次に開く <code>/cases/create</code> で1回だけ読めて、その次には消えます。</p>
+      <div class="analogy"><b>たとえると</b>受付で「このメモを、隣の窓口に1回だけ渡しておきます」と預かってもらうことです。隣の窓口で読んだら、メモは捨てられます。住所（封筒の表書き）には何も書かないので、通りがかった人に見られません。</div>
+      <div class="data"><b>このとき動くデータ</b><ul><li>書く：セッション（<code>sessions</code> 表のこの人の行）に一度きりの入力 <code>origin</code>・<code>label</code></li><li>返す：<code>302</code>、行き先 <code>/cases/create</code></li></ul></div>
+      <div class="point"><b>ここが大事</b>この住所には回数制限（<code>throttle:writes</code>）を付けていません。記録を書かず、セッションに預けるだけだからです。</div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>GET /cases/create</code> の見張り役</h4>
+      <p>どの入口から来ても、ここからは同じ <code>GET /cases/create</code> です。Laravel が並べ替えたあとの見張り役の順は次のとおりです（並べ替えのしくみは <a href="#s0">0章</a>）。</p>
+      <ol>
+        <li><code>EncryptCookies</code>・<code>AddQueuedCookiesToResponse</code>：Cookie を元に戻す・返事に付ける</li>
+        <li><code>StartSession</code>：セッションを開く（ここで、さっき預けた一度きりの入力が読めるようになる）</li>
+        <li><code>ShareErrorsFromSession</code>：前の入力の誤りを画面で使えるようにする</li>
+        <li><code>PreventRequestForgery</code>：合言葉の確認（GET は読むだけなので通る）</li>
+        <li><code>Authenticate</code>（<code>auth</code>）：ログインしているか（<a href="#s1">1章</a>）</li>
+        <li><code>SubstituteBindings</code>：住所の穴を行に替える（この住所には穴がないので何もしない）</li>
+        <li><code>EnsureAgreed</code>（<code>agreed</code>）：同意したか（<a href="#s1">1章</a>）</li>
+      </ol>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>CaseController::create</code>：材料を集めて組み立て係に渡す</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/CaseController.php</div><pre><code>/**
+ * 事件を作る画面を返す。きっかけを初めの値にする：練習メニューは ?origin=practice&amp;practice=、
+ * 予定・タスクの「気になる」は POST /cases/draft から一度きりの入力（origin・label）で届く。
+ * 題名の写し（label）は URL からは受け取らない（題名を URL とアクセスの記録に残さないため）
+ */
+public function create(Request $request, NewCaseDraft $draft): View
+{
+    return view('cases.create-steps', ['draft' =&gt; $draft-&gt;for($request-&gt;user(), $request-&gt;old() + Arr::only($request-&gt;query(), ['origin', 'practice']))]);
+}</code></pre></div>
+      <p>1行の中で、3つのことをしています。</p>
+      <ol>
+        <li><code>$request-&gt;old()</code>：セッションに預けた一度きりの入力を、配列で取り出す。「気になる」から来たなら <code>['origin' =&gt; 'event', 'label' =&gt; '歯医者（10:00）']</code>、ほかの入口なら空。</li>
+        <li><code>Arr::only($request-&gt;query(), ['origin', 'practice'])</code>：住所の <code>?</code> のあとから、<code>origin</code> と <code>practice</code> だけを取り出す。<b><code>label</code> は取り出さない</b>ので、だれかが <code>?label=…</code> と住所に書いても無視されます（テスト <code>test_a_label_in_the_url_is_ignored</code> で確かめています）。</li>
+        <li>2つを <code>+</code> でつなぐ。PHP の配列の <code>+</code> は「左にある名前を優先し、左にない名前だけ右から足す」つなぎ方です。</li>
+      </ol>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Http/Concerns/InteractsWithFlashData.php</div><pre><code>public function old($key = null, $default = null)
+{
+    $default = $default instanceof Model ? $default-&gt;getAttribute($key) : $default;
+
+    return $this-&gt;hasSession() ? $this-&gt;session()-&gt;getOldInput($key, $default) : $default;
+}</code></pre></div>
+      <p>引数の <code>NewCaseDraft $draft</code> は、Laravel がその場で作って渡します（<dfn>依存性の注入</dfn>：受付が「この係が要る」と型で書くだけで、Laravel が用意してくれるしくみ）。返す画面は <code>cases.create-steps</code>、つまり <code>src/resources/views/cases/create-steps.blade.php</code> です（1問ずつ進む形の作る画面）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>組み立て係 <code>NewCaseDraft::for</code>：用紙の書き出しを決める</h4>
+      <p><dfn>Query</dfn>（組み立て係）は、画面に出すものを読み集めて形を整える係です。書き込みはしません。</p>
+      <div class="code"><div class="file">src/app/Queries/Cases/NewCaseDraft.php</div><pre><code>public function for(User $user, array $query): array
+{
+    $origin = OriginKind::tryFrom((string) ($query['origin'] ?? ''));
+    $practice = $origin === OriginKind::Practice ? $this-&gt;library-&gt;practice((string) ($query['practice'] ?? '')) : null;
+    // 練習メニューから来たのにメニューが見つからなければ、きっかけなしにする
+    if ($origin === OriginKind::Practice &amp;&amp; $practice === null) {
+        $origin = null;
+    }
+    $label = $practice['name'] ?? trim((string) ($query['label'] ?? ''));
+
+    return [
+        'origin_kind' =&gt; $origin?-&gt;value,
+        'origin_label' =&gt; $origin &amp;&amp; $label !== '' ? mb_substr($label, 0, config('suiri.limits.origin_label')) : null,
+        'practice' =&gt; $practice,
+        'title' =&gt; $practice['prompts']['title'] ?? null,
+        'scene' =&gt; $user-&gt;default_scene ?? Scene::Daily,
+        'firstWork' =&gt; ! $user-&gt;caseFiles()-&gt;where('scene', Scene::Work)-&gt;exists(),
+        'partner' =&gt; $user-&gt;hasPartner() ? $user-&gt;partner_name : null,
+        'kid' =&gt; $user-&gt;prefersKidWords(), // ふだんの場面が親子の人には、子ども向けの言葉で問いかける
+    ];
+}</code></pre></div>
+      <ul>
+        <li><code>OriginKind::tryFrom(…)</code>：<code>OriginKind</code> は「きっかけの種類」の<dfn>列挙</dfn>（決まった値だけを持つ型。<code>task</code>・<code>event</code>・<code>practice</code> の3つ）。<code>tryFrom</code> は、知らない値なら <code>null</code> を返します。なので <code>?origin=abc</code> のような値は「きっかけなし」になります。</li>
+        <li>練習メニューから来たら、<code>GuideLibrary::practice</code> でキーのメニューを探します。見つからなければ（<code>?practice=nope</code>）、きっかけなしに戻します。</li>
+        <li><code>$label</code>：練習ならメニューの名前、「気になる」なら預けた題名。</li>
+        <li><code>title</code>：練習ならメニューの問いかけ（例：「いつもの階段は何段？」）を、なぞの初めの値にします。</li>
+        <li><code>scene</code>：設定の「ふだんの場面」を初めの値にします（設定がなければ日常）。</li>
+        <li><code>firstWork</code>：仕事の場面の事件がまだ1つもないか。初めてなら、仕事の場面を選んだときに約束の全文を出すために使います。</li>
+        <li><code>partner</code>：設定に相棒の名前があれば、その名前（「相棒といっしょに考える？」の切り替えを出すため。<a href="#s8">8章</a>）。</li>
+        <li><code>kid</code>：ふだんの場面が「親子」の人なら <code>true</code>。問いかけや札の言葉を子ども向けの言い方にします（見立ては「かも」など）。</li>
+      </ul>
+      <p>練習メニューを探す <code>GuideLibrary</code> は、JSON のファイルを読んで配列にし、<dfn>キャッシュ</dfn>（一度読んだものを覚えておく置き場）にしまいます。</p>
+      <div class="code"><div class="file">src/app/Support/Guide/GuideLibrary.php</div><pre><code>private function load(string $name): array
+{
+    $path = database_path("data/guide/{$name}.json");
+
+    return Cache::rememberForever(
+        "guide:{$name}:".filemtime($path),
+        fn () =&gt; json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR),
+    );
+}</code></pre></div>
+      <p>覚えておく名前に <code>filemtime($path)</code>（ファイルを最後に直した時刻）を入れているので、教材のファイルを直すと名前が変わり、新しい中身が読まれます。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>cache</code> 表（練習メニューの中身）、なければ <code>practices.json</code></li><li>読む：<code>case_files</code> 表（この人の、仕事の場面の事件があるか）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>画面 <code>cases/create-steps.blade.php</code>：1つのフォームに4つの問い</h4>
+      <p>作る画面は、<b>1画面に1問だけ</b>を見せて「つぎへ」で進む形です。①何が気になった？（なぞ・場面・相棒モード）→ ②見たこと・聞いたことを1つ（最初の手がかり）→ ③どうしてだと思う？（最初の見立て）→ ④これで事件を作るよ（確かめて送る）。ただし HTML としては、4つの問いが<b>1つのフォームの中に全部</b>入っています。</p>
+      <div class="code"><div class="file">src/resources/views/cases/create-steps.blade.php</div><pre><code>&lt;x-layouts.app :title="config('suiri.case_new.page_title')"&gt;
+  &lt;form id="new-case" method="POST" action="{{ route('cases.store') }}" data-stepper class="group/new max-w-xl space-y-10"&gt;
+    @csrf
+    &lt;input type="hidden" name="origin_kind" value="{{ old('origin_kind', $draft['origin_kind']) }}"&gt;
+    &lt;input type="hidden" name="origin_label" value="{{ old('origin_label', $draft['origin_label']) }}"&gt;
+    &lt;input type="hidden" name="practice_key" value="{{ old('practice_key', $draft['practice']['key'] ?? null) }}"&gt;
+
+    &lt;x-case-new.mystery :draft="$draft" :kid="$draft['kid'] ?? false" /&gt;
+    &lt;x-case-new.clue :draft="$draft" :kid="$draft['kid'] ?? false" /&gt;
+    &lt;x-case-new.hypothesis :draft="$draft" :kid="$draft['kid'] ?? false" /&gt;
+    &lt;x-case-new.confirm :draft="$draft" :kid="$draft['kid'] ?? false" /&gt;
+
+    &lt;x-ui.privacy-note /&gt;
+  &lt;/form&gt;
+&lt;/x-layouts.app&gt;</code></pre></div>
+      <ul>
+        <li>きっかけ（<code>origin_kind</code>・<code>origin_label</code>）と練習のキー（<code>practice_key</code>）は、隠し欄で送信に乗せます。<code>old('origin_kind', 初めの値)</code> は、「入力の誤りで戻ってきたなら、さっき送った値。そうでなければ初めの値」という意味です。</li>
+        <li><code>&lt;x-case-new.mystery&gt;</code> などは<dfn>Blade の部品</dfn>（何度も使う見た目のかたまり。<code>src/resources/views/components/</code> にあり、<code>x-case-new.mystery</code> なら <code>components/case-new/mystery.blade.php</code>）。1問が1つの部品です。</li>
+        <li><code>data-stepper</code> は、画面のプログラム <code>stepper.js</code> への目印です（あとのステップ）。<code>class="group/new"</code> は、中の欄の状態で見た目を切り替えるための目印です（次のステップ）。</li>
+      </ul>
+      <p>1つのフォームにしているのは、<b>送るのを最後の1回だけにする</b>ためです。途中の問いで何もサーバーに送らないので、途中でやめても半端な事件は残りません。JavaScript が動かないブラウザでは4つの問いが縦に並び、いちばん下の「事件を作る」でそのまま送れます。</p>
+      <div class="analogy"><b>たとえると</b>4枚つづりの申込用紙です。窓口の人が1枚ずつめくって「次はこれを書いてね」と見せますが、出すのは最後に4枚まとめて1回です。めくる人がいなくても（JavaScript がなくても）、4枚を並べて書けば出せます。</div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>1問目「何が気になった？」：段の入れ物・いまやることのカード・絵の札</h4>
+      <p>どの問いも、段の入れ物 <code>&lt;x-case-new.step&gt;</code> の中に、<dfn>いまやることのカード</dfn> <code>&lt;x-ui.step-card&gt;</code>（上に段の色のつまみ、問いの見出し・例・入力欄・横いっぱいの主なボタンを持つカード）を1枚置く形です。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-new/step.blade.php</div><pre><code>&lt;section data-step="{{ $n }}" {{ $attributes-&gt;class(['scroll-mt-16']) }}&gt;
+  &lt;div class="mb-4 hidden group-data-[stepping]/new:block"&gt;
+    &lt;x-ui.progress :steps="$steps" :count="false" /&gt;
+  &lt;/div&gt;
+  {{ $slot }}
+&lt;/section&gt;</code></pre></div>
+      <p><code>data-step="1"</code> が「何番目の問いか」の印です。上の進み具合の丸の列（なぞ・見たこと・どうして？・作る）は、フォームに <code>data-stepping</code> が付いたとき（＝ <code>stepper.js</code> が動いたとき）だけ見せます。JavaScript がないと全部の問いが縦に並ぶので、丸の列は要らないからです。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-new/mystery.blade.php</div><pre><code>&lt;x-case-new.step :n="1"&gt;
+  &lt;x-ui.step-card :step="1" :total="4" tone="plain" :title="$w['title']"
+    :hint="$practice ? __($w['practice_example'], ['name' =&gt; $practice['name']]) : $w['example']"&gt;
+    {{-- …（省略）… --}}
+    &lt;x-case-new.field name="title" :value="$draft['title']" required :maxlength="config('suiri.limits.case_title')"
+      :placeholder="$w['placeholder']" :tip="$w['tip']" autocomplete="off" enterkeyhint="next"&gt;
+    {{-- …（省略）… --}}
+        @foreach (\App\Enums\Scene::cases() as $scene)
+          &lt;x-case-new.pick name="scene" :value="$scene-&gt;value" :checked="$selected === $scene-&gt;value" :pic="$scene-&gt;value"
+            :label="$kid ? $scene-&gt;kidLabel() : $scene-&gt;label()" :desc="config('suiri.case_new.scene.desc.'.$scene-&gt;value)" /&gt;
+        @endforeach
+    {{-- …（省略）… --}}
+    &lt;x-case-new.work-note :first="$draft['firstWork']" /&gt;
+
+    {{-- 相棒の名前が設定にある人だけ、相棒といっしょに考えるかを選べるようにする --}}
+    @if ($draft['partner'])
+      &lt;x-case-new.partner-toggle :partner="$draft['partner']" /&gt;
+    @endif
+
+    &lt;x-slot:action&gt;&lt;x-case-new.next /&gt;&lt;/x-slot:action&gt;</code></pre></div>
+      <ul>
+        <li>見出しは「何が気になった？」、例の行は「例：どうして体操着を何回もわすれるの？」（設定 <code>case_new.mystery</code>）。練習メニューから来たら、例の行が「練習メニュー『…』の問いかけを入れておいたよ。変えてもいいよ」に替わり、なぞの欄には <code>NewCaseDraft</code> が用意した問いかけが入っています。</li>
+        <li><code>&lt;x-case-new.field&gt;</code>：見出し・入力欄・下の一言・誤りの文を1つにした入力欄の部品。<code>required</code> なので、なぞは空では進めません。</li>
+        <li><code>&lt;x-case-new.pick&gt;</code>：絵つきの大きな選ぶボタン。中身はラジオボタン1つで、場面（日常・親子・仕事）を札で選びます。親子の人には子ども向けの呼び名（<code>kidLabel()</code>）を出します。</li>
+        <li><code>&lt;x-case-new.work-note&gt;</code>：場面で「仕事」を選んだときだけ出す一言の注意（「仕事のときは、お客さまの名前や病名は書かないでね。」）。仕事の事件が初めての人には約束の全文も出します。</li>
+        <li><code>&lt;x-case-new.partner-toggle&gt;</code>：「（相棒の名前）といっしょに考える？」の切り替え。中身は <code>partner_mode</code> という名前のチェックボックス1つで、設定に相棒の名前がある人にだけ出します（<a href="#s8">8章</a>）。</li>
+        <li><code>&lt;x-slot:action&gt;</code>：カードの主なボタンの場所に「つぎへ」（<code>&lt;x-case-new.next&gt;</code>）を入れます。</li>
+      </ul>
+      <p>「仕事」を選んだときだけ注意を出す、相棒モードを入れたら見立ての欄を隠す、といった切り替えは、JavaScript ではなく CSS の <code>:has()</code>（「中にこういう要素を持つか」で見た目を変える書き方）でしています。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-new/work-note.blade.php</div><pre><code>&lt;div role="note" {{ $attributes-&gt;class(['hidden rounded-xl bg-accent-soft px-4 py-3 group-has-[input[name=scene][value=work]:checked]/new:block']) }}&gt;</code></pre></div>
+      <p>読み方は「ふだんは隠す（<code>hidden</code>）。<code>group/new</code> の印を付けたフォームの中に、チェックの入った <code>scene</code> の <code>work</code> の欄があれば、見せる（<code>block</code>）」です。フォームを送らなくても、札を押した瞬間にブラウザが見た目を切り替えます。</p>
+      <figure class="shot"><img data-img="screen-case-new-1.png" alt="事件を作る画面の1問目"><figcaption>1問目（スマホ）。上に4つの丸、カードに「何が気になった？」・なぞの欄・場面の絵の札・相棒モード・「つぎへ」</figcaption></figure>
+      <figure class="shot"><img data-img="screen-case-new-work.png" alt="1問目で仕事を選んだところ"><figcaption>場面で「仕事」を選ぶと、札の下に注意が出る</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>2問目・3問目：書かずに進んでもよい・提案のチップ</h4>
+      <p>2問目は「見たこと・聞いたことを1つ教えて」（最初の手がかりの種類 <code>clue_kind</code> と本文 <code>clue_body</code>）、3問目は「どうしてだと思う？」（最初の見立て <code>hypothesis_body</code>）です。どちらも空のまま進めます。カードの下の小さな1行に「もどる」と「あとで書く」があり（<code>&lt;x-case-new.moves skip /&gt;</code>）、「あとで書く」は欄を確かめずに次の問いへ進みます。</p>
+      <p>入力欄の上には、<dfn>提案のチップ</dfn>（押すと入力欄に書き出しが入る小さな丸いボタン）があります。AI ではなく、設定に書いた決まった型です。2問目は「いつ？」「どこで？」などの問いかけ、3問目は「時間」「習慣」「環境」などの別の説明の型です。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-new/clue.blade.php</div><pre><code>&lt;x-case-new.field name="clue_body" :rows="2" quiet :maxlength="config('suiri.limits.clue_body')" :placeholder="$w['placeholder']"&gt;
+  {{-- …（省略）… --}}
+  &lt;x-slot:above&gt;
+    &lt;x-case.suggest-chips folded :items="config('suiri.suggest.clue_questions.default')" target="f-new-clue_body" :caption="$w['starters']" class="group-has-[input[name=scene][value=work]:checked]/new:hidden" /&gt;
+    &lt;x-case.suggest-chips folded :items="config('suiri.suggest.clue_questions.work')" target="f-new-clue_body" :caption="$w['starters']" class="hidden group-has-[input[name=scene][value=work]:checked]/new:block" /&gt;
+  &lt;/x-slot:above&gt;
+&lt;/x-case-new.field&gt;</code></pre></div>
+      <ul>
+        <li>チップの並びは2組あり、1問目で「仕事」を選んだかどうかで、さっきの <code>:has()</code> がどちらかを見せます（仕事の場面では「見た・触れた・測ったこと」「ご本人の言葉」を分けて書けるような問いかけ）。</li>
+        <li><code>target="f-new-clue_body"</code>：書き出しを入れる入力欄の id。<code>&lt;x-case-new.field&gt;</code> は欄に <code>f-new-{name}</code> の id を付けます。</li>
+        <li><code>folded</code>：「書き出しのヒント」の1行にたたんでおき、押すと開きます（入力欄の上をすっきりさせるため）。</li>
+      </ul>
+      <p>候補の中身は設定にあります。</p>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'clue_questions' =&gt; [
+    'default' =&gt; [
+        ['label' =&gt; 'いつ？', 'text' =&gt; 'いつ：'],
+        // …（省略）…
+        ['label' =&gt; 'あるはずなのに無かったものは？', 'text' =&gt; 'あるはずなのに、なかったもの：', 'kind' =&gt; 'absent'],
+    ],</code></pre></div>
+      <p>チップの部品 <code>&lt;x-case.suggest-chips&gt;</code> は、候補を1つずつ <code>&lt;button type="button"&gt;</code> にして、押したときに入れるものを <code>data-</code> の印に書いておきます。<code>type="button"</code> なので、押してもフォームは送られません。</p>
+      <div class="code"><div class="file">src/resources/views/components/case/suggest-chips.blade.php</div><pre><code>&lt;button type="button" data-suggest data-text="{{ $item['text'] ?? '' }}" data-kind="{{ $item['kind'] ?? '' }}"</code></pre></div>
+      <div class="code"><div class="file">src/resources/js/parts/suggest-chips.js</div><pre><code>/** チップ1つの「押したときにすること」を、同じフォームの欄に当てはめる */
+const applyChip = (chip) =&gt; {
+    const form = chip.closest('form');
+    const targetId = chip.closest('[data-suggest-target]')?.dataset.suggestTarget;
+    const { text, kind, date, time, attic } = chip.dataset;
+    const field = targetId ? document.getElementById(targetId) : null;
+
+    // 書き出しがあり、入れる先の欄があれば、そこに足す
+    if (text &amp;&amp; field) {
+        insertText(field, text);
+    }</code></pre></div>
+      <p><code>insertText</code> は、欄が空ならそのまま入れ、何か書いてあれば改行して後ろに足します（同じ書き出しがもう入っていれば足さないので、二度押ししても二重になりません）。「あるはずなのに無かったものは？」のように <code>kind</code> の指定があるチップは、手がかりの種類の札も「なかった」に切り替えます（作る画面では欄の名前が <code>clue_kind</code> なので、この切り替えは <code>stepper.js</code> がしています）。</p>
+      <p>3問目の見立ての欄は、相棒モードを入れると隠れます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-new/hypothesis.blade.php</div><pre><code>&lt;div class="space-y-4 group-has-[input[data-partner]:checked]/new:hidden"&gt;</code></pre></div>
+      <p>代わりに「相棒モードでは、事件を作ったあとに書くよ。先に（相棒）、次に自分。見せ合うまで、おたがいの考えはかくれるよ」の説明が出ます。相棒モードでは、見立ては事件を作ったあとに渡し合いで隠して書くからです（<a href="#s8">8章</a>）。</p>
+      <div class="point"><b>ここが大事</b>チップは<b>入力欄に書き出しを入れるだけ</b>で、保存はしません。文を決めて送るのは本人です（決まりは <code>.claude/rules/domain.md</code>）。入れた中身も、どこにも送りません。</div>
+      <figure class="shot"><img data-img="screen-case-new-2.png" alt="事件を作る画面の2問目"><figcaption>2問目（スマホ）。見た・聞いた・なかったの札、書き出しのヒント、欄、「つぎへ」</figcaption></figure>
+      <figure class="shot"><img data-img="screen-case-new-3.png" alt="事件を作る画面の3問目"><figcaption>3問目（スマホ）。上に2問目で書いた見たことを小さく写し、考えるヒントと欄。下に「もどる」「あとで書く」</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who js">画面のプログラム</span>
+      <h4><code>stepper.js</code>：いまの問いだけを見せ、「つぎへ」で1つずつ進める</h4>
+      <p>1問ずつ見せるのは、画面のプログラム <code>src/resources/js/parts/stepper.js</code> です（<code>src/resources/js/app.js</code> が <code>import './parts/stepper.js';</code> で読み込みます）。</p>
+      <div class="code"><div class="file">src/resources/js/parts/stepper.js</div><pre><code>/** 1つのフォームを、1問ずつ進む形にする */
+const setupStepper = (form) =&gt; {
+    const steps = [...form.querySelectorAll('[data-step]')];
+    let current = 0;
+// …（省略）…
+        // 段を1つずつ見て、いまの段だけを見せる
+        steps.forEach((step, i) =&gt; {
+            step.hidden = i !== current;
+        });
+// …（省略）…
+    /** いまの段の欄が決まりどおりか確かめる（なぞが空など）。だめなら最初の欄でブラウザの吹き出しを出して false を返す */
+    const valid = () =&gt; [...steps[current].querySelectorAll('input, textarea')].every((field) =&gt; field.reportValidity());
+
+    /** 次の段へ進む。skip（あとで書く）でなければ、先にいまの段の欄を確かめる */
+    const next = (skip) =&gt; {
+        // 書かずに進むときか、欄が決まりどおりのときだけ進める
+        if (skip || valid()) {
+            show(current + 1, { push: true });
+        }
+    };</code></pre></div>
+      <ul>
+        <li><code>[data-step]</code> の段を集め、いまの段（<code>current</code>）以外に <code>hidden</code> を付けて隠します。</li>
+        <li>「つぎへ」（<code>data-step-next</code>）を押すと <code>next(false)</code>。<code>reportValidity()</code> はブラウザに入っている確かめで、<code>required</code> の欄が空なら吹き出しを出して <code>false</code> を返します。なぞが空なら、ここで止まります。</li>
+        <li>「あとで書く」（<code>data-skip</code>）は確かめずに進み、「もどる」は前の段へ、4問目の札の「直す」（<code>data-step-goto</code>）は決まった段へ戻ります。どれも送信はしません。</li>
+        <li>進むたびに <code>history.pushState</code> で履歴に <code>#step-2</code> のような印を積むので、ブラウザの「戻る」でも前の問いに戻れます。1行の欄で Enter を押したときも、送らずに次の問いへ進みます（日本語の変換を決める Enter は除く）。</li>
+      </ul>
+      <div class="code"><div class="file">src/resources/js/parts/stepper.js</div><pre><code>    // 送り直し（検証のエラー）で戻ってきたら、エラーのある段から見せる。なければ最初の段から
+    const error = form.querySelector('[data-error]');
+    const start = error ? Math.max(0, steps.findIndex((step) =&gt; step.contains(error))) : 0;
+    form.dataset.stepping = '';
+    history.replaceState({ step: start }, '', window.location.pathname + window.location.search);
+    show(start, { focus: false });
+};
+
+// 画面の中の、1問ずつ進むフォームを1つずつ取り出して、動くようにする
+document.querySelectorAll('form[data-stepper]').forEach(setupStepper);</code></pre></div>
+      <p><code>form.dataset.stepping = ''</code> で、フォームに <code>data-stepping</code> の印を付けます。この印が付いて初めて、「つぎへ」「もどる」や進み具合の丸の列が見えるようになります（部品の <code>group-data-[stepping]/new:block</code>）。サーバーの検証で誤りがあって戻ってきたときは、誤りの文（<code>data-error</code> の印）がある段から見せます。</p>
+      <div class="analogy"><b>たとえると</b>申込用紙を1枚ずつめくる係です。めくる前に「ここ、書き忘れていますよ」と声をかけ（<code>reportValidity</code>）、書類が窓口から差し戻されたときは、直す所のある1枚を開いて渡します。</div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>4問目「これで事件を作るよ」：書いたものを札に写して、<code>POST /cases</code></h4>
+      <p>最後の問いは、それまでに書いたものを見せて確かめる段です。なぞを事件の題として明朝体で、見たこと・どうして？を<dfn>荷札</dfn>の形（<code>&lt;x-ui.evidence-tag&gt;</code>。証拠品に付ける札のような部品）で並べ、札ごとに「直す」を置きます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-new/confirm.blade.php</div><pre><code>&lt;p data-echo="title" class="mt-0.5 font-mincho text-xl font-bold break-words"&gt;&lt;/p&gt;
+{{-- …（省略）… --}}
+&lt;x-slot:action&gt;&lt;x-ui.big-button icon="plus"&gt;{{ $w['submit'] }}&lt;/x-ui.big-button&gt;&lt;/x-slot:action&gt;</code></pre></div>
+      <p><code>data-echo="title"</code> は「ここに <code>title</code> の欄の中身を写して」という印で、写すのは <code>stepper.js</code> です。段を見せるたびに写し直すので、「直す」で戻って書き換えても札は新しい中身になります。</p>
+      <div class="code"><div class="file">src/resources/js/parts/stepper.js</div><pre><code>    form.querySelectorAll('[data-echo]').forEach((el) =&gt; {
+        el.textContent = echoText(form, el.dataset.echo);
+    });</code></pre></div>
+      <p><code>textContent</code> に入れるので、書いた文に <code>&lt;</code> などがあっても、HTML として動かずに文字のまま出ます。主なボタン <code>&lt;x-ui.big-button&gt;</code> は <code>href</code> がないので送信のボタン（<code>type="submit"</code>）になり、押すとブラウザはフォームの中身を全部まとめて <code>POST /cases</code> で送ります。</p>
+      <figure class="shot"><img data-img="screen-case-new-4.png" alt="事件を作る画面の4問目"><figcaption>4問目（スマホ）。なぞ、見たこと・見立ての荷札にそれぞれ「直す」、「事件を作る」</figcaption></figure>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>送る：<code>POST /cases</code></li>
+        <li>中身：<code>_token</code>・<code>origin_kind</code>・<code>origin_label</code>・<code>practice_key</code>（隠し欄）、<code>title</code>（なぞ）・<code>scene</code>（場面）・<code>partner_mode</code>（チェックしたときだけ <code>1</code>）・<code>clue_kind</code>・<code>clue_body</code>・<code>hypothesis_body</code>（隠れていた段の欄も、同じフォームの中なので一緒に送られる）</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>POST /cases</code> の見張り役：回数制限が1つ増える</h4>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>Route::middleware('throttle:writes')-&gt;group(function () {
+    Route::post('/cases', [CaseController::class, 'store'])-&gt;name('cases.store');</code></pre></div>
+      <p>記録を書く住所は、<code>throttle:writes</code> の囲みに入っています。並べ替えたあとの順は <code>EncryptCookies → AddQueuedCookiesToResponse → StartSession → ShareErrorsFromSession → PreventRequestForgery → Authenticate → ThrottleRequests:writes → SubstituteBindings → EnsureAgreed</code> です。</p>
+      <ul>
+        <li><code>PreventRequestForgery</code>：POST なので、合言葉 <code>_token</code> が合っているかを確かめます。合わなければ 419（<a href="#s11">11章</a>）。</li>
+        <li><code>ThrottleRequests:writes</code>：記録を書く操作を、1人1分に60回までに数えます。超えたら 429（<a href="#s11">11章</a>）。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>形の検証 <code>StoreCaseRequest</code> は、受付より先に動く</h4>
+      <p>受付の関数 <code>store(StoreCaseRequest $request, CreateCase $createCase)</code> は、引数の型に <code>StoreCaseRequest</code> を書いています。<dfn>FormRequest</dfn>（形の検証係）は、受付に届いた中身が決まりどおりかを確かめる専用のクラスです。Laravel は引数を用意するときにこの係を作り、作り終えた瞬間に検証を走らせます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Foundation/Providers/FormRequestServiceProvider.php</div><pre><code>$this-&gt;app-&gt;afterResolving(ValidatesWhenResolved::class, function ($resolved) {
+    $resolved-&gt;validateResolved();
+});</code></pre></div>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Validation/ValidatesWhenResolvedTrait.php</div><pre><code>public function validateResolved()
+{
+    $this-&gt;prepareForValidation();
+
+    if (! $this-&gt;passesAuthorization()) {
+        $this-&gt;failedAuthorization();
+    }
+
+    $instance = $this-&gt;getValidatorInstance();
+    // …（省略）…
+    if ($instance-&gt;fails()) {
+        $this-&gt;failedValidation($instance);
+    }
+
+    $this-&gt;passedValidation();
+}</code></pre></div>
+      <p>順番は「① 下ごしらえ（<code>prepareForValidation</code>）→ ② 送ってよい人か（<code>authorize</code>）→ ③ 決まり（<code>rules</code>）で確かめる」です。②で断られたら 403、③で誤りがあれば元の画面へ戻されます。どちらでも、受付の中身は1行も動きません。</p>
+      <div class="analogy"><b>たとえると</b>窓口の前の「書類の確認係」です。書き忘れや字数オーバーがあれば、窓口に回さずに「ここを直してください」と書類を返します。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>prepareForValidation</code>：確かめる前の下ごしらえ</h4>
+      <div class="code"><div class="file">src/app/Http/Requests/Cases/StoreCaseRequest.php</div><pre><code>/** ログインして同意した人なら送ってよい（自分の事件として作るだけ） */
+public function authorize(): bool
+{
+    return true;
+}
+
+/** 送る前に前後の空白を取り、相棒の名前がない人の相棒モードと、練習でないきっかけの練習メニューを外す */
+protected function prepareForValidation(): void
+{
+    $origin = $this-&gt;input('origin_kind');
+    $this-&gt;merge([
+        'title' =&gt; trim((string) $this-&gt;input('title')),
+        'clue_kind' =&gt; $this-&gt;input('clue_kind') ?: ClueKind::Seen-&gt;value,
+        'clue_body' =&gt; trim((string) $this-&gt;input('clue_body')),
+        'hypothesis_body' =&gt; trim((string) $this-&gt;input('hypothesis_body')),
+        'origin_label' =&gt; mb_substr(trim((string) $this-&gt;input('origin_label')), 0, config('suiri.limits.origin_label')),
+        'partner_mode' =&gt; $this-&gt;boolean('partner_mode') &amp;&amp; $this-&gt;user()-&gt;hasPartner(),
+        'practice_key' =&gt; $origin === OriginKind::Practice-&gt;value ? $this-&gt;input('practice_key') : null,
+    ]);
+}</code></pre></div>
+      <ul>
+        <li><code>merge</code> は、届いた中身の値を書き換える（足す）関数です。</li>
+        <li><code>trim</code>：前後の空白を取ります。空白だけのなぞは、空として扱われます。</li>
+        <li><code>clue_kind</code>：種類が送られなければ「見た」にします。</li>
+        <li><code>partner_mode</code>：チェックが入っていても、設定に相棒の名前がない人なら <code>false</code> にします（画面には切り替えが出ないので、手で送られた値を外すため）。</li>
+        <li><code>practice_key</code>：きっかけが練習でなければ捨てます。</li>
+        <li><code>authorize</code> はいつも <code>true</code>。作るのは「自分の事件」だけなので、ほかの人の記録にさわる心配がないからです。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>rules</code>：項目ごとの決まり</h4>
+      <div class="code"><div class="file">src/app/Http/Requests/Cases/StoreCaseRequest.php</div><pre><code>public function rules(): array
+{
+    return [
+        'title' =&gt; ['required', 'string', 'max:'.config('suiri.limits.case_title')],
+        'scene' =&gt; ['required', Rule::enum(Scene::class)],
+        'partner_mode' =&gt; ['boolean'],
+        'origin_kind' =&gt; ['nullable', Rule::enum(OriginKind::class)],
+        'origin_label' =&gt; ['nullable', 'string', 'max:'.config('suiri.limits.origin_label')],
+        'practice_key' =&gt; ['nullable', Rule::in(array_column(app(GuideLibrary::class)-&gt;practices(), 'key'))],
+        'clue_kind' =&gt; ['required', Rule::enum(ClueKind::class)],
+        'clue_body' =&gt; ['nullable', 'string', 'max:'.config('suiri.limits.clue_body')],
+        'hypothesis_body' =&gt; ['nullable', 'string', 'max:'.config('suiri.limits.hypothesis_body')],
+    ];
+}</code></pre></div>
+      <ul>
+        <li><code>required</code>：必ず要る（なぞだけが必須。手がかりと見立ては <code>nullable</code>＝空でもよい。画面で「あとで書く」で飛ばせるのはこのため）。</li>
+        <li><code>max:120</code> など：字数の上限。数は <code>src/config/suiri.php</code> の <code>limits</code> にまとめてあります（なぞ 120・手がかり 500・見立て 300）。表の列の長さと同じで、画面の欄の <code>maxlength</code> にも同じ数を渡しています。</li>
+        <li><code>Rule::enum(Scene::class)</code>：列挙 <code>Scene</code> の値（<code>daily</code>・<code>family</code>・<code>work</code>）のどれかでなければならない。</li>
+        <li><code>Rule::in(…)</code>：練習のキーは、教材にあるキーのどれかでなければならない（<code>?practice=nope</code> のまま送ると誤りになる）。</li>
+      </ul>
+      <p>誤りがあると、Laravel は「前の画面へ戻す。送った中身と誤りの文を一度きりで預ける」という返事を作ります。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Foundation/Exceptions/Handler.php</div><pre><code>protected function invalid($request, ValidationException $exception)
+{
+    $errorBag = $request-&gt;input('_error_bag');
+
+    return redirect($exception-&gt;redirectTo ?? url()-&gt;previous())
+        -&gt;withInput(Arr::except($request-&gt;input(), $this-&gt;dontFlash))
+        -&gt;withErrors($exception-&gt;errors(), is_string($errorBag) ? $errorBag : $exception-&gt;errorBag);
+}</code></pre></div>
+      <p>戻った作る画面では、<code>old(…)</code> が送った値を欄に戻し、<code>&lt;x-case-new.field&gt;</code> が「なぞを入力してください」のような文を <code>data-error</code> の印つきで出します（<code>attributes()</code> で、項目名を <code>title</code> ではなく「なぞ」と出すようにしています）。そして <code>stepper.js</code> が、その印のある段から見せます（前のステップ）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>CaseController::store</code> → 用事 <code>CreateCase</code></h4>
+      <p>検証を通ると、やっと受付の中身が動きます。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/CaseController.php</div><pre><code>/** 事件を作って、その事件の詳細へ進む（最初の手がかり・見立ても一緒に保存する） */
+public function store(StoreCaseRequest $request, CreateCase $createCase): RedirectResponse
+{
+    $data = $request-&gt;validated();
+    $case = $createCase-&gt;handle($request-&gt;user(), $data);
+
+    return $this-&gt;backToCase($case, '事件を作りました。', [$data['title'], $data['clue_body'], $data['hypothesis_body']]);
+}</code></pre></div>
+      <p><code>$request-&gt;validated()</code> は、<b>決まりに書いた項目だけ</b>を返します（決まりにない項目を手で足して送っても、ここで落ちます）。書き込みは<dfn>Action</dfn>（用事係。1つの用事だけを受け持つクラス）の <code>CreateCase</code> に任せます。</p>
+      <div class="code"><div class="file">src/app/Actions/Cases/CreateCase.php</div><pre><code>public function handle(User $user, array $data): CaseFile
+{
+    return DB::transaction(function () use ($user, $data) {
+        $case = $user-&gt;caseFiles()-&gt;create([
+            'title' =&gt; $data['title'],
+            'scene' =&gt; $data['scene'],
+            'partner_mode' =&gt; (bool) ($data['partner_mode'] ?? false),
+            'origin_kind' =&gt; $data['origin_kind'] ?? null,
+            'origin_label' =&gt; $data['origin_label'] ?? null,
+            'practice_key' =&gt; $data['practice_key'] ?? null,
+        ]);
+
+        // 最初の手がかりが書いてあれば、一緒に保存する
+        if (filled($data['clue_body'] ?? null)) {
+            $case-&gt;clues()-&gt;create(['kind' =&gt; $data['clue_kind'], 'body' =&gt; $data['clue_body']]);
+        }
+        // 最初の見立てが書いてあり、相棒モードでなければ、一緒に保存する（相棒モードは隠して書く流れで足す）
+        if (filled($data['hypothesis_body'] ?? null) &amp;&amp; ! $case-&gt;partner_mode) {
+            $case-&gt;hypotheses()-&gt;create(['body' =&gt; $data['hypothesis_body']]);
+        }
+
+        return $case;
+    });
+}</code></pre></div>
+      <ul>
+        <li><code>DB::transaction(…)</code>：<dfn>トランザクション</dfn>（いくつかの書き込みを「全部する か、全部しない か」のひとまとまりにするしくみ）。途中で失敗したら、事件だけできて手がかりがない、という半端な状態を残しません。</li>
+        <li><code>$user-&gt;caseFiles()-&gt;create([...])</code>：「この人の事件」として作るので、<code>user_id</code> に自動でこの人の番号が入ります（<code>User</code> モデルの <code>caseFiles()</code> は <code>hasMany(CaseFile::class)</code>）。</li>
+        <li><code>filled(…)</code>：空でなければ <code>true</code>。手がかり・見立てを書いたときだけ、その行を作ります。</li>
+        <li>相棒モードの事件では、最初の見立ては作りません（画面で隠していても、手で送られた値をここで外す。<a href="#s8">8章</a>）。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>実際に流れる SQL と、持ち主の写し</h4>
+      <p>なぞ・手がかり1つ・見立て1つで作ったとき、データベースには次の順で命令（<dfn>SQL</dfn>）が届きます（手元で記録を取って確かめた順。値は <code>?</code> の所に入ります）。</p>
+      <ol>
+        <li><code>insert into case_files (status, partner_mode, title, scene, origin_kind, origin_label, practice_key, user_id, updated_at, created_at) values (…)</code></li>
+        <li><code>select user_id from case_files where id = ?</code></li>
+        <li><code>insert into clues (kind, body, case_file_id, user_id, …) values (…)</code></li>
+        <li><code>select user_id from case_files where id = ?</code></li>
+        <li><code>insert into hypotheses (author, status, body, case_file_id, user_id, …) values (…)</code></li>
+      </ol>
+      <p>2番と4番の <code>select</code> は、手がかり・見立ての<b>持ち主（<code>user_id</code>）を事件から写す</b>ための読み出しです。手がかりや見立てにも <code>user_id</code> を持たせているのは、「すべての記録を <code>user_id</code> で絞る」という決まりのためです（他人の記録を見せない。<a href="#s11">11章</a>）。写すのは、モデルが使う部品 <code>CopiesOwnerFromCase</code> です。</p>
+      <div class="code"><div class="file">src/app/Models/Concerns/CopiesOwnerFromCase.php</div><pre><code>protected static function bootCopiesOwnerFromCase(): void
+{
+    static::creating(function ($model) {
+        // user_id が渡されておらず、親の事件がわかるときは、事件の持ち主を写す
+        if ($model-&gt;user_id === null &amp;&amp; $model-&gt;case_file_id !== null) {
+            $model-&gt;user_id = CaseFile::whereKey($model-&gt;case_file_id)-&gt;value('user_id');
+        }
+    });
+}</code></pre></div>
+      <p><code>static::creating</code> は「行を作る直前に、この処理を挟む」という登録です（Laravel の<dfn>モデルのイベント</dfn>）。<code>$case-&gt;clues()-&gt;create(...)</code> で作ると <code>case_file_id</code> は入りますが <code>user_id</code> は空なので、事件の行から持ち主の番号を読んで入れます。</p>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>書く：<code>case_files</code> に1行（<code>status</code> は既定の <code>open</code>＝捜査中、<code>partner_mode</code> は既定の <code>false</code>。どちらもモデルの <code>$attributes</code> で決めた初めの値）</li>
+        <li>書く：<code>clues</code> に1行（<code>kind</code>・<code>body</code>）、<code>hypotheses</code> に1行（<code>author</code> は <code>self</code>、<code>status</code> は <code>considering</code>＝検討中）</li>
+        <li>きっかけは <code>origin_kind</code>・<code>origin_label</code> に写しとして残す（Google の予定の番号は持たない）。練習なら <code>practice_key</code> にキー</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>backToCase</code>：事件の画面へ転送する（ほかの人がわかる情報の警告つき）</h4>
+      <p>事件の受付はどれも、保存のあとに共通の部品 <code>RedirectsToCase</code> の <code>backToCase</code> で事件の画面へ戻します。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/Concerns/RedirectsToCase.php</div><pre><code>protected function backToCase(CaseFile $case, string $status, array $texts = [], ?string $anchor = null, ?string $turn = null): RedirectResponse
+{
+    $alert = app(WatsonNotes::class)-&gt;alertFor(...$texts);
+    $url = route('cases.show', array_filter(['case' =&gt; $case, 'turn' =&gt; $turn, 'open' =&gt; $this-&gt;backOpen()]));
+    // 警告がなければ、さわっていた場所へ戻す（○× を続けて付けるときなどに、画面が上へ飛ばないように）
+    if ($alert === null &amp;&amp; $anchor !== null) {
+        $url .= '#'.$anchor;
+    }
+
+    return redirect()-&gt;to($url)-&gt;with('status', $status)-&gt;with('watson_alert', $alert);
+}</code></pre></div>
+      <ul>
+        <li><code>alertFor(...$texts)</code>：いま保存した文（なぞ・手がかり・見立て）に、電話番号やメールアドレス、「〇〇さん」のような<b>ほかの人がわかる情報らしきもの</b>があるかを調べ、あれば規則のキー <code>personal_info</code>（W-5）を返します。しくみは <a href="#s5">5章</a>。</li>
+        <li><code>route('cases.show', ['case' =&gt; $case])</code>：事件のモデルを渡すと、Laravel はその番号（<code>id</code>）で住所 <code>/cases/12</code> を作ります。<code>array_filter</code> は値が空の項目を外すので、<code>turn</code>（相棒モードの番）や <code>open</code> がなければ住所に付きません。</li>
+        <li><code>$this-&gt;backOpen()</code>：フォームが隠し欄 <code>back_open</code> を送ってきたら、その値を <code>?open=</code> にして同じカードに戻します。値は設定 <code>case_board.back_open</code> の候補（<code>add-clue</code>・<code>predict-{id}</code> など。<code>{id}</code> は数字だけ）に合うものだけで、ほかの値は捨てます。作る画面はこの欄を送らないので、ふだんの事件の画面へ戻ります。</li>
+        <li><code>-&gt;with('status', '事件を作りました。')</code>：お知らせの文を一度きりで預けます。画面の上の札になります（部品 <code>&lt;x-ui.flash&gt;</code>）。</li>
+        <li><code>-&gt;with('watson_alert', $alert)</code>：警告の規則のキー（なければ <code>null</code>）を一度きりで預けます。</li>
+      </ul>
+      <div class="point"><b>ここが大事</b>警告は保存を止めません。保存はもう済んでいて、画面で「保存はしました。必要なら直してください」と知らせるだけです。</div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>GET /cases/{case}</code>：住所の <code>12</code> を事件の行に替える</h4>
+      <p>ブラウザは転送先の <code>GET /cases/12</code> を開きます。住所の表では <code>/cases/{case}</code> の <code>{case}</code> が<dfn>穴（ルートパラメータ）</dfn>で、ここに <code>12</code> が入ります。受付が欲しいのは文字 <code>12</code> ではなく <code>case_files</code> の行なので、見張り役 <code>SubstituteBindings</code> が取り換えます。</p>
+      <p>ふつう Laravel は、受付の引数の名前と穴の名前が同じなら、引数の型のモデルで行を探します。ところが穴の名前は <code>case</code>、モデルは <code>CaseFile</code> と名前が違うので、<code>AppServiceProvider</code> で「穴 <code>case</code> は <code>CaseFile</code>」と結んでいます。</p>
+      <div class="code"><div class="file">src/app/Providers/AppServiceProvider.php</div><pre><code>// 住所の {case} は「事件」（CaseFile）。case は PHP の予約語なのでモデルの名前と住所の名前がちがう
+Route::model('case', CaseFile::class);</code></pre></div>
+      <p><code>Route::model</code> は、穴の名前に「行の探し方」を登録します。<code>SubstituteBindings</code> は、登録のある穴を見つけるとその探し方を呼びます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Routing/Router.php</div><pre><code>public function substituteBindings($route)
+{
+    foreach ($route-&gt;parameters() as $key =&gt; $value) {
+        if (isset($this-&gt;binders[$key])) {
+            $route-&gt;setParameter($key, $this-&gt;performBinding($key, $value, $route));
+        }
+    }
+
+    return $route;
+}</code></pre></div>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Routing/RouteBinding.php</div><pre><code>$instance = $container-&gt;make($class);
+// …（省略）…
+if ($model = $instance-&gt;{$routeBindingMethod}($value)) {
+    return $model;
+}
+// …（省略）…
+throw (new ModelNotFoundException)-&gt;setModel($class);</code></pre></div>
+      <p>探し方の中身は、モデルの <code>resolveRouteBinding('12')</code> で、SQL にすると <code>select * from case_files where id = 12 limit 1</code> です。行がなければ <code>ModelNotFoundException</code> になり、Laravel がそれを 404（見つからない）の画面に変えます。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>case_files</code> の1行（<code>id = 12</code>）。この時点では、だれの事件かはまだ確かめていない</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>-&gt;can('view', 'case')</code>：持ち主だけが見られる（Policy）</h4>
+      <p>住所の表の <code>-&gt;can('view', 'case')</code> は、見張り役 <code>Authorize</code> を <code>can:view,case</code> の形で付ける書き方です。並べ替えたあとは一番最後（<code>SubstituteBindings → EnsureAgreed → Authorize:view,case</code>）に動くので、穴 <code>case</code> はもう事件の行になっています。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Auth/Middleware/Authorize.php</div><pre><code>public function handle($request, Closure $next, $ability, ...$models)
+{
+    $this-&gt;gate-&gt;authorize($ability, $this-&gt;getGateArguments($request, $models));
+
+    return $next($request);
+}</code></pre></div>
+      <p><code>$ability</code> は <code>view</code>、<code>$models</code> は <code>['case']</code>。<code>getGateArguments</code> が <code>$request-&gt;route('case')</code>（さっきの事件の行）に取り換え、<dfn>Gate</dfn>（権限の門番）に「この人はこの事件を <code>view</code> してよいか」と聞きます。門番は事件のモデル名 <code>CaseFile</code> から、名前の決まりで <code>App\Policies\CaseFilePolicy</code> を見つけます。</p>
+      <div class="code"><div class="file">src/app/Policies/CaseFilePolicy.php</div><pre><code>class CaseFilePolicy
+{
+    use OwnerOnly, WritesOpenCase;
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Policies/Concerns/OwnerOnly.php</div><pre><code>/** 見てよいか（持ち主だけ） */
+public function view(User $user, Model $record): bool
+{
+    return $this-&gt;owns($user, $record);
+}
+// …（省略）…
+/** 記録の持ち主がこの人かを返す（型をそろえて比べる） */
+protected function owns(User $user, Model $record): bool
+{
+    return (int) $record-&gt;getAttribute('user_id') === (int) $user-&gt;getKey();
+}</code></pre></div>
+      <p><dfn>Policy</dfn>（権限の決まり）は、「この人はこの記録に何をしてよいか」を答えるクラスです。事件の <code>user_id</code> とログイン中の人の番号が同じなら <code>true</code>。違えば門番が <code>AuthorizationException</code> を投げ、画面は 403（見てはいけない）になります。ほかの人の事件の番号を住所に書いても、中身は見られません。（<code>WritesOpenCase</code> は、閉じた事件に書き込ませないための <code>write</code> の決まりで、見るときは使いません。<a href="#s11">11章</a>）</p>
+      <div class="analogy"><b>たとえると</b>書庫の係（<code>SubstituteBindings</code>）は番号のファイルを棚から出しますが、閲覧室の入口の係（<code>Authorize</code>）が表紙の名前と利用者証を見比べ、本人でなければ渡しません。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>CaseController::show</code> → 組み立て係 <code>CaseBoardQuery</code></h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/CaseController.php</div><pre><code>/** 事件の画面（いまやることのカード1枚）を返す（?turn=partner|self は相棒モードの番、?open= はカードにする用事） */
+public function show(Request $request, CaseFile $case, CaseBoardQuery $board): View
+{
+    $alert = $request-&gt;session()-&gt;get('watson_alert');
+
+    return view('cases.board', $board-&gt;handle($case, $request-&gt;user(), $request-&gt;query('turn'), $request-&gt;query('open'), $alert));
+}</code></pre></div>
+      <p>さっき預けた <code>watson_alert</code> をセッションから読み、住所の <code>?turn=</code>（相棒モードの番）と <code>?open=</code>（「ほかにできること」から頼まれた用事）と一緒に組み立て係に渡します。事件の画面は、手がかり・見立て・○×・予想がつながる「記録の中心」なので、組み立ては1つの係にまとめています。</p>
+      <div class="code"><div class="file">src/app/Queries/Cases/CaseBoardQuery.php</div><pre><code>$case-&gt;load([
+    'clues', 'predictions', 'dismissedHints', 'hypotheses.fits', 'atticNotes',
+    'hypotheses.predictions' =&gt; fn ($q) =&gt; $q-&gt;oldest('id'),
+]);
+$today = today()-&gt;toDateString();
+$turn = $case-&gt;hidesHypotheses() ? ($turn === 'self' ? 'self' : 'partner') : null;
+$visible = $turn === null ? $case-&gt;hypotheses : $case-&gt;hypotheses-&gt;filter(fn ($h) =&gt; $h-&gt;author-&gt;value === $turn)-&gt;values();
+$step = $this-&gt;nextStep-&gt;for($case, $turn, $today);
+// いまの一手がもう「予想を立てる」と言っているなら、同じことを聞く W-6（いつ確かめる？）は出さない
+$skip = $step['key'] === 'predict' ? ['no_check_date'] : [];
+$kid = $user-&gt;prefersKidWords(); // 子ども向けの言葉を出すか（ふだんの場面が親子の人）
+$suggest = $this-&gt;suggestions-&gt;for($case, $user, $visible, $kid, $today);</code></pre></div>
+      <ul>
+        <li><code>$case-&gt;load([...])</code>：手がかり・予想・閉じたひとこと・見立て（とその ○× と予想）・この事件からしまった屋根裏の知識を、<b>まとめて先に読む</b>（<dfn>Eager ロード</dfn>）。画面で見立てごとに1回ずつ読みに行くと、見立ての数だけ SQL が増えるからです。</li>
+        <li><code>$turn</code>・<code>$visible</code>：相棒モードで見せ合う前なら、いまの番の人の見立てだけに絞ります（<a href="#s8">8章</a>）。ふつうの事件では <code>null</code> で、全部見せます。</li>
+        <li><code>$step</code>：「いまの一手」を決めます（次のステップ）。</li>
+        <li><code>$suggest</code>：入力欄の近くに出す提案のチップの中身（手がかりの問いかけ・別の説明の型・予想の穴埋めの文・確かめる日の候補・屋根裏の棚の候補）。<code>SuggestionsQuery</code> が、決まった型と本人のこれまでの記録から組み立てます（AI ではない。<a href="#s5">5章</a>・<a href="#s6">6章</a>）。</li>
+      </ul>
+      <p>返す配列には、ほかに <code>'watson' =&gt; $this-&gt;watson-&gt;forCase($case, $alert, $skip)</code>（ワトソンのひとこと。<a href="#s5">5章</a>）、予想で選べる屋根裏の知識、練習メニューの問いかけ（<code>practice_key</code> があれば、その <code>prompts</code>）、カレンダーとつないでいるか、確かめる日の初めの値などが入ります。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>clues</code>・<code>predictions</code>・<code>dismissed_hints</code>・<code>hypotheses</code>・<code>clue_hypothesis</code>・<code>attic_notes</code>（この事件の分）、<code>attic_notes</code>（この人の新しい50件の「つまり？」）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>いまの一手 <code>NextStep::for</code>：上から順に確かめて、最初に当てはまったもの</h4>
+      <p>事件の画面では、「今いちばんすべきこと」を1つだけ大きく出します。決め方は、上から順に確かめる表です。</p>
+      <div class="code"><div class="file">src/app/Queries/Cases/NextStep.php</div><pre><code>$pending = $case-&gt;predictions-&gt;filter-&gt;isPending()-&gt;sortBy('check_on');
+$due = $pending-&gt;first(fn ($p) =&gt; $p-&gt;isDue($today));
+// 確かめる日が来た予想があれば、まず答え合わせ
+if ($due !== null) {
+    return ['key' =&gt; 'resolve', 'prediction' =&gt; $due];
+}
+// 手がかりがまだなければ、まず見たこと・聞いたことを足す
+if ($case-&gt;clues-&gt;isEmpty()) {
+    return ['key' =&gt; 'add_clue'];
+}
+$alive = $case-&gt;hypotheses-&gt;filter(fn ($h) =&gt; $h-&gt;status-&gt;isAlive());
+// 生きている見立てがなければ（まだない・全部消えた）、見立てを足す
+if ($alive-&gt;isEmpty()) {
+    return ['key' =&gt; $case-&gt;hypotheses-&gt;isEmpty() ? 'add_hypothesis' : 'all_eliminated'];
+}
+// 答え合わせ待ちがなく、当たりの見立てがあれば、事件を閉じることを勧める
+if ($pending-&gt;isEmpty() &amp;&amp; $alive-&gt;contains(fn ($h) =&gt; $h-&gt;status === HypothesisStatus::Confirmed)) {
+    return ['key' =&gt; 'close'];
+}
+// 答え合わせ待ちの予想がなければ、有力な見立て（なければ最初の見立て）から予想を立てる
+if ($pending-&gt;isEmpty()) {
+    $target = $alive-&gt;firstWhere('status', HypothesisStatus::Likely) ?? $alive-&gt;first();
+
+    return ['key' =&gt; 'predict', 'hypothesis' =&gt; $target];
+}
+
+return ['key' =&gt; 'wait', 'prediction' =&gt; $pending-&gt;first()];</code></pre></div>
+      <p>この上に「閉じた事件なら <code>closed</code>」「相棒モードの番なら <code>partner_turn</code>・<code>self_turn</code>」の2つの確かめがあります。たとえば、なぞだけで作った事件は <code>add_clue</code>（見たことを1つ）、なぞ・手がかり1つ・見立て1つで作ったばかりの事件は、予想がまだないので <code>resolve</code> ではなく、手がかりも見立てもあるので <code>predict</code>（「もしそうなら」を立てよう。<a href="#s6">6章</a>）になります。</p>
+      <div class="analogy"><b>たとえると</b>料理のレシピの「次にすること」です。火を止める時間が来ていればまずそれ、材料が足りなければまず買い物、と優先の高い順に見て、最初に当てはまったものだけを教えます。</div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>画面 <code>cases/board.blade.php</code>：机の部品が「いまやること」のカードを1枚選ぶ</h4>
+      <p>事件の画面は、開いたら「いまやること」のカードが<b>1枚だけ</b>大きく見える形です。画面のファイルは短く、なぞの部品と<dfn>机の部品</dfn> <code>&lt;x-case-step.desk&gt;</code>（どのカードを出すかを決め、進み具合・カード・ほかにできることを並べる部品）を置くだけです。</p>
+      <div class="code"><div class="file">src/resources/views/cases/board.blade.php</div><pre><code>&lt;x-case-step.head :case="$case" :kid="$kid" /&gt;
+&lt;x-case-step.desk :case="$case" :hypotheses="$hypotheses" :hidden-count="$hiddenCount" :turn="$turn" :partner-name="$partnerName"</code></pre></div>
+      <p>机の部品は、出すカードを上から順に当てはまったもので決めます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/desk.blade.php</div><pre><code>@php($card = match (true) {
+    $case-&gt;isClosed() =&gt; $open === 'edit-case' ? 'edit-case' : 'closed',
+    $open === 'edit-case' =&gt; 'edit-case',
+    // …（省略）…
+    $turn !== null =&gt; 'partner',
+    // …（省略）…
+    $step['key'] === 'predict' &amp;&amp; $fitting =&gt; 'fit',
+    default =&gt; $step['key'],
+})</code></pre></div>
+      <ul>
+        <li><code>match (true)</code> は、上から順に条件を見て、最初に <code>true</code> になった行の値を選ぶ書き方です。</li>
+        <li>閉じた事件なら閉じたカード、<code>?open=</code> で頼まれた用事（なぞを直す・見たことをもう1つ など）があればそのカード、相棒モードで見せ合う前なら渡し合いの部品（<a href="#s8">8章</a>）。</li>
+        <li>どれでもなければ、いまの一手（<code>NextStep</code> の <code>key</code>）のカード。ただし「予想を立てる」の前に、まだ ○× の付いていない手がかりがあれば、先に ○× のカード（とばせる）を出します（<a href="#s5">5章</a>）。</li>
+      </ul>
+      <p>選んだカードは <code>&lt;x-case-step.now&gt;</code> が <code>@switch($card)</code> で出し分けます（<code>add_clue</code> なら見たことのカード <code>&lt;x-case-step.clue-card&gt;</code>、<code>predict</code> なら「もしそうなら」のカード、など）。カードの下には、ほかの用事を小さく1行ずつ並べた「ほかにできること」（<code>&lt;x-case-step.more&gt;</code>）を置きます。カードごとの中身と、押したあとの流れは <a href="#s5">5章</a>（手がかり・見立て・○×）・<a href="#s6">6章</a>（予想）・<a href="#s7">7章</a>（答え合わせ）で追います。</p>
+      <p>パソコンの広い画面では、カードを左の広い列に、段ごとの進み具合（なぞ・見たこと・どうして？・もしそうなら・答え合わせ）を右の細い列に置きます。</p>
+      <figure class="shot"><img data-img="screen-case-step-desktop.png" alt="事件の画面（パソコン）"><figcaption>事件の画面（パソコン）。左にいまやることのカードと「ほかにできること」、右に進み具合</figcaption></figure>
+      <div class="point"><b>ここが大事</b>手がかり・見立て・予想の欄を1画面に全部並べず、「いまやること」を1つに絞っているのは、何をすればよいか迷わないようにするためです。ほかの用事は「ほかにできること」から、いつでもカードにできます。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>なぞを直す（<code>PATCH /cases/{case}</code>）・事件を消す（<code>DELETE /cases/{case}</code>）</h4>
+      <p>なぞを直す入口は、「ほかにできること」の「なぞを直す」です。押すと <code>?open=edit-case</code> の付いた事件の画面へ移り、机の部品が「なぞを直す」のカードを出します。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/more.blade.php</div><pre><code>'edit-case' =&gt; $card !== 'edit-case' ? ['book', $w['edit_case']] : null,
+{{-- …（省略）… --}}
+&lt;a href="{{ route('cases.show', ['case' =&gt; $case, 'open' =&gt; $key]) }}" class="flex min-h-12 items-center gap-3 py-1 text-base text-ink no-underline hover:bg-mark"&gt;</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/components/case-step/edit-case-card.blade.php</div><pre><code>&lt;form method="POST" action="{{ route('cases.update', $case) }}" class="space-y-4"&gt;
+  @csrf
+  @method('PATCH')
+  {{-- …（省略）… --}}
+  &lt;x-ui.field name="title" id="f-step-title" :label="$w['edit_case']['label']" :value="$case-&gt;title" required :maxlength="config('suiri.limits.case_title')" /&gt;
+  &lt;x-ui.choices name="scene" :label="$w['edit_case']['scene']" :options="$scenes" :selected="$case-&gt;scene" /&gt;
+  &lt;x-ui.big-button icon="check"&gt;{{ $w['edit_case']['button'] }}&lt;/x-ui.big-button&gt;
+  {{-- …（省略）… --}}
+&lt;/form&gt;
+&lt;x-ui.confirm :action="route('cases.destroy', $case)" :label="$w['edit_case']['delete']" :message="$w['edit_case']['delete_message']"</code></pre></div>
+      <p>HTML のフォームが送れない <code>PATCH</code>（一部を書き換えて）・<code>DELETE</code>（消して）は、隠し欄 <code>_method</code> で表します（<code>@method('PATCH')</code>。<a href="#s0">0章</a>）。「事件を消す」は <code>&lt;x-ui.confirm&gt;</code> の部品で、押すと「この事件を消すと、手がかり・見立て・予想・確かめるやることも消えるよ。元に戻せないよ。消していい？」と確かめてから <code>DELETE</code> を送ります。</p>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>Route::patch('/cases/{case}', [CaseController::class, 'update'])-&gt;can('update', 'case')-&gt;name('cases.update');
+Route::delete('/cases/{case}', [CaseController::class, 'destroy'])-&gt;can('delete', 'case')-&gt;name('cases.destroy');</code></pre></div>
+      <p>どちらも <code>throttle:writes</code> の囲みの中で、<code>-&gt;can('update', 'case')</code>・<code>-&gt;can('delete', 'case')</code> で持ち主かを確かめます（<code>OwnerOnly</code> の <code>update</code>・<code>delete</code> も、中身は <code>view</code> と同じ <code>owns</code>）。閉じた事件でも、なぞを直すことはできます（<code>write</code> ではなく <code>update</code> の決まりなので）。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/CaseController.php</div><pre><code>public function update(UpdateCaseRequest $request, CaseFile $case): RedirectResponse
+{
+    $case-&gt;update($request-&gt;validated());
+
+    return $this-&gt;backToCase($case, 'なぞと場面を直しました。', [$case-&gt;title]);
+}
+// …（省略）…
+public function destroy(CaseFile $case, DeleteCase $deleteCase): RedirectResponse
+{
+    $deleteCase-&gt;handle($case);
+
+    return redirect()-&gt;route('cases.index')-&gt;with('status', '事件を消しました。');
+}</code></pre></div>
+      <p>直すのは、検証係 <code>UpdateCaseRequest</code> が通した <code>title</code>・<code>scene</code> の2つだけです。直す処理は1行なので、用事係を作らずに受付で <code>update</code> しています。消すほうは用事係 <code>DeleteCase</code> に任せます。</p>
+      <div class="code"><div class="file">src/app/Actions/Cases/DeleteCase.php</div><pre><code>public function handle(CaseFile $case): void
+{
+    DB::transaction(function () use ($case) {
+        Task::whereIn('prediction_id', $case-&gt;predictions()-&gt;select('id'))-&gt;get()-&gt;each-&gt;delete();
+        $case-&gt;delete();
+    });
+}</code></pre></div>
+      <ul>
+        <li>手がかり・見立て・予想・○× は、表のつながり（移行ファイルの <code>cascadeOnDelete()</code>＝親の行が消えたら子の行も消す）で、事件と一緒にデータベースが消します。</li>
+        <li>予想から作った<b>確かめるタスク</b>（<a href="#s6">6章</a>）は、<code>tasks.prediction_id</code> が <code>nullOnDelete()</code>（親が消えたら空にするだけ）なので、放っておくと残ります。そこで先に1件ずつ消します。</li>
+        <li><code>-&gt;get()-&gt;each-&gt;delete()</code> と1件ずつ消すのは、タスクを見張る係 <code>TaskObserver</code> の「消えた」の合図を毎回動かし、Google カレンダーの予定も消す仕事を予約させるためです（<a href="#s9">9章</a>）。まとめて消す命令だと、この合図が動きません。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul><li>消す：<code>tasks</code>（この事件の予想の確かめるタスク）、<code>case_files</code> の1行（つながりで <code>clues</code>・<code>hypotheses</code>・<code>predictions</code>・<code>clue_hypothesis</code>・<code>hypothesis_status_logs</code>・<code>dismissed_hints</code> も）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>事件の一覧（<code>GET /cases</code>）：<code>CaseListQuery</code> と、段ごとの進み具合の印</h4>
+      <p>一覧は <code>CaseController::index</code> が組み立て係 <code>CaseListQuery</code> に任せます。住所の <code>?status=</code>（捜査中・解決・おあずけ＝迷宮入り）と <code>?scene=</code>（場面）で絞ります。</p>
+      <div class="code"><div class="file">src/app/Queries/Cases/CaseListQuery.php</div><pre><code>$status = CaseStatus::tryFrom((string) $status) ?? CaseStatus::Open;
+$scene = Scene::tryFrom((string) $scene);
+
+$cases = self::withCounts($user-&gt;caseFiles())
+    -&gt;where('status', $status)
+    -&gt;when($scene, fn ($q) =&gt; $q-&gt;where('scene', $scene))
+    -&gt;latest('updated_at')-&gt;latest('id')
+    -&gt;paginate(config('suiri.cases.per_page'))
+    -&gt;withQueryString();</code></pre></div>
+      <ul>
+        <li>知らない状態は捜査中（<code>Open</code>）に、知らない場面は「絞らない」にします。</li>
+        <li><code>$user-&gt;caseFiles()</code> から始めるので、<b>この人の事件だけ</b>が並びます（<code>where user_id = この人</code> が必ず付く）。</li>
+        <li><code>latest('updated_at')</code>：最近さわった順。手がかりや見立てを足すと、用事係が事件の <code>touch()</code>（更新日時だけを今にする）を呼ぶので、上に来ます（<a href="#s5">5章</a>）。</li>
+        <li><code>paginate(20)</code>：20件ずつのページに分けます。<code>withQueryString()</code> で、ページ送りのリンクにも <code>?status=</code> などを引き継ぎます。</li>
+        <li><code>withCounts</code>：1件ごとに、手がかり・見立て・答え合わせ待ち・確かめる日が来た・答え合わせ済みの予想の数を、SQL の数える命令でまとめて数えます（今日の画面でも使う）。</li>
+      </ul>
+      <p>画面では、状態ごとの件数つきのつまみ（<code>&lt;x-case.list-filter&gt;</code>。捜査ファイルの引き出しの形）の下に、1件ずつ <code>&lt;x-case.summary&gt;</code> を並べます。1件には「事件 No.12」・なぞと、段ごとの進み具合の小さな丸（なぞ → 見たこと → どうして？ → もしそうなら → 答え合わせ）、「次は『どうして？』」の一言が出ます。丸は、さっき数えた数から決めます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case/summary.blade.php</div><pre><code>{{-- 段ごとに「済んだか」を決める（なぞはいつも済み。予想は答え合わせ待ちか済みが1つでもあれば済み） --}}
+@php($done = ['title' =&gt; true, 'clue' =&gt; (int) ($case-&gt;clues_count ?? 0) &gt; 0, 'hypothesis' =&gt; (int) ($case-&gt;hypotheses_count ?? 0) &gt; 0, 'prediction' =&gt; $pending + $resolved &gt; 0, 'answer' =&gt; $resolved &gt; 0])
+{{-- いまの段：確かめる日が来た予想があれば答え合わせ（いちばん急ぐ）、なければまだ済んでいない最初の段 --}}
+@php($now = $due &gt; 0 ? 'answer' : collect($done)-&gt;search(false))</code></pre></div>
+      <p>確かめる日が来た予想がある事件には、右上に赤い「答え合わせの日」の札も出ます。場面でしぼる札は、ふだんはたたんで一番下に置いています。</p>
+      <figure class="shot"><img data-img="screen-cases-list.png" alt="事件の一覧の画面"><figcaption>事件の一覧（スマホ）。「新しい事件を作る」、状態のつまみ、事件ごとの進み具合の丸と「答え合わせの日」の札</figcaption></figure>
+    </li>
+  </ol>
+
+  <div class="recap"><b>この章のまとめ</b><ol>
+    <li>事件を作る画面への入口は3つ。練習メニューはキーを住所に付けて、予定・タスクの「気になる」は題名を住所に載せないよう <code>POST /cases/draft</code> でセッションに一度きりで預けてから来る。</li>
+    <li><code>NewCaseDraft</code> が、きっかけ・練習の問いかけ・ふだんの場面・子ども向けの言葉を使うかから、用紙の書き出しを決める。住所の <code>label</code> は受け取らない。</li>
+    <li>作る画面 <code>cases/create-steps</code> は、4つの問いを1つのフォームに入れ、<code>stepper.js</code> が1問ずつ見せる。手がかりと見立ては「あとで書く」で飛ばせ、提案のチップは欄に書き出しを入れるだけ。送るのは最後の1回だけ。</li>
+    <li><code>POST /cases</code> は、回数制限 → 形の検証 <code>StoreCaseRequest</code>（下ごしらえ → 送ってよいか → 決まり）→ 受付 → 用事 <code>CreateCase</code>（トランザクションで事件・手がかり・見立て）の順。持ち主は事件から写る。</li>
+    <li>保存のあとは <code>backToCase</code> で事件の画面へ。ほかの人がわかる情報らしきものがあれば警告を預ける（保存は止めない）。</li>
+    <li><code>GET /cases/{case}</code> は、<code>Route::model</code> で番号を事件の行に替え、<code>CaseFilePolicy</code> で持ち主かを確かめ、<code>CaseBoardQuery</code> がいまの一手・ワトソン・提案を組み立てる。画面では机の部品が「いまやること」のカードを1枚だけ選ぶ。</li>
+    <li>なぞを直す・事件を消すは「ほかにできること」から。消すときは、確かめるタスクを1件ずつ消してカレンダーの後始末も動かす。</li>
+  </ol></div>
+</section>

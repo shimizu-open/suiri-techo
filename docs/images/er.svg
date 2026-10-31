@@ -1,0 +1,177 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1130" viewBox="0 0 1240 1130" font-family="'Hiragino Sans','Noto Sans JP','Yu Gothic',sans-serif"><defs><marker id="a2a2118" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2a2118"/></marker><marker id="a1e4d3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#1e4d3a"/></marker><marker id="a6b5d4b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#6b5d4b"/></marker><marker id="a1f2d4a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#1f2d4a"/></marker><marker id="a8c1c2b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#8c1c2b"/></marker></defs>
+<rect width="1240" height="1130" fill="#ffffff"/>
+<text x="20" y="38" font-size="22" fill="#2a2118" font-weight="bold">推理手帳の表（テーブル）とつながり</text>
+<rect x="20" y="64" width="220" height="118" rx="10" fill="#fbf8f1" stroke="#6b5d4b" stroke-width="2"/>
+<path d="M20 74a10 10 0 0 1 10 -10h200a10 10 0 0 1 10 10v20h-220z" fill="#6b5d4b"/>
+<text x="130.0" y="84" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">invitations</text>
+<text x="32" y="110" font-size="12.5" fill="#6b5d4b" font-weight="bold" text-anchor="start">招待（許可リスト）</text>
+<text x="32" y="129" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">email（小文字・重複なし）</text>
+<text x="32" y="148" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">note（運営者のメモ）</text>
+<text x="32" y="167" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">used_at（登録に使った日時）</text>
+<rect x="264" y="64" width="464" height="175" rx="10" fill="#fbf8f1" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M264 74a10 10 0 0 1 10 -10h444a10 10 0 0 1 10 10v20h-464z" fill="#1f2d4a"/>
+<text x="496.0" y="84" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">users</text>
+<text x="276" y="110" font-size="12.5" fill="#6b5d4b" font-weight="bold" text-anchor="start">利用者（すべての記録の軸）</text>
+<text x="276" y="129" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">id ／ パスワードの列はない（Google だけ）</text>
+<text x="276" y="148" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">google_id（Google の sub。重複なし）</text>
+<text x="276" y="167" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">name ／ email（重複なし）／ avatar_url</text>
+<text x="276" y="186" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">partner_name（相棒の呼び名）／ cue（きっかけ）</text>
+<text x="276" y="205" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">default_scene（daily・family・work）</text>
+<text x="276" y="224" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">agreed_at（同意した日時）／ remember_token</text>
+<rect x="752" y="64" width="464" height="175" rx="10" fill="#fbf8f1" stroke="#1e4d3a" stroke-width="2"/>
+<path d="M752 74a10 10 0 0 1 10 -10h444a10 10 0 0 1 10 10v20h-464z" fill="#1e4d3a"/>
+<text x="984.0" y="84" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">calendar_connections</text>
+<text x="764" y="110" font-size="12.5" fill="#6b5d4b" font-weight="bold" text-anchor="start">Google カレンダー連携（1人1行）</text>
+<text x="764" y="129" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">user_id（重複なし）</text>
+<text x="764" y="148" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">access_token ／ refresh_token（encrypted で暗号化）</text>
+<text x="764" y="167" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">expires_at（access_token の期限）／ scopes（json）</text>
+<text x="764" y="186" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">app_calendar_id（専用カレンダーの ID）</text>
+<text x="764" y="205" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">sync_token（差分の印）／ status（active・broken）</text>
+<text x="764" y="224" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">last_synced_at</text>
+<path d="M240 150 L262 150" fill="none" stroke="#6b5d4b" stroke-width="1.8" stroke-dasharray="5 4"/>
+<text x="130" y="206" font-size="11.5" fill="#6b5d4b" font-weight="normal" text-anchor="middle">users とは email で照らすだけ</text>
+<text x="130" y="222" font-size="11.5" fill="#6b5d4b" font-weight="normal" text-anchor="middle">（外部キーなし）</text>
+<path d="M752 150 L730 150" fill="none" stroke="#1e4d3a" stroke-width="1.8" marker-end="url(#a1e4d3a)"/>
+<path d="M496 262 L496 241" fill="none" stroke="#2a2118" stroke-width="1.8" marker-end="url(#a2a2118)"/>
+<path d="M130 262 H1106" fill="none" stroke="#2a2118" stroke-width="1.8"/>
+<path d="M130 262 V292" fill="none" stroke="#2a2118" stroke-width="1.8"/>
+<path d="M374 262 V292" fill="none" stroke="#2a2118" stroke-width="1.8"/>
+<path d="M618 262 V292" fill="none" stroke="#2a2118" stroke-width="1.8"/>
+<path d="M862 262 V292" fill="none" stroke="#2a2118" stroke-width="1.8"/>
+<path d="M1106 262 V292" fill="none" stroke="#2a2118" stroke-width="1.8"/>
+<text x="510" y="255" font-size="11.5" fill="#2a2118" font-weight="normal" text-anchor="start">user_id → users.id（cascadeOnDelete：利用者を消すと、その人の行はすべて消える）</text>
+<rect x="20" y="292" width="220" height="251" rx="10" fill="#fbf8f1" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M20 302a10 10 0 0 1 10 -10h200a10 10 0 0 1 10 10v20h-220z" fill="#1f2d4a"/>
+<text x="130.0" y="312" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">tasks</text>
+<text x="32" y="338" font-size="12.5" fill="#6b5d4b" font-weight="bold" text-anchor="start">タスク</text>
+<text x="32" y="357" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">user_id</text>
+<text x="32" y="376" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">title ／ memo</text>
+<text x="32" y="395" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">due_on（期日）</text>
+<text x="32" y="414" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">starts_at ／ duration_minutes</text>
+<text x="32" y="433" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">actual_minutes</text>
+<text x="32" y="452" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">kind（normal・verify）</text>
+<text x="32" y="471" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">prediction_id ⇢ predictions</text>
+<text x="32" y="490" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">done_at</text>
+<text x="32" y="509" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">calendar_event_id</text>
+<text x="32" y="528" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">calendar_synced_at</text>
+<rect x="264" y="292" width="220" height="156" rx="10" fill="#fbf8f1" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M264 302a10 10 0 0 1 10 -10h200a10 10 0 0 1 10 10v20h-220z" fill="#1f2d4a"/>
+<text x="374.0" y="312" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">attic_notes</text>
+<text x="276" y="338" font-size="12.5" fill="#6b5d4b" font-weight="bold" text-anchor="start">屋根裏の棚</text>
+<text x="276" y="357" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">user_id</text>
+<text x="276" y="376" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">case_file_id</text>
+<text x="276" y="395" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">　⇢ case_files（任意）</text>
+<text x="276" y="414" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">rule（つまり？）</text>
+<text x="276" y="433" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">examples（たとえば？）</text>
+<rect x="508" y="292" width="220" height="194" rx="10" fill="#fbf8f1" stroke="#8c1c2b" stroke-width="2"/>
+<path d="M508 302a10 10 0 0 1 10 -10h200a10 10 0 0 1 10 10v20h-220z" fill="#8c1c2b"/>
+<text x="618.0" y="312" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">case_files</text>
+<text x="520" y="338" font-size="12.5" fill="#6b5d4b" font-weight="bold" text-anchor="start">事件</text>
+<text x="520" y="357" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">user_id</text>
+<text x="520" y="376" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">title（なぞ）</text>
+<text x="520" y="395" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">scene ／ status</text>
+<text x="520" y="414" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">origin_kind ／ origin_label</text>
+<text x="520" y="433" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">practice_key</text>
+<text x="520" y="452" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">partner_mode ／ revealed_at</text>
+<text x="520" y="471" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">conclusion ／ closed_at</text>
+<rect x="752" y="292" width="220" height="175" rx="10" fill="#fbf8f1" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M752 302a10 10 0 0 1 10 -10h200a10 10 0 0 1 10 10v20h-220z" fill="#1f2d4a"/>
+<text x="862.0" y="312" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">weekly_reflections</text>
+<text x="764" y="338" font-size="12.5" fill="#6b5d4b" font-weight="bold" text-anchor="start">週のふりかえり</text>
+<text x="764" y="357" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">user_id</text>
+<text x="764" y="376" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">week_start（月曜日）</text>
+<text x="764" y="395" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">changed_case_file_id</text>
+<text x="764" y="414" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">　⇢ case_files（任意）</text>
+<text x="764" y="433" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">abstraction（つまり？）</text>
+<text x="764" y="452" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">concrete（たとえば？）</text>
+<rect x="996" y="292" width="220" height="137" rx="10" fill="#fbf8f1" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M996 302a10 10 0 0 1 10 -10h200a10 10 0 0 1 10 10v20h-220z" fill="#1f2d4a"/>
+<text x="1106.0" y="312" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">scene_attempts</text>
+<text x="1008" y="338" font-size="12.5" fill="#6b5d4b" font-weight="bold" text-anchor="start">名推理カードへの推理</text>
+<text x="1008" y="357" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">user_id</text>
+<text x="1008" y="376" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">scene_key（JSON のキー）</text>
+<text x="1008" y="395" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">answer（自分の推理）</text>
+<text x="1008" y="414" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">※ user_id＋scene_key で1行</text>
+<path d="M484 380 L506 380" fill="none" stroke="#2a2118" stroke-width="1.8" stroke-dasharray="4 3" marker-end="url(#a2a2118)"/>
+<path d="M752 380 L730 380" fill="none" stroke="#2a2118" stroke-width="1.8" stroke-dasharray="4 3" marker-end="url(#a2a2118)"/>
+<rect x="264" y="540" width="220" height="137" rx="10" fill="#fbf8f1" stroke="#8c1c2b" stroke-width="2"/>
+<path d="M264 550a10 10 0 0 1 10 -10h200a10 10 0 0 1 10 10v20h-220z" fill="#8c1c2b"/>
+<text x="374.0" y="560" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">clues</text>
+<text x="276" y="586" font-size="12.5" fill="#6b5d4b" font-weight="bold" text-anchor="start">手がかり</text>
+<text x="276" y="605" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">case_file_id → case_files</text>
+<text x="276" y="624" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">user_id（写し）</text>
+<text x="276" y="643" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">kind（seen・heard・absent）</text>
+<text x="276" y="662" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">body（本文）</text>
+<rect x="508" y="540" width="220" height="156" rx="10" fill="#fbf8f1" stroke="#8c1c2b" stroke-width="2"/>
+<path d="M508 550a10 10 0 0 1 10 -10h200a10 10 0 0 1 10 10v20h-220z" fill="#8c1c2b"/>
+<text x="618.0" y="560" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">hypotheses</text>
+<text x="520" y="586" font-size="12.5" fill="#6b5d4b" font-weight="bold" text-anchor="start">見立て</text>
+<text x="520" y="605" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">case_file_id → case_files</text>
+<text x="520" y="624" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">user_id（写し）</text>
+<text x="520" y="643" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">author（self・partner）</text>
+<text x="520" y="662" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">body（本文）</text>
+<text x="520" y="681" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">status（4つの状態）</text>
+<rect x="752" y="540" width="220" height="137" rx="10" fill="#fbf8f1" stroke="#8c1c2b" stroke-width="2"/>
+<path d="M752 550a10 10 0 0 1 10 -10h200a10 10 0 0 1 10 10v20h-220z" fill="#8c1c2b"/>
+<text x="862.0" y="560" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">dismissed_hints</text>
+<text x="764" y="586" font-size="12.5" fill="#6b5d4b" font-weight="bold" text-anchor="start">閉じたワトソンのひとこと</text>
+<text x="764" y="605" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">case_file_id → case_files</text>
+<text x="764" y="624" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">user_id（写し）</text>
+<text x="764" y="643" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">rule（watson.php のキー）</text>
+<text x="764" y="662" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">※ case_file_id＋rule で1行</text>
+<path d="M374 540 L374 512 L590 512 L590 488" fill="none" stroke="#2a2118" stroke-width="1.8" marker-end="url(#a2a2118)"/>
+<path d="M618 540 L618 488" fill="none" stroke="#2a2118" stroke-width="1.8" marker-end="url(#a2a2118)"/>
+<path d="M862 540 L862 512 L646 512 L646 488" fill="none" stroke="#2a2118" stroke-width="1.8" marker-end="url(#a2a2118)"/>
+<rect x="264" y="760" width="220" height="137" rx="10" fill="#fbf8f1" stroke="#8c1c2b" stroke-width="2"/>
+<path d="M264 770a10 10 0 0 1 10 -10h200a10 10 0 0 1 10 10v20h-220z" fill="#8c1c2b"/>
+<text x="374.0" y="780" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">clue_hypothesis</text>
+<text x="276" y="806" font-size="12.5" fill="#6b5d4b" font-weight="bold" text-anchor="start">○×（合う・合わない）</text>
+<text x="276" y="825" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">hypothesis_id → hypotheses</text>
+<text x="276" y="844" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">clue_id → clues</text>
+<text x="276" y="863" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">fit（fits・contradicts）</text>
+<text x="276" y="882" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">※ 2つの id の組で1行</text>
+<rect x="508" y="760" width="220" height="251" rx="10" fill="#fbf8f1" stroke="#8c1c2b" stroke-width="3.2"/>
+<path d="M508 770a10 10 0 0 1 10 -10h200a10 10 0 0 1 10 10v20h-220z" fill="#8c1c2b"/>
+<text x="618.0" y="780" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">predictions</text>
+<text x="520" y="806" font-size="12.5" fill="#6b5d4b" font-weight="bold" text-anchor="start">予想（もしそうなら）</text>
+<text x="520" y="825" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">case_file_id → case_files</text>
+<text x="520" y="844" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">hypothesis_id → hypotheses</text>
+<text x="520" y="863" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">user_id（写し）</text>
+<text x="520" y="882" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">attic_note_id ⇢ attic_notes</text>
+<text x="520" y="901" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">statement（変えない）</text>
+<text x="520" y="920" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">confidence（変えない）</text>
+<text x="520" y="939" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">check_on ／ check_at</text>
+<text x="520" y="958" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">result ／ result_note</text>
+<text x="520" y="977" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">miss_reason</text>
+<text x="520" y="996" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">resolved_at ／ withdrawn_at</text>
+<rect x="752" y="760" width="220" height="137" rx="10" fill="#fbf8f1" stroke="#8c1c2b" stroke-width="2"/>
+<path d="M752 770a10 10 0 0 1 10 -10h200a10 10 0 0 1 10 10v20h-220z" fill="#8c1c2b"/>
+<text x="862.0" y="780" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">hypothesis_status_logs</text>
+<text x="764" y="806" font-size="12.5" fill="#6b5d4b" font-weight="bold" text-anchor="start">考えを変えた記録</text>
+<text x="764" y="825" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">hypothesis_id → hypotheses</text>
+<text x="764" y="844" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">user_id（写し）</text>
+<text x="764" y="863" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">from_status ／ to_status</text>
+<text x="764" y="882" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">created_at（変えた日時）</text>
+<path d="M374 760 L374 679" fill="none" stroke="#2a2118" stroke-width="1.8" marker-end="url(#a2a2118)"/>
+<path d="M484 830 L496 830 L496 640 L506 640" fill="none" stroke="#2a2118" stroke-width="1.8" marker-end="url(#a2a2118)"/>
+<path d="M618 760 L618 698" fill="none" stroke="#2a2118" stroke-width="1.8" marker-end="url(#a2a2118)"/>
+<path d="M752 830 L740 830 L740 640 L730 640" fill="none" stroke="#2a2118" stroke-width="1.8" marker-end="url(#a2a2118)"/>
+<path d="M130 543 L130 1036 L618 1036 L618 1013" fill="none" stroke="#2a2118" stroke-width="1.8" stroke-dasharray="4 3" marker-end="url(#a2a2118)"/>
+<text x="146" y="1029" font-size="11.5" fill="#2a2118" font-weight="normal" text-anchor="start">tasks.prediction_id ⇢ predictions（予想が消えると空になる）</text>
+<rect x="20" y="1050" width="1196" height="70" rx="8" fill="#ffffff" stroke="#d8cfbd"/>
+<rect x="36" y="1057" width="16" height="12" rx="2" fill="#1f2d4a"/>
+<text x="58" y="1068" font-size="12" fill="#2a2118" font-weight="normal" text-anchor="start">利用者が直接持つ表</text>
+<rect x="192" y="1057" width="16" height="12" rx="2" fill="#8c1c2b"/>
+<text x="214" y="1068" font-size="12" fill="#2a2118" font-weight="normal" text-anchor="start">事件の中の表</text>
+<rect x="312" y="1057" width="16" height="12" rx="2" fill="#1e4d3a"/>
+<text x="334" y="1068" font-size="12" fill="#2a2118" font-weight="normal" text-anchor="start">Google 連携</text>
+<rect x="468" y="1057" width="16" height="12" rx="2" fill="#6b5d4b"/>
+<text x="490" y="1068" font-size="12" fill="#2a2118" font-weight="normal" text-anchor="start">運営（招待）</text>
+<path d="M640 1063 L690 1063" fill="none" stroke="#2a2118" stroke-width="1.8" marker-end="url(#a2a2118)"/>
+<text x="698" y="1068" font-size="12" fill="#2a2118" font-weight="normal" text-anchor="start">外部キー（矢印の先が親。親を消すと子も消える）</text>
+<path d="M36 1091 L86 1091" fill="none" stroke="#2a2118" stroke-width="1.8" stroke-dasharray="4 3" marker-end="url(#a2a2118)"/>
+<text x="94" y="1096" font-size="12" fill="#2a2118" font-weight="normal" text-anchor="start">外部キー（親を消すと空になる nullOnDelete）</text>
+<path d="M420 1091 L470 1091" fill="none" stroke="#6b5d4b" stroke-width="1.8" stroke-dasharray="5 4"/>
+<text x="478" y="1096" font-size="12" fill="#2a2118" font-weight="normal" text-anchor="start">外部キーなし</text>
+<text x="590" y="1096" font-size="12" fill="#2a2118" font-weight="normal" text-anchor="start">（写し）＝持ち主で絞るため事件から写した user_id　（変えない）＝保存後に書き換えられない列</text>
+</svg>

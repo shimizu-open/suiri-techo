@@ -1,0 +1,591 @@
+<section class="story" id="s2">
+  <h2><span class="no">2</span>今日の画面ができるまで</h2>
+  <p class="userstory">手帳を使う人として、開いたらすぐに「今日まずやること」が1つだけわかり、そのあと今日の予定とやることを片づけたい。だから、ログインしたあとの最初の画面（今日）を開く。</p>
+  <p class="summary">この章で追う道筋：<code>GET /today</code> → 見張り役（web のひとまとまり → <code>auth</code> → <code>agreed</code>）→ 受付 <code>TodayController</code> → 係が5つ（<code>DuePredictionsQuery</code>・<code>AgendaQuery</code>（中で今日の予定の窓口 <code>CalendarAgenda</code>）・<code>OpenCasesQuery</code>・<code>DailyPractice</code>・<code>TaskListQuery</code>）→ 表を読む（<code>predictions</code>・<code>tasks</code>・<code>case_files</code> ほか、<code>cache</code>）→ 画面 <code>today/index.blade.php</code> と部品（いまやることのカード <code>&lt;x-today.next-step&gt;</code>・予定とやること <code>&lt;x-today.agenda&gt;</code> ほか <code>components/today/*</code>）→ 守りの札を付けて返事</p>
+
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>「今日」を開く（ログインのあとに自動で来る）</h4>
+      <p>この画面に来る道は2つあります。1つは、ログインや同意を済ませた直後に自動で送られてくる道（<a href="#s1">1章</a>）。もう1つは、画面の下（パソコンでは左）のナビの「今日」を押す道です。どちらも行き先は同じ <code>/today</code> で、それを決めているのが「最初の画面」を決める係 <code>Landing</code> です。</p>
+      <div class="code"><div class="file">src/app/Support/Landing.php</div><pre><code>/** 最初の画面の URL を返す */
+public static function url(): string
+{
+    return route('today');
+}</code></pre></div>
+      <p>ナビの項目は、設定ファイル <code>config/suiri.php</code> の <code>nav</code> に上から順に書いてあります。「今日」はその先頭です。</p>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'nav' =&gt; [
+    ['route' =&gt; 'today', 'match' =&gt; ['today'], 'label' =&gt; '今日', 'icon' =&gt; 'sun'],
+    ['route' =&gt; 'tasks.index', 'match' =&gt; ['tasks.*'], 'label' =&gt; 'タスク', 'icon' =&gt; 'check'],
+    // …（省略）…
+],</code></pre></div>
+      <div class="data"><b>このとき動くデータ</b><ul><li>送る：<code>GET /today</code> と、セッションの番号札（Cookie）。GET は「見せて」の頼みなので、送る中身はありません。</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>住所の表 <code>routes/web/today.php</code>：1行だけ</h4>
+      <p><code>routes/web.php</code> は <code>routes/web/</code> のファイルを名前の順に読み込むだけでした（<a href="#s0">0章</a>）。今日の画面の住所は <code>today.php</code> にあります。</p>
+      <div class="code"><div class="file">src/routes/web/today.php</div><pre><code>Route::middleware(['auth', 'agreed'])-&gt;group(function () {
+    Route::get('/today', TodayController::class)-&gt;name('today');
+});</code></pre></div>
+      <ul>
+        <li><code>Route::get('/today', …)</code>：GET で <code>/today</code> に来たとき。</li>
+        <li><code>TodayController::class</code>：受付が関数の名前を書かずにクラスだけになっています。これは<dfn>1つの仕事だけの受付（シングルアクションコントローラー）</dfn>で、Laravel はそのクラスの <code>__invoke</code> という決まった名前の関数を呼びます。画面が1つしかない受付なので、関数を分ける必要がないからです。</li>
+        <li><code>-&gt;name('today')</code>：ルート名。<code>Landing::url()</code> の <code>route('today')</code> はこの名前から住所を作ります。</li>
+        <li><code>['auth', 'agreed']</code> の囲み：ログインしていて、決まりごとに同意した人だけが通れます。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>見張り役を順に通る（<code>auth</code> → <code>agreed</code>）</h4>
+      <p>Laravel が優先順位で並べ替えたあと、この住所で実際に動く見張り役は次の順です（<code>php artisan tinker</code> で Laravel に並びを出させて確かめたもの）。</p>
+      <ol>
+        <li><code>EncryptCookies</code> → <code>AddQueuedCookiesToResponse</code> → <code>StartSession</code> → <code>ShareErrorsFromSession</code>：Cookie を元に戻し、番号札からその人の預かり箱（セッション）を開く（<a href="#s1">1章</a>）。</li>
+        <li><code>PreventRequestForgery</code>：ニセの送信でないか。GET は「読むだけ」なので素通りです（<a href="#s11">11章</a>）。</li>
+        <li><code>Authenticate</code>（<code>auth</code>）：ログインしているか。していなければトップ（<code>/</code>）へ送られます（<a href="#s1">1章</a>）。</li>
+        <li><code>SubstituteBindings</code>：住所の中の <code>{…}</code> をデータベースの行に取り換える係。<code>/today</code> には <code>{…}</code> がないので、何もせずに通します。</li>
+        <li><code>EnsureAgreed</code>（<code>agreed</code>）：同意したか。まだなら同意の画面（<code>/agree</code>）へ送られます（<a href="#s1">1章</a>）。</li>
+      </ol>
+      <p>このほかに、どのお願いも通る全体の見張り役（<code>TrustProxies</code>・<code>TrimStrings</code>・このアプリが足した <code>SecurityHeaders</code> など）が外側にいます（<a href="#s0">0章</a>）。<code>SecurityHeaders</code> は、画面ができたあとの帰り道で働きます（最後のステップ）。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>sessions</code> 表（セッションの中身）と、<code>users</code> 表のこの人の1行（ログインと同意の確かめ）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>TodayController</code>：係を5人呼んで、集めたものを画面に渡すだけ</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Today/TodayController.php</div><pre><code>/** 今日の画面を返す */
+public function __invoke(
+    Request $request,
+    DuePredictionsQuery $duePredictions,
+    AgendaQuery $agenda,
+    OpenCasesQuery $openCases,
+    DailyPractice $dailyPractice,
+    TaskListQuery $tasks,
+): View {
+    $user = $request-&gt;user();
+    $today = today()-&gt;toDateString();
+    $predictions = $duePredictions-&gt;for($user, $today);
+    $shown = $predictions-&gt;pluck('id')-&gt;all(); // 答え合わせ待ちに出す予想（その確かめるタスクは下で二重に出さない）
+
+    return view('today.index', [
+        'user' =&gt; $user,
+        'today' =&gt; $today,
+        'predictions' =&gt; $predictions,
+        'items' =&gt; $agenda-&gt;for($user, $today, $shown),
+        'overdue' =&gt; $agenda-&gt;overdueCount($user, $today, $shown),
+        'practice' =&gt; $dailyPractice-&gt;for($user),
+        'cases' =&gt; $openCases-&gt;get($user), // 手がかり・見立て・答え合わせ待ちの数つき（事件の担当の Query）
+        'justDone' =&gt; $tasks-&gt;justDone($user, session('task_done')),
+    ]);
+}</code></pre></div>
+      <p>引数に、係のクラスが5つ並んでいます。受付は自分で <code>new DuePredictionsQuery()</code> のように係を作っていません。関数の引数に「この型のものが欲しい」と書くだけで、Laravel が作って渡してくれます。この仕組みを<dfn>依存性の注入（DI）</dfn>と呼び、作って渡す係を<dfn>サービスコンテナ</dfn>と呼びます。</p>
+      <div class="analogy"><b>たとえると</b>窓口の人が「答え合わせ係・予定係・事件係・練習係・タスク係を呼んで」と頼むと、事務所の総務（サービスコンテナ）が担当者を連れてきてくれるようなものです。窓口の人は、担当者がどこにいて、どうやって呼ぶのかを知らなくてかまいません。</div>
+      <ul>
+        <li><code>today()-&gt;toDateString()</code>：今日の日付を <code>'2026-10-31'</code> のような文字にします。アプリの時刻の基準は <code>Asia/Tokyo</code>（日本時間）です。</li>
+        <li><code>$shown</code>：上の答え合わせのカードに出す予想の番号（id）の一覧。下の「きょうの予定とやること」に、同じ予想を確かめるタスクを二重に出さないために使います（ステップ7）。</li>
+        <li>受付は数えたり並べたりしません。そうした決まりは全部、係（Query・Service）の中にあります。受付を薄くする決まり（<code>.claude/rules/architecture.md</code>）のとおりです。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>今日の予定の窓口 <code>CalendarAgenda</code>：最初は「いつも空」、あとで本物に差し替える</h4>
+      <p>5人の係のうち <code>AgendaQuery</code>（予定係）は、作られるときにさらに「今日の予定の窓口」を欲しがります。</p>
+      <div class="code"><div class="file">src/app/Queries/Today/AgendaQuery.php</div><pre><code>/** 今日の予定の窓口を受け取る（テストでは偽物に差し替える） */
+public function __construct(private CalendarAgenda $calendar) {}</code></pre></div>
+      <p><code>CalendarAgenda</code> は、中身のない約束だけのクラスです。こういうものを<dfn>窓口（インターフェース）</dfn>と呼びます。「その日の予定を、この形の配列で返す関数 <code>eventsOn</code> を持っていること」だけを決めています。</p>
+      <div class="code"><div class="file">src/app/Contracts/CalendarAgenda.php</div><pre><code>interface CalendarAgenda
+{
+    // …（省略）…
+    public function eventsOn(User $user, string $date): array;
+}</code></pre></div>
+      <p>窓口だけでは動かないので、「この窓口を頼まれたら、このクラスを作って渡す」という結びつけを、アプリの準備の係（サービスプロバイダー）が登録します。結びつけは2回あります。</p>
+      <div class="code"><div class="file">src/app/Providers/AppServiceProvider.php</div><pre><code>/** 係（サービス）をアプリに登録する。今日の予定の窓口は、カレンダーの担当が本物に差し替えるまで「いつも空」の実装を使う */
+public function register(): void
+{
+    $this-&gt;app-&gt;bind(CalendarAgenda::class, NullCalendarAgenda::class);
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Providers/CalendarServiceProvider.php</div><pre><code>/** 窓口と実装を結ぶ */
+public function register(): void
+{
+    $this-&gt;app-&gt;bind(CalendarAgenda::class, GoogleCalendarAgenda::class);</code></pre></div>
+      <p>準備の係を読む順番は <code>bootstrap/providers.php</code> の並びで決まり、<code>CalendarServiceProvider</code> があとです。</p>
+      <div class="code"><div class="file">src/bootstrap/providers.php</div><pre><code>return [
+    AppServiceProvider::class,
+    CalendarServiceProvider::class, // Google カレンダー連携（今日の予定の窓口を本物に差し替えるので AppServiceProvider のあと）
+];</code></pre></div>
+      <p>サービスコンテナの <code>bind</code> は、同じ窓口の名前で登録し直すと前の登録を上書きします。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Container/Container.php</div><pre><code>public function bind($abstract, $concrete = null, $shared = false)
+{
+    // …（省略）…
+    $this-&gt;bindings[$abstract] = ['concrete' =&gt; $concrete, 'shared' =&gt; $shared];</code></pre></div>
+      <p>なので、いま動いているアプリで <code>CalendarAgenda</code> を頼むと、本物の <code>GoogleCalendarAgenda</code> が来ます（tinker で <code>get_class(app(App\Contracts\CalendarAgenda::class))</code> を出して確かめました）。その <code>GoogleCalendarAgenda</code> もまた Google の窓口 <code>CalendarApi</code> を欲しがり、コンテナがそれも作ります（テストのときだけは、メモリに書くだけの偽物 <code>FakeCalendarApi</code>）。</p>
+      <div class="point"><b>ここが大事</b>予定係（<code>AgendaQuery</code>）は「窓口」しか知らないので、カレンダーとつないでいる人でも、つないでいない人でも、テストの偽物でも、同じコードのまま動きます。テストでは <code>$this-&gt;app-&gt;instance(CalendarAgenda::class, …)</code> で決まった予定を返す偽物に差し替えて、並び順を確かめています（<code>tests/Feature/Today/TodayPageTest.php</code>）。</div>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>答え合わせ待ちを集める（<code>DuePredictionsQuery::for</code>）</h4>
+      <p>最初に動く係です。その人の予想のうち、確かめる日が来たのに、まだ答え合わせをしていないものを集めます。</p>
+      <div class="code"><div class="file">src/app/Queries/Today/DuePredictionsQuery.php</div><pre><code>public function for(User $user, string $today): Collection
+{
+    return $user-&gt;predictions()
+        -&gt;whereNull('result')
+        -&gt;whereNull('withdrawn_at')
+        -&gt;where('check_on', '&lt;=', $today)
+        -&gt;with('caseFile:id,title,scene')
+        -&gt;orderBy('check_on')-&gt;orderBy('check_at')-&gt;orderBy('id')
+        -&gt;get();
+}</code></pre></div>
+      <ul>
+        <li><code>$user-&gt;predictions()</code>：「この人の予想」から始めます。<code>predictions</code> 表には持ち主の列 <code>user_id</code> があり、ここで必ず <code>user_id = この人</code> に絞られます。他人の予想は最初から読みません。</li>
+        <li><code>whereNull('result')</code>：結果（当たり・外れなど）がまだない。<code>whereNull('withdrawn_at')</code>：取り下げてもいない。</li>
+        <li><code>where('check_on', '&lt;=', $today)</code>：確かめる日が今日まで（過ぎたものも入る）。</li>
+        <li><code>with('caseFile:id,title,scene')</code>：それぞれの予想がどの事件のものかも、まとめて読んでおきます。行に事件のなぞ（題名）を出すためです。1件ずつ事件を読みに行くと予想の数だけ表を読むことになるので、先にまとめて読みます（<dfn>Eager ロード</dfn>）。<code>:id,title,scene</code> は、読む列を3つに絞る書き方です。</li>
+        <li>並びは確かめる日の古い順（過ぎているものが上）、同じ日なら時刻の早い順。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>predictions</code> 表（この人の、答え合わせ待ちの行）と、<code>case_files</code> 表（その事件の id・題名・場面）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>予定とタスクを1つの並びに混ぜる（<code>AgendaQuery::for</code>）</h4>
+      <div class="code"><div class="file">src/app/Queries/Today/AgendaQuery.php</div><pre><code>public function for(User $user, string $date, array $skipPredictionIds = []): Collection
+{
+    $events = collect($this-&gt;calendar-&gt;eventsOn($user, $date))-&gt;map(fn (array $event) =&gt; [
+        'type' =&gt; 'event',
+        'title' =&gt; $event['title'],
+        'starts_at' =&gt; $event['all_day'] ? null : $event['starts_at'],
+        'ends_at' =&gt; $event['all_day'] ? null : ($event['ends_at'] ?? null),
+        'all_day' =&gt; (bool) $event['all_day'] || blank($event['starts_at']),
+        'task' =&gt; null,
+    ])-&gt;map(fn (array $item) =&gt; $item + ['just_ended' =&gt; self::justEnded($date, $item)]);
+
+    $tasks = $user-&gt;tasks()-&gt;where('due_on', $date)
+        -&gt;where(fn ($query) =&gt; $query-&gt;whereNull('prediction_id')-&gt;orWhereNotIn('prediction_id', $skipPredictionIds))
+        -&gt;orderBy('id')-&gt;get()
+        -&gt;map(fn (Task $task) =&gt; [
+            'type' =&gt; 'task',
+            'title' =&gt; $task-&gt;title,
+            'starts_at' =&gt; $task-&gt;starts_at,
+            'ends_at' =&gt; self::endOf($task),
+            'all_day' =&gt; ! $task-&gt;hasTime(),
+            'task' =&gt; $task,
+            'just_ended' =&gt; false,
+        ]);
+
+    return $events-&gt;concat($tasks)
+        -&gt;sortBy(fn (array $item) =&gt; ($item['all_day'] ? '0' : '1').'|'.($item['starts_at'] ?? '').'|'.($item['type'] === 'event' ? '0' : '1'))
+        -&gt;values();
+}</code></pre></div>
+      <p>4つのことをしています。</p>
+      <ol>
+        <li><b>予定</b>：窓口の <code>eventsOn</code> に今日の Google カレンダーの予定をもらい、画面で使う形（<code>type</code>・<code>title</code>・<code>starts_at</code>・<code>ends_at</code>・<code>all_day</code>・<code>task</code>）にそろえます。つないでいない人は空です（次のステップ）。</li>
+        <li><b>さっき終わった予定の印</b>：予定の1件ずつに <code>just_ended</code>（終わってから少しのあいだか）を足します。画面ではこの印のある予定に「気になったことは？」と一言そえます（ステップ17）。</li>
+        <li><b>タスク</b>：この人のタスク（<code>$user-&gt;tasks()</code> で <code>user_id</code> に絞る）のうち、期日 <code>due_on</code> が今日のもの。済んだタスクも入ります（線を引いて見せ、今日やったことが分かるように）。ただし <code>prediction_id</code>（もとの予想）が上の答え合わせのカードに出す予想の確かめるタスクは外します。同じものを2か所に出さないためです。</li>
+        <li><b>並べる</b>：<code>sortBy</code> に「並べるときの名札」の文字を渡しています。たとえば終日のタスクは <code>0||1</code>、17:30 の予定は <code>1|17:30|0</code>、17:30 のタスクは <code>1|17:30|1</code>。文字の順に並べると、<b>終日が上 → 時刻の早い順 → 同じ時刻なら予定が先</b>になります。</li>
+      </ol>
+      <p>「さっき終わった予定」かどうかは <code>justEnded</code> が決めます。</p>
+      <div class="code"><div class="file">src/app/Queries/Today/AgendaQuery.php</div><pre><code>private static function justEnded(string $date, array $item): bool
+{
+    // 終日の予定・終わりの時刻がない予定は、いつ終わったかわからないので印を付けない
+    if ($item['all_day'] || blank($item['ends_at'])) {
+        return false;
+    }
+    $timeZone = config('suiri.calendar.timezone');
+    $end = Carbon::parse("{$date} {$item['ends_at']}", $timeZone);
+    $now = now($timeZone);
+
+    return $now-&gt;gte($end) &amp;&amp; $now-&gt;lt($end-&gt;copy()-&gt;addHours((int) config('suiri.suggest.just_ended_hours')));
+}</code></pre></div>
+      <p>終わりの時刻を過ぎていて（<code>gte</code>）、そこから <code>config('suiri.suggest.just_ended_hours')</code> の 3 時間たつ前（<code>lt</code>）なら <code>true</code> です。タスクには付けません（タスクは済ませたときに別の枠でさそうため。<a href="#s3">3章</a>）。</p>
+      <p>タスクの終わりの時刻は、開始時刻と予想時間の両方があるときだけ計算します。</p>
+      <div class="code"><div class="file">src/app/Queries/Today/AgendaQuery.php</div><pre><code>private static function endOf(Task $task): ?string
+{
+    // 開始時刻と予想時間の両方があるときだけ、終わりの時刻を出せる
+    if (! $task-&gt;hasTime() || ! $task-&gt;duration_minutes) {
+        return null;
+    }
+
+    return Carbon::createFromFormat('H:i', $task-&gt;starts_at)-&gt;addMinutes($task-&gt;duration_minutes)-&gt;format('H:i');
+}</code></pre></div>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>tasks</code> 表（この人の、期日が今日の行）</li><li>返す：予定とタスクを混ぜた並び（1件は <code>['type' =&gt; 'event'|'task', 'title', 'starts_at', 'ends_at', 'all_day', 'task', 'just_ended']</code>。<code>just_ended</code> は終わってから3時間以内の予定の印。タスクはいつも <code>false</code>）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>本物の窓口 <code>GoogleCalendarAgenda::eventsOn</code>：つないでいなければ聞かない、失敗しても止めない</h4>
+      <div class="code"><div class="file">src/app/Services/Google/GoogleCalendarAgenda.php</div><pre><code>public function eventsOn(User $user, string $date): array
+{
+    return $this-&gt;remember($user, "calendar-agenda:%d:{$date}", fn (CalendarConnection $c) =&gt; $this-&gt;fetch($c, $date));
+}</code></pre></div>
+      <div class="code"><div class="file">同じファイルの <code>remember</code>（これからの予定 <code>upcoming</code> も同じ道を通る）</div><pre><code>private function remember(User $user, string $key, Closure $fetch): array
+{
+    $connection = $user-&gt;calendarConnection;
+
+    // つないでいない・切れた・予定を読む許可がない人は、Google に聞かずに空を返す
+    if ($connection === null || ! $connection-&gt;isActive() || ! $connection-&gt;hasScope(config('suiri.calendar.read_scope'))) {
+        return [];
+    }
+
+    // Google から読む（数分は覚えたものを使う）。失敗したら画面を止めないよう空を返す（失敗は覚えない）
+    try {
+        return Cache::remember(sprintf($key, $connection-&gt;id), config('suiri.calendar.agenda_cache_seconds'), fn () =&gt; $fetch($connection));
+    } catch (Throwable $e) {
+        Log::info('カレンダーの予定を読めなかった', ['connection_id' =&gt; $connection-&gt;id, 'error' =&gt; class_basename($e)]);
+
+        return [];
+    }
+}</code></pre></div>
+      <ul>
+        <li><code>eventsOn</code> は「どの鍵で覚えるか」と「Google からどう読むか（<code>fetch</code>）」を決めて、<code>remember</code> に任せるだけです。予想の「確かめる日」の候補（押すと欄に入る提案のチップ）に使う <code>upcoming</code>（これから14日の予定）も、同じ <code>remember</code> を通ります。</li>
+        <li><code>$user-&gt;calendarConnection</code>：この人の Google カレンダー連携（<code>calendar_connections</code> 表に1人1行。つないでいなければ <code>null</code>）。つなぎ方は <a href="#s9">9章</a>。</li>
+        <li>最初の <code>if</code>：連携がない・状態が「つながっています」でない（<code>isActive</code>）・予定を読む許可（スコープ <code>calendar.events.owned.readonly</code>）をもらっていない、のどれかなら、Google に聞かずに空を返します。</li>
+        <li><code>Cache::remember(鍵, 秒数, 作り方)</code>：<dfn>キャッシュ</dfn>（一時的に覚えておく置き場）に、鍵 <code>calendar-agenda:{連携の番号}:{日付}</code>（<code>sprintf</code> で <code>%d</code> に連携の番号を入れる）の答えがあればそれを返し、なければ <code>fetch</code> で Google に聞いて、答えを覚えてから返します。覚えておく秒数は <code>config('suiri.calendar.agenda_cache_seconds')</code> の <b>300 秒（5分）</b>。今日の画面を開くたびに Google へ聞きに行かずに済みます。</li>
+        <li><code>try … catch</code>：Google が止まっている・許可が取り消されたなどで失敗したら、空を返します。今日の画面そのものはいつもどおり出ます。失敗した答えは覚えないので、次に開いたときにまた聞きに行きます。</li>
+        <li>ログには連携の番号とエラーの種類（<code>class_basename($e)</code>）だけを書き、予定の題名は書きません（<a href="#s11">11章</a>）。</li>
+      </ul>
+      <p>Laravel 本体の <code>remember</code> は、中で次のように動きます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Cache/Repository.php</div><pre><code>public function rememberWithWarmth($key, $ttl, Closure $callback): array
+{
+    $value = $this-&gt;get($key);
+    // …（省略）…
+    if (! is_null($value)) {
+        return [$value, true];
+    }
+
+    $value = $callback();
+
+    $this-&gt;put($key, $value, value($ttl, $value));
+
+    return [$value, false];
+}</code></pre></div>
+      <p>このアプリのキャッシュの置き場は <code>database</code>（<code>cache</code> 表）です。期限が過ぎても同じ鍵を読みに来ない限り行は残るので、worker の箱が5分ごとに期限切れの行を消します。予定の題名と時刻を「数分だけ覚えて、保存しない」約束を守るためです。</p>
+      <div class="code"><div class="file">src/routes/console.php</div><pre><code>// 期限の過ぎたキャッシュの行を5分ごとに消す（今日の予定の題名と時刻を、覚えておく5分を過ぎて表に残さないため）
+Schedule::command('cache:prune-expired')-&gt;everyFiveMinutes();</code></pre></div>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>calendar_connections</code> 表（この人の連携の1行）</li><li>読む・書く：<code>cache</code> 表（鍵 <code>calendar-agenda:…</code> の行。5分で期限切れ）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>Google から読む（<code>fetch</code>）：ふだんのカレンダーの今日の分だけ、題名と日時だけ</h4>
+      <div class="code"><div class="file">src/app/Services/Google/GoogleCalendarAgenda.php</div><pre><code>private function fetch(CalendarConnection $connection, string $date): array
+{
+    $dayStart = CarbonImmutable::parse($date, config('suiri.calendar.timezone'))-&gt;startOfDay();
+    $events = $this-&gt;api-&gt;listEvents($connection, 'primary', $dayStart-&gt;toRfc3339String(), $dayStart-&gt;addDay()-&gt;toRfc3339String());
+
+    // アプリが書いた予定（タスクとして別に出る）を除き、今日の画面の形にして、終日 → 時刻の早い順に並べる
+    return collect($events)
+        -&gt;reject(fn (array $event) =&gt; isset($event['extendedProperties']['private']['suiri_task_id']))
+        -&gt;map(fn (array $event) =&gt; $this-&gt;item($event, $dayStart))
+        -&gt;sortBy(fn (array $item) =&gt; ($item['all_day'] ? '0' : '1').($item['starts_at'] ?? ''))
+        -&gt;values()
+        -&gt;all();
+}</code></pre></div>
+      <ul>
+        <li><code>'primary'</code>：その人のふだんのカレンダー。今日の 0 時から次の日の 0 時までの予定を頼みます。</li>
+        <li><code>reject(…suiri_task_id…)</code>：このアプリが専用カレンダーに書き出した予定（タスクの写し）には印 <code>suiri_task_id</code> が付いています。それはタスクとして別に並ぶので、予定からは外します。</li>
+      </ul>
+      <p>Google への頼み方は <code>CalendarApi::listEvents</code> にあります。受け取る項目を <code>fields</code> で絞っているのが大事な所です。</p>
+      <div class="code"><div class="file">src/app/Services/Google/CalendarApi.php</div><pre><code>public function listEvents(CalendarConnection $connection, string $calendarId, string $timeMin, string $timeMax): array
+{
+    $response = $this-&gt;send($connection, 'get', $this-&gt;calendarPath($calendarId).'/events', [
+        'timeMin' =&gt; $timeMin,
+        'timeMax' =&gt; $timeMax,
+        'singleEvents' =&gt; 'true',
+        'orderBy' =&gt; 'startTime',
+        'maxResults' =&gt; 250,
+        'fields' =&gt; config('suiri.calendar.agenda_fields'),
+    ]);</code></pre></div>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'agenda_fields' =&gt; 'items(summary,start,end,extendedProperties/private)', // 今日の予定で受け取る項目（題名と日時だけ。説明・場所・参加者は受け取らない）</code></pre></div>
+      <div class="point"><b>ここが大事</b>Google からは題名（<code>summary</code>）・開始（<code>start</code>）・終わり（<code>end</code>）と、アプリの印しか受け取りません。予定の説明・場所・参加者は、そもそもこのアプリに届きません。カレンダーとつなぐ前の説明（<a href="#s9">9章</a>）で約束していることを、コードで守っています。</div>
+      <p>1件ずつの形は <code>item</code> がそろえます。日付だけの予定は終日に、時刻つきの予定は日本時間の <code>HH:MM</code> にし、前の日から続く予定は 00:00 から、次の日まで続く予定は終わりを出しません。題名がなければ <code>config('suiri.calendar.untitled')</code> の「（題名なし）」にします。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>外へ：Google Calendar API（<code>GET /calendars/primary/events?…</code>）。届くのは題名と日時だけ</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>期日を過ぎたタスクを数える（<code>AgendaQuery::overdueCount</code>）</h4>
+      <div class="code"><div class="file">src/app/Queries/Today/AgendaQuery.php</div><pre><code>public function overdueCount(User $user, string $date, array $skipPredictionIds = []): int
+{
+    return $user-&gt;tasks()-&gt;open()-&gt;where('due_on', '&lt;', $date)
+        -&gt;where(fn ($query) =&gt; $query-&gt;whereNull('prediction_id')-&gt;orWhereNotIn('prediction_id', $skipPredictionIds))
+        -&gt;count();
+}</code></pre></div>
+      <p>今日の並びには、期日が今日のタスクしか出しません。期日を過ぎた、まだ済んでいないタスク（<code>open()</code>）は数だけ数えて、「前からのやり残しが1件あるよ」という一言でタスクの一覧へさそいます。<code>open()</code> は <code>Task</code> モデルに書いた絞り込みの部品（<dfn>スコープ</dfn>）で、<code>whereNull('done_at')</code>（済んだ日時が空）の意味です。</p>
+      <div class="code"><div class="file">src/app/Models/Task.php</div><pre><code>/** まだ済んでいないタスクだけに絞る */
+#[Scope]
+protected function open(Builder $query): void
+{
+    $query-&gt;whereNull('done_at');
+}</code></pre></div>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>tasks</code> 表（この人の、期日が今日より前でまだ済んでいない行の数）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>今日の練習を1つ選ぶ（<code>DailyPractice::for</code>）</h4>
+      <div class="code"><div class="file">src/app/Services/Guide/DailyPractice.php</div><pre><code>public function for(User $user, ?CarbonInterface $date = null): ?array
+{
+    $practices = $this-&gt;library-&gt;practices();
+    // メニューがないとき（教材のファイルが空）は何も勧めない
+    if ($practices === []) {
+        return null;
+    }
+    $day = ($date ?? now())-&gt;format('Y-m-d');
+
+    return $practices[crc32($day.'#'.$user-&gt;id) % count($practices)];
+}</code></pre></div>
+      <ul>
+        <li>練習メニューは利用者の記録ではなく「本の中身」なので、表ではなくファイル <code>src/database/data/guide/practices.json</code> にあります（いまは 11 件）。読むのは <code>GuideLibrary</code> で、読んだ中身はキャッシュに置き、ファイルが変わったら読み直します（鍵にファイルの更新日時を入れている）。</li>
+        <li><code>crc32($day.'#'.$user-&gt;id)</code>：日付と利用者の番号をつないだ文字（例 <code>2026-10-31#1</code>）から、決まった数を作る計算です。その数をメニューの数で割った余りを、選ぶメニューの番号にします。</li>
+        <li>なので、同じ人が同じ日に何度開いても同じメニューが出て、日付が変わると変わります。選んだ記録を表に保存する必要がありません。</li>
+      </ul>
+      <div class="analogy"><b>たとえると</b>日めくりカレンダーです。今日の紙に書いてあることは、何度見ても同じで、明日になれば次の紙になります。ただし、人ごとに違う日めくりを持っています。</div>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>捜査中の事件の最近3件（<code>OpenCasesQuery::get</code>）</h4>
+      <div class="code"><div class="file">src/app/Queries/Cases/OpenCasesQuery.php</div><pre><code>public function get(User $user): Collection
+{
+    return CaseListQuery::withCounts($user-&gt;caseFiles())
+        -&gt;where('status', CaseStatus::Open)
+        -&gt;latest('updated_at')-&gt;latest('id')
+        -&gt;limit(config('suiri.today.open_cases'))
+        -&gt;get();
+}</code></pre></div>
+      <p>この人の事件（<code>case_files</code> 表）のうち、状態が「捜査中」のものを、最後にさわった順に <code>config('suiri.today.open_cases')</code> の 3 件まで読みます。<code>withCounts</code> は、事件の一覧の係と共通の部品で、手がかり・見立て・予想の数を一緒に数えます。</p>
+      <div class="code"><div class="file">src/app/Queries/Cases/CaseListQuery.php</div><pre><code>return $query-&gt;withCount([
+    'clues',
+    'hypotheses',
+    'predictions as pending_predictions_count' =&gt; fn ($q) =&gt; $q-&gt;whereNull('result')-&gt;whereNull('withdrawn_at'),
+    'predictions as due_predictions_count' =&gt; fn ($q) =&gt; $q-&gt;whereNull('result')-&gt;whereNull('withdrawn_at')
+        -&gt;where('check_on', '&lt;=', $today),
+    'predictions as resolved_predictions_count' =&gt; fn ($q) =&gt; $q-&gt;whereNotNull('result'),
+]);</code></pre></div>
+      <p><code>withCount</code> は、事件1件ごとに「手がかりの数」などを数える小さな問い合わせを、事件を読む1回の問い合わせの中に埋め込みます。結果は <code>clues_count</code>・<code>hypotheses_count</code>・<code>pending_predictions_count</code>（答え合わせ待ち）・<code>due_predictions_count</code>（確かめる日が来た）・<code>resolved_predictions_count</code>（答え合わせ済み）という名前で、事件の行に付いてきます。画面ではこの数から、事件がいまどの段にいるか（なぞ → 見たこと → どうして？ → もしそうなら → 答え合わせ）を決めます。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>case_files</code> 表（この人の捜査中の事件3件）と、その数を数えるために <code>clues</code>・<code>hypotheses</code>・<code>predictions</code> 表</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>済ませた直後のタスクを探す（<code>TaskListQuery::justDone</code>）</h4>
+      <p>タスクの丸を押して済みにすると、サーバーは「済ませたタスクの番号」を一度だけのお知らせ（<code>session('task_done')</code>）に入れて、元の画面へ送り返します（<a href="#s3">3章</a>）。今日の画面は、そのお知らせがあるときだけ、そのタスクを探します。</p>
+      <div class="code"><div class="file">src/app/Queries/Tasks/TaskListQuery.php</div><pre><code>public function justDone(User $user, mixed $id): ?Task
+{
+    // 済みにした直後でなければ（お知らせに id がなければ）、さそう枠は出さない
+    if (! is_numeric($id)) {
+        return null;
+    }
+
+    return $user-&gt;tasks()-&gt;done()-&gt;find((int) $id);
+}</code></pre></div>
+      <p>探すのは「この人の、済んだタスク」の中からです。お知らせの番号が他人のタスクを指していても、見つからずに <code>null</code> になります。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>画面の骨組み <code>&lt;x-layouts.app&gt;</code>：上の帯・ナビ・お知らせ</h4>
+      <p>受付の <code>view('today.index', [...])</code> で、<dfn>Blade</dfn>（HTML の型紙）の <code>resources/views/today/index.blade.php</code> に値を渡して HTML を作ります。この画面は、ログイン後の画面に共通の骨組み <code>&lt;x-layouts.app&gt;</code> の中に書かれています。<code>&lt;x-…&gt;</code> の形のものは<dfn>部品（Blade コンポーネント）</dfn>で、<code>resources/views/components/</code> の中のファイルです（<code>x-layouts.app</code> なら <code>components/layouts/app.blade.php</code>）。</p>
+      <div class="code"><div class="file">src/resources/views/components/layouts/app.blade.php</div><pre><code>@props(['title', 'wide' =&gt; false])
+@php($width = $wide ? 'max-w-3xl lg:max-w-5xl' : 'max-w-3xl')
+{{-- …（省略）… --}}
+&lt;meta name="csrf-token" content="{{ csrf_token() }}"&gt;
+&lt;title&gt;{{ $title }}｜{{ config('app.name') }}&lt;/title&gt;
+{{-- …（省略）… --}}
+@vite(['resources/css/app.css', 'resources/js/app.js'])
+{{-- …（省略）… --}}
+&lt;x-layouts.nav variant="side" /&gt;
+{{-- …（省略）… --}}
+&lt;h1 class="min-w-0 flex-1 truncate text-base text-muted"&gt;{{ $title }}&lt;/h1&gt;
+{{-- …（省略）… --}}
+&lt;main class="mx-auto {{ $width }} px-4 pt-4 pb-32 md:pt-6 md:pb-12"&gt;
+  &lt;x-ui.flash /&gt;
+  {{ $slot }}
+  &lt;x-layouts.footer class="mt-12" /&gt;
+&lt;/main&gt;
+{{-- …（省略）… --}}
+&lt;x-layouts.nav variant="bottom" /&gt;</code></pre></div>
+      <ul>
+        <li><code>@props</code>：部品が受け取る値の名前と、渡されなかったときの値。<code>title</code> は上の帯の見出しとブラウザのタブの名前、<code>wide</code> はパソコンで中身の幅を広げるか（左右2列に分ける事件の画面だけが使う）です。</li>
+        <li><code>@vite(…)</code>：ビルドした CSS と JavaScript を読み込む行を書き出します。外のサイトのフォントや CDN は読み込みません。</li>
+        <li><code>&lt;x-layouts.nav&gt;</code> を2回置いています。<code>variant="side"</code> はパソコンの左の縦のナビ、<code>variant="bottom"</code> はスマホの下の固定ナビで、画面の幅で片方だけが見えます。いまの画面の項目（<code>request()-&gt;routeIs('today')</code>）には印が付きます。</li>
+        <li><code>&lt;x-ui.flash /&gt;</code>：受付が <code>-&gt;with('status', …)</code> で渡した一度だけのお知らせ（「〜を書いておいたよ。」など）を、中身の上に出します。</li>
+        <li><code>{{ $slot }}</code>：骨組みの中に、今日の画面の中身がはまる場所です。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>今日の画面の並び：開いた瞬間に「今日やること」が1つだけ大きく見える</h4>
+      <div class="code"><div class="file">src/resources/views/today/index.blade.php</div><pre><code>&lt;x-layouts.app :title="__(config('suiri.today.heading'), ['date' =&gt; \Carbon\Carbon::parse($today)-&gt;isoFormat(config('suiri.today.date_format'))])"&gt;
+  &lt;div class="space-y-6"&gt;
+    &lt;x-task.done-followup :task="$justDone" /&gt;
+
+    &lt;x-today.next-step :predictions="$predictions" :cue="$user-&gt;cue" /&gt;
+
+    &lt;x-today.agenda :items="$items" :overdue="$overdue"&gt;
+      &lt;x-task.quick-add :due="$today" back="today" /&gt;
+    &lt;/x-today.agenda&gt;
+
+    &lt;div class="grid gap-x-8 gap-y-6 md:grid-cols-2"&gt;
+      &lt;x-today.practice-suggestion :practice="$practice" :kid="$user-&gt;prefersKidWords()" /&gt;
+      &lt;x-today.open-cases :cases="$cases" /&gt;
+    &lt;/div&gt;
+    {{-- …（省略）… --}}
+  &lt;/div&gt;
+&lt;/x-layouts.app&gt;</code></pre></div>
+      <p>上の帯の見出しは <code>config('suiri.today.heading')</code> の <code>:dateきょう</code> に、今日の日付を <code>M月D日（ddd）</code> の形で入れたもの（例「10月31日（土）きょう」）です。中身は上から次の順です（設計書 <code>docs/design/basic-design.md</code> の D-1）。</p>
+      <ol>
+        <li>（済ませた直後だけ）<b>「できたね！」の枠</b>：実際は何分だったか・気になることをさそいます（<a href="#s3">3章</a>）。何もしなくてかまいません。</li>
+        <li><b>いまやることのカード</b>（<code>&lt;x-today.next-step&gt;</code>）：1画面に1枚だけ。答え合わせの日が来た予想があれば「答え合わせしよう」、なければ「気になったこと、ある？」（次のステップ）。</li>
+        <li><b>きょうの予定とやること</b>：時刻順の並び。見出しの横の「＋ 書く」で、すばやく書く欄（<code>&lt;x-task.quick-add&gt;</code>）が開きます。その欄は、部品の中身（slot）として渡しています。</li>
+        <li><b>きょうの練習</b>と<b>捜査中の事件</b>：どちらも、やらなくてよいものなので、下に小さく。パソコンの幅（<code>md:grid-cols-2</code>）では左右に並べます。</li>
+      </ol>
+      <p>省いた所では、答え合わせのカードを出している日だけ、気になったことを書く入口を下に小さく1行で残しています（いまやることのカードが答え合わせに使われていても、書く道をなくさないため）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>部品 <code>&lt;x-today.next-step&gt;</code>：いまやることのカードを1枚だけ</h4>
+      <div class="code"><div class="file">src/resources/views/components/today/next-step.blade.php</div><pre><code>@props(['predictions' =&gt; [], 'cue' =&gt; null])
+@php($first = collect($predictions)-&gt;first())
+@php($rest = collect($predictions)-&gt;slice(1))
+@php($words = config('suiri.today.answer'))
+{{-- 答え合わせの日が来た予想があれば答え合わせのカードを、なければ気になったことを書くカードを出す --}}
+@if ($first)
+  &lt;x-ui.step-card icon="check" tone="answer" :title="$words['title']" :hint="$words['hint']" {{ $attributes }}&gt;
+    &lt;x-today.due-prediction :prediction="$first" /&gt;
+    {{-- …（省略）… --}}
+        &lt;x-ui.big-button :href="route('predictions.show', $first)" icon="check" tone="answer"&gt;{{ $words['button'] }}&lt;/x-ui.big-button&gt;
+    {{-- …（省略）… --}}
+        &lt;x-today.due-predictions :predictions="$rest" :label="__($words['more'], ['count' =&gt; $rest-&gt;count()])" /&gt;
+    {{-- …（省略）… --}}
+@else
+  &lt;x-ui.step-card icon="eye" tone="clue" :title="config('suiri.today.record.title')" :hint="config('suiri.today.record.hint')" {{ $attributes }}&gt;
+    {{-- 記録のきっかけを決めていれば、「いつ書くか」の一文をカードの中に出す --}}
+    @if (filled($cue))
+    {{-- …（省略）… --}}
+        &lt;span class="text-lg leading-snug font-semibold text-pretty break-words"&gt;{{ $cue }}&lt;/span&gt;
+    {{-- …（省略）… --}}
+        &lt;x-ui.big-button :href="route('cases.create')" icon="plus" tone="clue"&gt;{{ config('suiri.today.record.button') }}&lt;/x-ui.big-button&gt;</code></pre></div>
+      <p><dfn>いまやることのカード</dfn>は、この手帳の画面づくりの土台の部品です。役目は「この画面で、いま何をすればよいか」を1つだけ大きく見せること。たとえると、机の上に置かれた捜査ファイル1冊です。何冊も積まず、いちばん上の1冊だけを開いて置きます。中身は <code>&lt;x-ui.step-card&gt;</code> で、上に段の色のつまみ（<code>tone</code>：答え合わせは深い赤の <code>answer</code>、手がかりは <code>clue</code>）、問いの見出し・例（<code>hint</code>）・中身・主なボタン（<code>action</code>）・「あとでできること」（<code>later</code>）の順に並びます。</p>
+      <ul>
+        <li><b>答え合わせの日が来た予想があるとき</b>：ステップ6で集めた予想のうち、いちばん古い1件（<code>$first</code>）だけをカードにし、大きなボタン「答え合わせする」で予想の画面 <code>/predictions/{prediction}</code> へ進みます（そこからは <a href="#s7">7章</a>）。2件目からは「ほかにも◯件あるよ」とたたんで、カードの下に置きます（<code>&lt;x-today.due-predictions&gt;</code>。JavaScript を使わない <code>&lt;details&gt;</code> で、押すと開く）。</li>
+        <li><b>ないとき</b>：「気になったこと、ある？」のカード。設定で決めた<b>記録のきっかけ</b>（<code>users.cue</code>。例「夕食のあとに、気になったことを1つ」）があれば「書くタイミング」としてカードの中に出し、大きなボタン「気になったことを書こう」で事件を作る画面へ進みます（<a href="#s4">4章</a>）。きっかけをまだ決めていなければ、カードの下で「時間を決める」（設定）へ小さくさそいます。</li>
+        <li>見出しやボタンの言葉は、どれも <code>config/suiri.php</code> の <code>today</code> に集めてあり、部品には直書きしていません。</li>
+      </ul>
+      <p>予想1件の中身は <code>&lt;x-today.due-prediction&gt;</code> が出します。事件のなぞ（ステップ6で一緒に読んだ <code>caseFile</code> の題名）・書いた予想の文・書いた日と自信・確かめる日です。</p>
+      <div class="code"><div class="file">src/resources/views/components/today/due-prediction.blade.php</div><pre><code>&lt;p class="text-sm text-muted break-words"&gt;&lt;span class="font-semibold"&gt;{{ $words['case'] }}&lt;/span&gt;：{{ $prediction-&gt;caseFile?-&gt;title }}&lt;/p&gt;
+{{-- …（省略）… --}}
+&lt;p @class(['leading-snug font-bold break-words', 'font-mincho text-xl' =&gt; ! $compact, 'mt-1 text-base' =&gt; $compact])&gt;「{{ $prediction-&gt;statement }}」&lt;/p&gt;
+{{-- …（省略）… --}}
+    {{-- 確かめる日が今日なら「きょうが確かめる日」、過ぎていれば「確かめる日は◯月◯日だったよ」 --}}
+    @if ($dueToday)
+      {{ $words['due_today'] }}
+    @else
+      {{ __($words['due_past'], ['date' =&gt; $checkOn-&gt;isoFormat(config('suiri.today.date_format'))]) }}
+    @endif</code></pre></div>
+      <p><code>{{ … }}</code> は、値を HTML の記号を無害にしてから書き出します。予想の文に <code>&lt;script&gt;</code> と書かれていても、文字として出るだけです。</p>
+      <figure class="shot"><img data-img="screen-today-answer.png" alt="今日の画面・答え合わせの日が来たとき。深い赤の「答え合わせしよう」のカードに、なぞ・あなたの予想・自信・確かめる日と「答え合わせする」"><figcaption>答え合わせの日が来た予想があるときの、いまやることのカード（スマホ）</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>部品 <code>&lt;x-today.agenda&gt;</code>：左に時刻、タスクには丸、予定は読むだけ</h4>
+      <div class="code"><div class="file">src/resources/views/components/today/agenda.blade.php</div><pre><code>@props(['items' =&gt; [], 'overdue' =&gt; 0])
+@php($words = config('suiri.today.agenda'))
+{{-- …（省略）… --}}
+  &lt;details class="group" @if ($errors-&gt;hasAny(['title', 'due_on'])) open @endif&gt;
+    {{-- …（省略）… --}}
+    &lt;div class="border-t border-rule bg-paper px-4 py-4"&gt;{{ $slot }}&lt;/div&gt;
+  &lt;/details&gt;
+  {{-- …（省略）… --}}
+      @foreach ($items as $item)
+        &lt;li class="flex items-center gap-1 pr-2 pl-3"&gt;
+          &lt;span class="w-14 shrink-0 text-xs font-bold whitespace-nowrap tabular-nums text-muted"&gt;{{ $item['all_day'] ? ($item['type'] === 'task' ? $words['anytime'] : $words['all_day']) : $item['starts_at'] }}&lt;/span&gt;
+          {{-- やることならタスクの行（済ませる丸つき）、予定なら予定の行（読むだけ） --}}
+          @if ($item['type'] === 'task')
+            &lt;x-task.item :task="$item['task']" :date="false" :time="false" curious class="min-w-0 flex-1" /&gt;
+          @else
+            &lt;x-today.agenda-event :item="$item" class="min-w-0 flex-1" /&gt;
+          @endif
+        &lt;/li&gt;
+      @endforeach
+  {{-- …（省略）… --}}
+  {{-- 期日を過ぎたやることがあれば、一覧（きょう）で見られるようにさそう --}}
+  @if ($overdue &gt; 0)
+    &lt;a href="{{ route('tasks.index', ['view' =&gt; 'today']) }}" class="flex min-h-14 items-center justify-between gap-2 border-t border-rule px-4 font-semibold text-answer no-underline hover:bg-answer-soft"&gt;</code></pre></div>
+      <ul>
+        <li><code>&lt;details&gt;</code>：HTML にもともとある「押すと開く・閉じる」箱です。すばやく書く欄（<code>{{ $slot }}</code>）は最初は閉じておき、見出しの横の「＋ 書く」を押すと開きます。JavaScript は使いません。題名や期日のまちがいで送り返されたとき（<code>$errors-&gt;hasAny(…)</code>）だけは、開いたまま出します。</li>
+        <li>左の時刻：時刻つきなら <code>17:30</code> のように、時刻のない予定は「終日」、時刻のないタスクは「いつでも」。</li>
+        <li>タスクの行は <code>&lt;x-task.item&gt;</code>。左の丸を押すとその場で済みにできます（<a href="#s3">3章</a>）。今日の並びなので期日と時刻は行の中に重ねて出しません（<code>:date="false" :time="false"</code>）。<code>curious</code> を付けると、済んだタスクの右に「気になる」が出ます（まだのタスクには出さず、行の操作を丸の1つにしぼる）。</li>
+        <li>予定の行は <code>&lt;x-today.agenda-event&gt;</code>（下）。読むだけで、右に「気になる」があります。</li>
+        <li>期日を過ぎたタスクがあれば、「前からのやり残しが◯件あるよ」でタスクの一覧の「きょう」のタブ（<code>/tasks?view=today</code>）へさそいます。</li>
+      </ul>
+      <div class="code"><div class="file">src/resources/views/components/today/agenda-event.blade.php</div><pre><code>@props(['item'])
+{{-- …（省略）… --}}
+    &lt;p class="line-clamp-2 text-base leading-snug font-semibold break-words"&gt;{{ $item['title'] }}&lt;/p&gt;
+    {{-- …（省略）… --}}
+    {{-- 終わって少したった予定なら、気になったことを書くよう一言そえる --}}
+    @if ($item['just_ended'] ?? false)
+      &lt;p class="mt-1 text-sm font-semibold text-clue"&gt;{{ config('suiri.suggest.just_ended_label') }}&lt;/p&gt;
+    @endif
+  &lt;/div&gt;
+  &lt;x-task.curious origin="event" :label="$item['title'].($item['all_day'] ? '' : '（'.$item['starts_at'].'）')" :strong="$item['just_ended'] ?? false" /&gt;</code></pre></div>
+      <p>ステップ7で付けた「さっき終わった予定」の印（<code>just_ended</code>）があると、「さっき終わった予定：気になったことは？」と一言そえ、「気になる」のボタンを深い赤の枠で目立たせます（<code>:strong</code>）。予定が終わった直後は、気になったことをいちばん覚えているからです。ボタンを押すと、その予定の題名と時刻を事件のきっかけとして、事件を作る画面へ持っていきます（<a href="#s4">4章</a>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>部品 <code>&lt;x-today.practice-suggestion&gt;</code> と <code>&lt;x-today.open-cases&gt;</code>：下に小さく</h4>
+      <div class="code"><div class="file">src/resources/views/components/today/practice-suggestion.blade.php</div><pre><code>{{-- 練習メニューが選ばれているときだけ出す --}}
+@if ($practice)
+  {{-- …（省略）… --}}
+    &lt;p class="mt-2 text-base font-bold"&gt;{{ $practice['name'] }}&lt;/p&gt;
+    &lt;p class="mt-0.5 line-clamp-2 text-sm text-muted"&gt;{{ $kid ? $practice['kid_description'] : $practice['description'] }}&lt;/p&gt;
+    {{-- …（省略）… --}}
+        &lt;a href="{{ route('cases.create', ['origin' =&gt; 'practice', 'practice' =&gt; $practice['key']]) }}" class="inline-flex min-h-11 items-center gap-1 font-bold text-ink"&gt;{{ $words['start'] }}&lt;span aria-hidden="true"&gt;›&lt;/span&gt;&lt;/a&gt;
+    {{-- …（省略）… --}}
+      &lt;span class="text-sm text-muted"&gt;{{ $words['note'] }}&lt;/span&gt;</code></pre></div>
+      <ul>
+        <li>やらなくてもよいことが伝わるよう、カードにせず、上に細い線を引いただけの小さな枠にします。</li>
+        <li>説明は、ふだんの場面（設定）が「親子」の人には子ども向けの文（<code>kid_description</code>）、ほかの人には大人向けの文を出します（<code>$user-&gt;prefersKidWords()</code>）。</li>
+        <li>「やってみる」は、事件を作る画面へ練習メニューの印（<code>origin=practice</code>・<code>practice=キー</code>）を付けて移ります。その先は <a href="#s4">4章</a>。</li>
+        <li>最後に「気が向いたときだけでOK」（<code>$words['note']</code>）と添え、やらなくても何も起きないことを画面の言葉でも伝えます。</li>
+      </ul>
+      <p><code>&lt;x-today.open-cases&gt;</code> は、ステップ12で読んだ事件を1件ずつ <code>&lt;x-case.summary compact&gt;</code>（事件の一覧と同じ1件の形を短くしたもの）で並べ、押すとその事件の画面へ進みます。1件には、段ごとの進み具合の小さな丸と「次は『どうして？』」のような一言を、ステップ12で数えた数から出します。確かめる日が来た予想があれば（<code>due_predictions_count</code>）、右上に赤い「答え合わせの日」の札も出します。事件がなければ「まだ事件はないよ。気になったことを書くと、ここに入るよ。」の一言だけです（書くボタンは上のいまやることのカードにあるので、ここでは重ねない）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>帰り道で守りの札を付ける（<code>SecurityHeaders</code>）</h4>
+      <p>できた HTML は返事（レスポンス）になり、来た道を逆にたどって見張り役を通り抜けます。全体の見張り役の <code>SecurityHeaders</code> は、ここで返事に札（ヘッダ）を足します。</p>
+      <div class="code"><div class="file">src/app/Http/Middleware/SecurityHeaders.php</div><pre><code>// ログイン中の人への応答なら、自分の記録が端末や CloudFront に残らないよう、取り置きを禁じる
+if ($request-&gt;hasSession() &amp;&amp; $request-&gt;user() !== null) {
+    $response-&gt;headers-&gt;set('Cache-Control', 'private, no-store');
+}</code></pre></div>
+      <p>今日の画面には自分の予想や予定の題名が載っているので、<code>Cache-Control: private, no-store</code>（取り置かないで）を付け、ブラウザにも本番の前に立つ CloudFront にも保存させません。ほかの札（<code>X-Frame-Options</code> など）は <a href="#s11">11章</a> で説明します。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>返す：<code>200</code> と HTML。ヘッダに <code>Cache-Control: private, no-store</code> ほか守りの札</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>今日の画面が出る</h4>
+      <p>ブラウザは HTML を受け取り、<code>@vite</code> が書き出した CSS と JavaScript を読み込んで画面を描きます。JavaScript のファイルは読み込みますが、この画面で動かすものはありません。丸を押す・「気になる」を押すのはふつうのフォームの送信、「答え合わせする」「気になったことを書こう」はリンク、「＋ 書く」と「ほかにも◯件あるよ」は <code>&lt;details&gt;</code> です。なので、JavaScript が動かない端末でも同じように使えます。</p>
+      <figure class="shot"><img data-img="screen-today.png" alt="今日の画面。いちばん上に「気になったこと、ある？」のカード、その下にきょうの予定とやること（さっき終わった予定に印）、きょうの練習、捜査中の事件"><figcaption>今日の画面（スマホ）。答え合わせの日が来た予想がない日は、いちばん上が「気になったこと、ある？」のカード → きょうの予定とやること（さっき終わった予定に一言）→ きょうの練習 → 捜査中の事件</figcaption></figure>
+    </li>
+  </ol>
+
+  <div class="recap"><b>この章のまとめ</b><ol>
+    <li><code>/today</code> はログインした人の最初の画面（<code>Landing::url()</code>）。見張り役 <code>auth</code> と <code>agreed</code> を通った人だけが来られる。</li>
+    <li>受付 <code>TodayController</code> は、5人の係（Query・Service）をサービスコンテナに作ってもらい、集めた値を画面に渡すだけ。</li>
+    <li>どの係も <code>$user-&gt;predictions()</code>・<code>$user-&gt;tasks()</code>・<code>$user-&gt;caseFiles()</code> から始めるので、読むのはいつもその人の記録だけ。</li>
+    <li>今日の予定は窓口 <code>CalendarAgenda</code> から。準備の係が「いつも空」を本物 <code>GoogleCalendarAgenda</code> に差し替える。本物は題名と日時だけを受け取り、5分だけキャッシュに覚え、失敗しても画面を止めない。</li>
+    <li>画面は骨組み <code>&lt;x-layouts.app&gt;</code> の中に、いまやることのカード（<code>&lt;x-today.next-step&gt;</code>）を1枚だけ大きく置く。答え合わせの日が来た予想があれば「答え合わせしよう」（いちばん古い1件。ほかはたたむ）、なければ記録のきっかけと「気になったことを書こう」。</li>
+    <li>その下に、時刻順の「きょうの予定とやること」（「＋ 書く」で開く欄、さっき終わった予定への一言）、下に小さく練習と捜査中の事件。帰り道で <code>SecurityHeaders</code> が「取り置かないで」の札を付ける。</li>
+  </ol></div>
+</section>

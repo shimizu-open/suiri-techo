@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1210" height="720" viewBox="0 0 1210 720" font-family="'Hiragino Sans','Noto Sans JP','Yu Gothic','Meiryo',sans-serif"><title>推理手帳の全体の部品（本番）</title><defs><marker id="ah1d1d24" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#1d1d24"/></marker><marker id="ah3b5ba8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#3b5ba8"/></marker><marker id="ah8c1c2b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#8c1c2b"/></marker></defs><rect width="1210" height="720" fill="#ffffff"/>
+<text x="24" y="38" font-size="19" fill="#1f2d4a" font-weight="bold" text-anchor="start">推理手帳の全体の部品（本番の形。手元では CloudFront がなく、ブラウザから web に直接つなぐ）</text>
+<rect x="20" y="110" width="190" height="190" rx="10" fill="#fffaf0" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M20 120 a10 10 0 0 1 10 -10 h170 a10 10 0 0 1 10 10 v20 h-190 z" fill="#1f2d4a"/>
+<text x="115.0" y="131" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">① ブラウザ</text>
+<text x="32" y="158" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">スマホ・パソコン</text>
+<text x="32" y="177" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">サーバーが作った</text>
+<text x="32" y="196" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">HTML を表示する</text>
+<text x="32" y="215" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">JavaScript なしで動く</text>
+<text x="32" y="234" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">ふつうのフォームで送る</text>
+<rect x="250" y="110" width="190" height="190" rx="10" fill="#fffaf0" stroke="#8a6a2a" stroke-width="2"/>
+<path d="M250 120 a10 10 0 0 1 10 -10 h170 a10 10 0 0 1 10 10 v20 h-190 z" fill="#8a6a2a"/>
+<text x="345.0" y="131" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">② CloudFront</text>
+<text x="262" y="158" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">suiri-prod-cf</text>
+<text x="262" y="177" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">https の受付</text>
+<text x="262" y="196" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">（証明書 suiri-prod-cert）</text>
+<text x="262" y="215" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">画面は取り置かない</text>
+<text x="262" y="234" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">（CachingDisabled）</text>
+<path d="M210 190 L250 190" fill="none" stroke="#1d1d24" stroke-width="2" marker-end="url(#ah1d1d24)"/>
+<text x="230" y="180" font-size="12" fill="#1d1d24" font-weight="normal" text-anchor="middle">https</text>
+<rect x="470" y="70" width="490" height="590" rx="14" fill="#f4f1ea" stroke="#5a5a66" stroke-width="2" stroke-dasharray="8 5"/>
+<text x="486" y="96" font-size="15" fill="#1f2d4a" font-weight="bold" text-anchor="start">③ EC2 suiri-prod-ec2（東京）</text>
+<text x="486" y="116" font-size="12" fill="#5a5a66" font-weight="normal" text-anchor="start">docker compose で4つの箱（コンテナ）を動かす</text>
+<rect x="490" y="135" width="190" height="200" rx="10" fill="#fffaf0" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M490 145 a10 10 0 0 1 10 -10 h170 a10 10 0 0 1 10 10 v20 h-190 z" fill="#1f2d4a"/>
+<text x="585.0" y="156" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">web（nginx 1.27）</text>
+<text x="502" y="183" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">入口の門番</text>
+<text x="502" y="202" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">CSS・JS・画像は</text>
+<text x="502" y="221" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">自分で返す</text>
+<text x="502" y="240" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">.php の仕事だけ</text>
+<text x="502" y="259" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">app へ渡す</text>
+<text x="502" y="278" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">ファイルを送る形の</text>
+<text x="502" y="297" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">送信は 415 で止める</text>
+<rect x="740" y="135" width="200" height="200" rx="10" fill="#fffaf0" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M740 145 a10 10 0 0 1 10 -10 h180 a10 10 0 0 1 10 10 v20 h-200 z" fill="#1f2d4a"/>
+<text x="840.0" y="156" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">app（PHP 8.4）</text>
+<text x="752" y="183" font-size="13" fill="#1d1d24" font-weight="bold" text-anchor="start">Laravel 13 の本体</text>
+<text x="752" y="202" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">画面を作る・保存する</text>
+<text x="752" y="221" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">ルート → 受付 → 用事</text>
+<text x="752" y="240" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">→ モデル → 画面</text>
+<text x="752" y="259" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">Node.js 22 で画面の</text>
+<text x="752" y="278" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">CSS をビルドする</text>
+<rect x="490" y="395" width="190" height="170" rx="10" fill="#fffaf0" stroke="#1e5b3e" stroke-width="2"/>
+<path d="M490 405 a10 10 0 0 1 10 -10 h170 a10 10 0 0 1 10 10 v20 h-190 z" fill="#1e5b3e"/>
+<text x="585.0" y="416" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">db（MySQL 8.4）</text>
+<text x="502" y="443" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">記録の保管庫</text>
+<text x="502" y="462" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">利用者・事件・</text>
+<text x="502" y="481" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">タスク・予想…</text>
+<text x="502" y="500" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">jobs・cache・sessions</text>
+<text x="502" y="519" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">の表もここ</text>
+<text x="502" y="538" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">db-store に保存</text>
+<rect x="740" y="395" width="200" height="170" rx="10" fill="#fffaf0" stroke="#8c1c2b" stroke-width="2"/>
+<path d="M740 405 a10 10 0 0 1 10 -10 h180 a10 10 0 0 1 10 10 v20 h-200 z" fill="#8c1c2b"/>
+<text x="840.0" y="416" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">worker</text>
+<text x="752" y="443" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">後回しの仕事の係</text>
+<text x="752" y="462" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">queue:work：jobs 表の</text>
+<text x="752" y="481" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">仕事を片づける</text>
+<text x="752" y="500" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">schedule:work：15分・</text>
+<text x="752" y="519" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">5分ごとの決まった仕事</text>
+<path d="M440 190 L490 190" fill="none" stroke="#1d1d24" stroke-width="2" marker-end="url(#ah1d1d24)"/>
+<text x="465" y="172" font-size="12" fill="#1d1d24" font-weight="normal" text-anchor="middle">http</text>
+<text x="465" y="210" font-size="12" fill="#1d1d24" font-weight="normal" text-anchor="middle">80番</text>
+<path d="M680 235 L740 235" fill="none" stroke="#1d1d24" stroke-width="2" marker-end="url(#ah1d1d24)"/>
+<text x="710" y="226" font-size="11" fill="#5a5a66" font-weight="normal" text-anchor="middle">9000番</text>
+<path d="M840 335 L840 365 L585 365 L585 395" fill="none" stroke="#1d1d24" stroke-width="2" marker-end="url(#ah1d1d24)"/>
+<text x="712" y="358" font-size="12" fill="#1d1d24" font-weight="normal" text-anchor="middle">読み書き（3306番）</text>
+<path d="M740 480 L680 480" fill="none" stroke="#1d1d24" stroke-width="2" marker-end="url(#ah1d1d24)"/>
+<text x="710" y="471" font-size="11" fill="#5a5a66" font-weight="normal" text-anchor="middle">読み書き</text>
+<text x="490" y="595" font-size="12" fill="#5a5a66" font-weight="normal" text-anchor="start">・./src（Laravel 本体）を、箱の中では /data として</text>
+<text x="490" y="613" font-size="12" fill="#5a5a66" font-weight="normal" text-anchor="start">　web・app・worker が共有する</text>
+<text x="490" y="633" font-size="12" fill="#5a5a66" font-weight="normal" text-anchor="start">・門番 suiri-prod-sg：80番は CloudFront からだけ通す</text>
+<rect x="1015" y="110" width="180" height="190" rx="10" fill="#fffaf0" stroke="#3b5ba8" stroke-width="2"/>
+<path d="M1015 120 a10 10 0 0 1 10 -10 h160 a10 10 0 0 1 10 10 v20 h-180 z" fill="#3b5ba8"/>
+<text x="1105.0" y="131" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">④ Google ログイン</text>
+<text x="1027" y="158" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">Socialite で使う</text>
+<text x="1027" y="177" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">受け取るのは</text>
+<text x="1027" y="196" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">名前・メール・</text>
+<text x="1027" y="215" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">アイコン・ID だけ</text>
+<text x="1027" y="234" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">招待されたメール</text>
+<text x="1027" y="253" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">だけ登録できる</text>
+<rect x="1015" y="360" width="180" height="230" rx="10" fill="#fffaf0" stroke="#3b5ba8" stroke-width="2"/>
+<path d="M1015 370 a10 10 0 0 1 10 -10 h160 a10 10 0 0 1 10 10 v20 h-180 z" fill="#3b5ba8"/>
+<text x="1105.0" y="381" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">⑤ Google カレンダー</text>
+<text x="1027" y="408" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">専用カレンダー</text>
+<text x="1027" y="427" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">「推理手帳」に書く</text>
+<text x="1027" y="446" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">（タスクの題名・</text>
+<text x="1027" y="465" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">日時・リンクだけ）</text>
+<text x="1027" y="484" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">ふだんのカレンダー</text>
+<text x="1027" y="503" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">の今日の予定を読む</text>
+<text x="1027" y="522" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">（題名と時刻だけ・</text>
+<text x="1027" y="541" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">5分だけ覚える）</text>
+<path d="M940 160 L1015 160" fill="none" stroke="#3b5ba8" stroke-width="2" marker-end="url(#ah3b5ba8)"/>
+<text x="988" y="150" font-size="12" fill="#3b5ba8" font-weight="normal" text-anchor="middle">ログイン</text>
+<path d="M940 290 L985 290 L985 410 L1015 410" fill="none" stroke="#3b5ba8" stroke-width="2" marker-end="url(#ah3b5ba8)"/>
+<text x="992" y="335" font-size="11" fill="#3b5ba8" font-weight="normal" text-anchor="start">今日の予定</text>
+<path d="M940 520 L1015 520" fill="none" stroke="#8c1c2b" stroke-width="2" marker-end="url(#ah8c1c2b)"/>
+<text x="988" y="496" font-size="11" fill="#8c1c2b" font-weight="normal" text-anchor="middle">書き出し</text>
+<text x="988" y="511" font-size="11" fill="#8c1c2b" font-weight="normal" text-anchor="middle">取り込み</text>
+<text x="24" y="690" font-size="13" fill="#1f2d4a" font-weight="normal" text-anchor="start">AI は使いません（ワトソンのひとことは決まった規則）。外部の書体・CDN・アクセス解析・広告も読み込みません。外とつながるのは Google だけです。</text>
+<text x="24" y="352" font-size="13" fill="#1f2d4a" font-weight="bold" text-anchor="start">手元（開発）：</text>
+<text x="24" y="372" font-size="12" fill="#5a5a66" font-weight="normal" text-anchor="start">http://localhost:8086 → web</text>
+<text x="24" y="390" font-size="12" fill="#5a5a66" font-weight="normal" text-anchor="start">DB はホストの 127.0.0.1:3311</text>
+<text x="24" y="408" font-size="12" fill="#5a5a66" font-weight="normal" text-anchor="start">（CloudFront はない）</text>
+</svg>

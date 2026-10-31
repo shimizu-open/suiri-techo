@@ -1,0 +1,537 @@
+<section class="story" id="s13">
+  <h2><span class="no">13</span>ChatGPT・Claude とつなぐ（読むだけの窓口）</h2>
+  <p class="userstory">手帳を使う人として、自分の ChatGPT や Claude に事件の記録を読ませて、ほかの見立てや確かめ方の案を出してもらいたい。ただし、書き換えられたり、仕事の場面の記録まで渡ったりするのは困る。だから、設定の画面にある窓口の住所を AI の設定に入れ、推理手帳の同意の画面で「許可する」を押す。</p>
+  <p class="summary">この章で追う道筋：①設定の画面 <code>GET /settings</code> の枠（窓口の住所とつなぎ方）②AI が通行証なしで <code>POST /mcp</code> → 401 → 案内の住所 <code>GET /.well-known/oauth-protected-resource/mcp</code>・<code>GET /.well-known/oauth-authorization-server</code> → 自己登録 <code>POST /oauth/register</code> ③本人のブラウザで <code>GET /oauth/authorize</code>（ログイン・利用規約の同意を確かめる）→ 自前の同意の画面 → <code>POST /oauth/authorize</code>（許可する）④AI が <code>POST /oauth/token</code> で引換券を通行証に引き換える ⑤通行証を見せて <code>POST /mcp</code> → 見張り役4つ → 窓口 <code>SuiriServer</code> → 読むだけの道具4つ → <code>Queries/Ai/*</code> ⑥やめる <code>DELETE /settings/ai/{app}</code>・毎日の片づけ ⑦事件の画面の写すボタン（窓口を使わない相談）</p>
+
+  <p>アプリの中では AI を使いません（ワトソンのひとことも入力の提案も、決まった規則です）。この章の窓口は、利用者が<b>自分の</b> ChatGPT・Claude から、推理手帳の記録を<b>読むだけ</b>にするための入口です。AI の役目は「ほかの見立て・見立てを見分ける確かめ方・まだ集めていない手がかり」の候補を出すことで、どの見立てが正しいか、予想が当たったかは決めません。答え合わせは、本人が現実で確かめて手帳に書きます。</p>
+  <p>この章は、登場人物がもう1人増えます。ブラウザと推理手帳のサーバーのほかに、<b>AI の会社のサーバー</b>（ChatGPT なら OpenAI、Claude なら Anthropic のサーバー）です。窓口 <code>/mcp</code> を呼ぶのは、利用者のブラウザではなく、この AI の会社のサーバーです。ステップの札は、AI の会社のサーバーが動くところを「AI の会社のサーバー」と書きます。</p>
+  <div class="point"><b>この章をつらぬく決まり</b>（<code>.claude/rules/ai-connect.md</code>）
+    <ul>
+      <li><b>読むだけ</b>：道具は読むだけの4つ。答え合わせ・○×・直す・消す・作るの道具は置かない。</li>
+      <li><b>仕事の場面を見せない</b>：見える事件は「本人の事件で、場面が仕事でないもの」だけ。決まりは <code>VisibleCases</code> の1か所。</li>
+      <li><b>見せ合う前の相棒の見立てを隠す</b>：相棒モードで見せ合う前の事件は、見立てと予想を出さない。</li>
+      <li><b>戻り先は3つだけ</b>：自己登録できるのは、許可のあとに戻る先が <code>https://chatgpt.com</code>・<code>https://claude.ai</code>・<code>https://claude.com</code> の AI だけ。</li>
+      <li><b>通行証は1時間・更新の札は30日</b>。本人は設定の画面でいつでも取り消せる。</li>
+    </ul>
+  </div>
+
+  <h3>1. 設定の画面：窓口の住所と、つなぎ方の案内</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>設定の画面の「ChatGPT・Claude とつなぐ」の枠</h4>
+      <p>出発点は設定の画面（<code>GET /settings</code>）です。受付 <code>SettingsController::show</code> は、カレンダーの連携（<a href="#s9">9章</a>）と一緒に、<b>いまつないでいる AI の一覧</b>を読み出し係 <code>ConnectedAppsQuery</code> に組み立てさせて、画面に渡します。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Settings/SettingsController.php</div><pre><code>public function show(Request $request, ConnectedAppsQuery $connectedApps): View
+{
+    $user = $request-&gt;user()-&gt;load('calendarConnection');
+// …（省略）…
+        'aiApps' =&gt; $connectedApps-&gt;for($user),</code></pre></div>
+      <p>設定の画面の Blade は、この枠を部品 <code>settings.ai-panel</code> に任せています。</p>
+      <div class="code"><div class="file">src/resources/views/settings/show.blade.php</div><pre><code>&lt;x-settings.ai-panel :apps="$aiApps" class="mt-8" /&gt;</code></pre></div>
+      <p>部品の中で大事なのは、<b>窓口の住所</b>の欄です。初めの値は <code>url('/mcp')</code>＝このアプリの住所に <code>/mcp</code> を付けたもの（本番なら <code>https://suiri.agi-japan.com/mcp</code>）。利用者はこの住所を写して、ChatGPT や Claude の設定に貼ります。「住所を写す」ボタンは、はじめ <code>hidden</code>（隠す）で、画面のプログラムが動いたときだけ見えます（動きはこの章の 7 で追います）。</p>
+      <div class="code"><div class="file">src/resources/views/components/settings/ai-panel.blade.php</div><pre><code>@props(['apps' =&gt; [], 'mcpUrl' =&gt; url('/mcp')])
+@php($p = config('ai_connect.panel'))
+{{-- …（省略）… --}}
+  &lt;div data-ai-copy class="mt-4"&gt;
+    &lt;label for="ai-mcp-url" class="text-sm font-bold"&gt;{{ $p['address_label'] }}&lt;/label&gt;
+    &lt;div class="mt-1 flex flex-wrap items-center gap-2"&gt;
+      &lt;input id="ai-mcp-url" type="text" readonly value="{{ $mcpUrl }}" class="min-h-12 w-full min-w-0 rounded-xl border border-rule bg-paper px-3 font-mono text-base sm:w-auto sm:flex-1"&gt;
+      &lt;x-ui.button variant="secondary" type="button" data-ai-copy-button data-target="ai-mcp-url" hidden&gt;{{ $p['copy'] }}&lt;/x-ui.button&gt;
+    &lt;/div&gt;
+{{-- …（省略）… --}}
+    &lt;x-settings.ai-steps :title="$p['chatgpt_title']" :steps="$p['chatgpt_steps']" :note="$p['chatgpt_plan']" /&gt;
+    &lt;x-settings.ai-steps :title="$p['claude_title']" :steps="$p['claude_steps']" /&gt;</code></pre></div>
+      <p><code>settings.ai-steps</code> は、つなぎ方の手順をたたんでおく部品です（押すと開く <code>&lt;details&gt;</code>。JavaScript なしで動きます）。手順の文は画面に直書きせず、設定のファイル <code>config/ai_connect.php</code> の <code>panel</code> に集めています。ChatGPT の画面の項目名は英語なので、英語のまま書いています。</p>
+      <div class="code"><div class="file">src/config/ai_connect.php</div><pre><code>'chatgpt_steps' =&gt; [
+    'ChatGPT の Settings → Apps &amp; Connectors（または Connectors）を開く',
+    'Advanced settings → Developer mode を入れる',
+    'Create を押して、名前に「推理手帳」、MCP Server URL に上の住所を入れる。Authentication は OAuth を選ぶ',
+    '推理手帳の画面が開いたら、Google でログインして「許可する」を押す',
+    '新しいチャットで推理手帳を選んで、「体操着の事件を見て、ほかの見立てを出して」のように頼む',
+],</code></pre></div>
+      <div class="data"><b>枠に並ぶもの（上から）</b><ul>
+        <li>何ができるか（ほかの見立て・確かめ方・まだ集めていない手がかり）と、できないこと（読むだけ・仕事の場面は見せない・AI に正誤を決めさせない）。</li>
+        <li>つないでいる AI の一覧（あるときだけ。1つずつ「つなぐのをやめる」。この章の 6）。</li>
+        <li>窓口の住所と「住所を写す」、ChatGPT・Claude のつなぎ方（たたんだ手順）、AI に渡った記録の扱いの注意。</li>
+      </ul></div>
+      <p>ここから先の 2〜4 は、利用者が ChatGPT の設定で「Create」を押したあとに、裏で順に起きることです。利用者が目にするのは、3 の同意の画面だけです。</p>
+    </li>
+  </ol>
+
+  <h3>2. AI が案内を読み、自分を登録する</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">AI の会社のサーバー</span>
+      <h4>通行証なしで窓口を呼ぶ → 401「通行証が要ります」</h4>
+      <p>まず、窓口とは何かです。<dfn>MCP</dfn>（Model Context Protocol）は、<b>役目</b>で言うと「AI がアプリの道具を呼ぶための決まり」です。<b>たとえると</b>、AI という代理人のために、推理手帳の事務所に作った小窓です。<b>中身</b>は、決まった形の JSON（データを文字で書く形）を <code>POST</code> で送り合うやりとりで、ChatGPT も Claude もこの決まりに対応しているので、同じ1つの住所 <code>/mcp</code> で両方とつながります。推理手帳では Laravel 公式の部品 laravel/mcp で窓口を作っています。</p>
+      <p>窓口の住所は、ふだんの住所の表（<code>routes/web.php</code>）ではなく、別のファイル <code>src/routes/ai.php</code> にあります。</p>
+      <div class="code"><div class="file">src/routes/ai.php</div><pre><code>// ④：よその画面からの呼び出しを断る → 通行証を確かめる → 窓口を読む範囲（mcp:use）かを確かめる → 人ごとの回数制限
+Mcp::web('/mcp', SuiriServer::class)-&gt;middleware([
+    RejectForeignOrigin::class,
+    'auth:api',
+    CheckToken::using(Registrar::OAUTH_SCOPE),
+    'throttle:mcp',
+]);</code></pre></div>
+      <p>このファイルは laravel/mcp が、<b>見張り役のグループなし</b>で読み込みます（<code>Route::group([], $path)</code>）。ふだんの画面の住所には <code>web</code> のグループ（セッション・CSRF の確かめなど。<a href="#s0">0章</a>・<a href="#s11">11章</a>）が付きますが、ここには付きません。AI の会社のサーバーはログインの Cookie も CSRF の合言葉も持っていないので、そのままでは <code>POST</code> が通らないからです。代わりに、窓口には<b>通行証</b>（このあとの 4）が必須です。</p>
+      <div class="code"><div class="file">src/vendor/laravel/mcp/src/Server/McpServiceProvider.php</div><pre><code>$path = base_path('routes/ai.php');
+// …（省略）…
+Route::group([], $path);</code></pre></div>
+      <p>ChatGPT は最初、通行証を持たずに <code>POST /mcp</code> を呼びます。見張り役 <code>auth:api</code> が「通行証がない」と止め、401（だれか分からない）を返します。ふつうの画面なら「ログインの画面へ送る」ところですが、相手は人ではないので、<code>bootstrap/app.php</code> で「この住所のエラーは JSON で返す」と決めています。</p>
+      <div class="code"><div class="file">src/bootstrap/app.php</div><pre><code>$exceptions-&gt;shouldRenderJsonWhen( // fetch など JSON を求める要求と、AI の窓口（/mcp）・通行証の住所のエラーは JSON で返す
+    fn (Request $request) =&gt; $request-&gt;is('api/*', 'mcp', 'oauth/token', 'oauth/register') || $request-&gt;expectsJson(),
+);</code></pre></div>
+      <p>さらに laravel/mcp の見張り役 <code>AddWwwAuthenticateHeader</code> が、401 の返事に「通行証の出し方の案内はここ」という札（<code>WWW-Authenticate</code> のヘッダ）を付けます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/mcp/src/Server/Middleware/AddWwwAuthenticateHeader.php</div><pre><code>$response-&gt;header(
+    'WWW-Authenticate',
+    'Bearer realm="mcp", resource_metadata="'.route('mcp.oauth.protected-resource.nested', ['path' =&gt; $request-&gt;path()]).'"'
+);</code></pre></div>
+      <div class="code"><div class="file">返事（手元の localhost:8086 で、通行証なしで呼んで確かめたもの）</div><pre><code>HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer realm="mcp", resource_metadata="http://localhost:8086/.well-known/oauth-protected-resource/mcp"
+{"message":"Unauthenticated."}</code></pre></div>
+      <div class="analogy"><b>たとえると</b>小窓で「通行証を見せてください。通行証の作り方は、あちらの案内板に書いてあります」と言われるところです。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>案内の住所：通行証の出し方を JSON で答える</h4>
+      <p>ここで使う決まりが <dfn>OAuth</dfn> です。<b>役目</b>は「パスワードを渡さずに、別のアプリに一部の権限だけを預ける」こと。<b>たとえると</b>、銀行で代理人に委任状を書くようなものです。推理手帳のログイン（Google）を AI に教えるのではなく、推理手帳が「この AI に、この人の記録を読ませてよい」という<dfn>通行証</dfn>（アクセストークン。AI が道具を呼ぶたびに見せる長い文字列）を出します。<b>中身</b>は、通行証を出す係に Laravel 公式の部品 Laravel Passport を使っています。</p>
+      <p>401 の札にあった案内の住所（発見用の住所）は、<code>routes/ai.php</code> の1行で laravel/mcp に作らせています。</p>
+      <div class="code"><div class="file">src/routes/ai.php</div><pre><code>// ①〜③：IP ごとの回数制限（AI の会社のサーバーの IP は利用者みんなで同じなので、きつくしすぎない）
+Route::middleware('throttle:oauth')-&gt;group(function () {
+    // 案内の住所は laravel/mcp に作らせる。登録の住所は、回数制限を足すため下で自分で置く
+    Mcp::oauthRoutes(registration: false);</code></pre></div>
+      <p>案内は2段です。1つ目（<code>/.well-known/oauth-protected-resource/mcp</code>）は「この窓口の通行証は、どこで出してもらえるか」。2つ目（<code>/.well-known/oauth-authorization-server</code>）は「同意の画面・通行証の引き換え・自己登録の住所と、使える方式」です。中身は laravel/mcp が組み立てます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/mcp/src/Server/Registrar.php</div><pre><code>'authorization_endpoint' =&gt; route('passport.authorizations.authorize'),
+'token_endpoint' =&gt; route('passport.token'),
+'registration_endpoint' =&gt; Router::has('mcp.oauth.register') ? route('mcp.oauth.register') : null,
+'response_types_supported' =&gt; ['code'],
+'code_challenge_methods_supported' =&gt; ['S256'],
+'scopes_supported' =&gt; [self::OAUTH_SCOPE],</code></pre></div>
+      <div class="code"><div class="file">返事（手元で確かめたもの。上が1つ目、下が2つ目。読みやすいよう / の前の \ は外した）</div><pre><code>{"resource":"http://localhost:8086/mcp","authorization_servers":["http://localhost:8086"],"scopes_supported":["mcp:use"]}
+{"issuer":"http://localhost:8086","authorization_endpoint":"http://localhost:8086/oauth/authorize","token_endpoint":"http://localhost:8086/oauth/token","registration_endpoint":"http://localhost:8086/oauth/register","response_types_supported":["code"],"code_challenge_methods_supported":["S256"],"scopes_supported":["mcp:use"],"grant_types_supported":["authorization_code","refresh_token"],...}</code></pre></div>
+      <p>中身は住所を<b>ルートの名前</b>（<code>passport.authorizations.authorize</code>・<code>passport.token</code>）から作っています。だから推理手帳は、このあと見る同意の画面と通行証の住所を、Passport と<b>同じ名前のまま</b>置き直しています（名前を変えると、案内が作れなくなるため）。</p>
+      <div class="data"><b>案内に出てくる言葉</b><ul>
+        <li><code>scopes_supported: ["mcp:use"]</code>：<dfn>範囲</dfn>（スコープ。通行証で何ができるか）は「窓口を読む」の1つだけ。</li>
+        <li><code>code_challenge_methods_supported: ["S256"]</code>：引換券を守る合言葉のしくみ（PKCE。この章の 4）を使う。</li>
+        <li><code>grant_types_supported</code>：通行証のもらい方は「引換券から」（<code>authorization_code</code>）と「更新の札から」（<code>refresh_token</code>）の2つ。</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>自己登録：戻り先が3つのどれかの AI だけ登録する</h4>
+      <p>次に AI は、自分を推理手帳に登録します。OAuth の決まりでは<dfn>動的クライアント登録</dfn>と呼ぶしくみで、<b>役目</b>は「前もって運営者に申し込まなくても、AI が自分で名乗って登録の番号をもらう」こと。<b>たとえると</b>、受付の名簿に代理人が自分で名前と連絡先（許可のあとに戻る住所）を書くようなものです。ここではこれを「自己登録」と呼びます。</p>
+      <div class="code"><div class="file">src/routes/ai.php</div><pre><code>Route::post('/oauth/register', OAuthRegisterController::class)-&gt;middleware('throttle:oauth-register')-&gt;name('mcp.oauth.register');</code></pre></div>
+      <p>受付は laravel/mcp の <code>OAuthRegisterController</code> をそのまま使います。大事なのは、許可のあとに戻る先（<code>redirect_uris</code>）の確かめです。設定の <code>redirect_domains</code> にある住所で始まるものしか通しません。</p>
+      <div class="code"><div class="file">src/vendor/laravel/mcp/src/Server/Http/Controllers/OAuthRegisterController.php</div><pre><code>if (! Str::startsWith($value, $this-&gt;allowedDomains())) {
+    $fail($attribute.' is not a permitted redirect domain.');
+}</code></pre></div>
+      <p>laravel/mcp の初めの値は <code>*</code>（どこへでも戻せる）なので、推理手帳は <code>config/mcp.php</code> で3つに絞っています。比べるときに末尾へ <code>/</code> を足すので、<code>https://chatgpt.com.evil.example</code> のような似せた住所も通りません。</p>
+      <div class="code"><div class="file">src/config/mcp.php</div><pre><code>'redirect_domains' =&gt; [
+    'https://chatgpt.com',
+    'https://claude.ai',
+    'https://claude.com',
+],</code></pre></div>
+      <div class="code"><div class="file">返事（手元で、よその住所を戻り先にして登録を試したもの）</div><pre><code>{"error":"invalid_redirect_uri","error_description":"redirect_uris.0 is not a permitted redirect domain."} 400</code></pre></div>
+      <p>通れば、Passport の表 <code>oauth_clients</code> に1行できて、登録の番号（<code>client_id</code>）が返ります。合言葉（シークレット）を持たない登録（<code>confidential: false</code>）なので、代わりに 4 の PKCE で守ります。</p>
+      <div class="code"><div class="file">src/vendor/laravel/mcp/src/Server/Http/Controllers/OAuthRegisterController.php</div><pre><code>$client = $clients-&gt;createAuthorizationCodeGrantClient(
+    name: $this-&gt;resolveClientName($validated),
+    redirectUris: $validated['redirect_uris'],
+    confidential: false,
+    enableDeviceFlow: false,
+);</code></pre></div>
+      <p>だれでも呼べる住所なので、回数の上限を2重にしています（案内と通行証は IP ごとに1分60回、自己登録はさらに IP ごとに1時間20回）。AI の会社のサーバーの IP は、その会社の利用者みんなで同じなので、きつくしすぎない数にしています。</p>
+      <div class="code"><div class="file">src/app/Providers/AiConnectServiceProvider.php</div><pre><code>RateLimiter::for('oauth', fn (Request $r) =&gt; Limit::perMinute(60)-&gt;by($r-&gt;ip()));                    // 案内・通行証の受け渡し
+RateLimiter::for('oauth-register', fn (Request $r) =&gt; Limit::perHour(20)-&gt;by($r-&gt;ip()));             // AI の自己登録</code></pre></div>
+      <div class="point"><b>ここが大事</b>戻り先を絞るのは、よその人が作った偽の AI に引換券が渡らないようにするためです。戻り先を足すときは、同意の画面に出す行き先の会社（<code>ai_connect.consent.companies</code>）とプライバシーポリシーの文も一緒に直します。</div>
+    </li>
+  </ol>
+
+  <h3>3. 同意の画面：本人がブラウザで「許可する」を押す</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>AI が、利用者のブラウザで同意の画面の住所を開く</h4>
+      <p>登録の番号をもらった AI は、利用者のブラウザで推理手帳の <code>GET /oauth/authorize</code> を開きます。住所の後ろには、登録の番号・戻り先・範囲・合言葉のしるし（<code>code_challenge</code>）などが付いています。テストでは、AI が開く住所を次の形で作っています。</p>
+      <div class="code"><div class="file">src/tests/Feature/Ai/Concerns/ConnectsAi.php</div><pre><code>return '/oauth/authorize?'.http_build_query([
+    'response_type' =&gt; 'code',
+    'client_id' =&gt; $appId,
+    'redirect_uri' =&gt; $redirect,
+    'scope' =&gt; 'mcp:use',
+    'state' =&gt; 'state-123',
+    'code_challenge' =&gt; $challenge,
+    'code_challenge_method' =&gt; 'S256',</code></pre></div>
+      <p>この住所は、ふだんの住所の表が読み込む <code>src/routes/web/ai.php</code> にあります。こちらは利用者のブラウザで開く住所なので、<code>web</code> のグループ（セッション・CSRF）が付き、さらに <code>auth</code>（ログイン済みか）と <code>agreed</code>（利用規約に同意済みか）の見張り役で囲んでいます。</p>
+      <div class="code"><div class="file">src/routes/web/ai.php</div><pre><code>Route::middleware(['auth', 'agreed'])-&gt;group(function () {
+    // 同意の画面「ChatGPT に、あなたの事件の記録を読ませてよいですか？」（画面は views/oauth/authorize）
+    Route::get('/oauth/authorize', [AuthorizationController::class, 'authorize'])-&gt;name('passport.authorizations.authorize');
+
+    Route::middleware('throttle:writes')-&gt;group(function () {
+        // 許可する・やめる（同意の画面のボタン）
+        Route::post('/oauth/authorize', [ApproveAuthorizationController::class, 'approve'])-&gt;name('passport.authorizations.approve');
+        Route::delete('/oauth/authorize', [DenyAuthorizationController::class, 'deny'])-&gt;name('passport.authorizations.deny');</code></pre></div>
+      <p>受付は Passport の <code>AuthorizationController</code> などをそのまま使います。ただし Passport が自分で住所を作ると、推理手帳の <code>auth</code>・<code>agreed</code> の囲みが付きません。そこで、Passport が住所を作るのを止め、上のように同じ名前で置き直しています。</p>
+      <div class="code"><div class="file">src/app/Providers/AiConnectServiceProvider.php</div><pre><code>public function register(): void
+{
+    Passport::ignoreRoutes();
+    Passport::$deviceCodeGrantEnabled = false;
+}</code></pre></div>
+      <p><code>$deviceCodeGrantEnabled = false</code> は、使わない許可のしかた（テレビなど、画面のない機械向けの方式）を切っています。</p>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>ログインしていなければ Google へ、利用規約がまだなら同意の画面へ</h4>
+      <p>ChatGPT から開いたブラウザでは、推理手帳にログインしていないこともあります。見張り役 <code>auth</code> は、ログインしていない人を <code>redirectGuestsTo</code> で決めた行き先へ送ります。ふだんはトップですが、この住所から来た人だけは、ボタンを1回減らすため Google のログイン（<a href="#s1">1章</a>）へ直接送ります。</p>
+      <div class="code"><div class="file">src/bootstrap/app.php</div><pre><code>$middleware-&gt;redirectGuestsTo(fn (Request $request) =&gt; $request-&gt;is('oauth/authorize') ? route('auth.google') : route('home'));</code></pre></div>
+      <p>送り出すとき、Laravel は「もともと開こうとした住所」をセッションに覚えます（<code>url.intended</code>）。Google のログインが終わると、受付は <code>redirect()-&gt;intended(…)</code> で、覚えた住所＝同意の画面へ戻します。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Auth/GoogleLoginController.php</div><pre><code>return redirect()-&gt;intended(Landing::url());</code></pre></div>
+      <p>ログインしていても、利用規約にまだ同意していない人は、見張り役 <code>agreed</code>（<code>EnsureAgreed</code>）が同意の画面 <code>/agree</code> へ送ります。こちらも <code>redirect()-&gt;guest(…)</code> で住所を覚えるので、同意したあとは同意の画面（AI の）へ戻ります。<b>利用規約に同意する前の人には、AI への許可を出させません</b>。</p>
+      <div class="code"><div class="file">src/app/Http/Middleware/EnsureAgreed.php</div><pre><code>if ($request-&gt;user() !== null &amp;&amp; ! $request-&gt;user()-&gt;hasAgreed()) {
+    return redirect()-&gt;guest(route('agree.show'));
+}</code></pre></div>
+      <p>この3つの動き（Google へ送って住所を覚える・同意前は <code>/agree</code> へ・同意のあと戻る）は、テスト <code>tests/Feature/Ai/AuthorizeTest</code> が確かめています。</p>
+      <div class="code"><div class="file">src/tests/Feature/Ai/AuthorizeTest.php</div><pre><code>$this-&gt;get($url)-&gt;assertRedirect(route('auth.google'));
+// …（省略）…
+$this-&gt;actingAs(User::factory()-&gt;unagreed()-&gt;create())-&gt;get($url)-&gt;assertRedirect(route('agree.show'));
+$this-&gt;assertDatabaseCount('oauth_auth_codes', 0);</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>Passport の受付が申し込みを確かめ、同意の画面を出す</h4>
+      <p>見張り役を通ると、Passport の <code>AuthorizationController::authorize</code> が動きます。まず申し込みの中身を確かめます（登録の番号があるか、戻り先が登録したものと同じか、合言葉のしるしの形など）。</p>
+      <div class="code"><div class="file">src/vendor/laravel/passport/src/Http/Controllers/AuthorizationController.php</div><pre><code>$authRequest = $this-&gt;withErrorHandling(
+    fn (): AuthorizationRequestInterface =&gt; $this-&gt;server-&gt;validateAuthorizationRequest($psrRequest),
+// …（省略）…
+if ($prompt-&gt;doesntContain('consent') &amp;&amp;
+    ($client-&gt;skipsAuthorization($user, $scopes) || $this-&gt;hasGrantedScopes($user, $client, $scopes))) {
+    return $this-&gt;approveRequest($authRequest, $psrResponse);
+}
+// …（省略）…
+$request-&gt;session()-&gt;put('authToken', $authToken = Str::random());
+$request-&gt;session()-&gt;put('authRequest', serialize($authRequest));</code></pre></div>
+      <p>真ん中の <code>if</code> は「同意の画面を飛ばしてよいか」です。<code>hasGrantedScopes</code> は、同じ人が<b>同じ登録の番号</b>の AI に、まだ期限内の通行証をすでに出しているときだけ真になります（一度許可した相手に、もう一度聞かないため）。<code>skipsAuthorization</code> は推理手帳では上書きしていません。自己登録の AI には持ち主がいないので、上書きすると、全部の AI が同意なしで通ってしまうからです。</p>
+      <p>同意の画面を出すときは、申し込みをセッションにしまい、その場限りの合言葉 <code>authToken</code> を作ります。「許可する」のフォームはこの合言葉を送り返し、Passport が同じかを確かめます（ほかの画面から許可を押させないため）。</p>
+      <p>同意の画面そのものは、推理手帳の自前の画面です。<code>AiConnectServiceProvider</code> で「Passport が同意の画面を出すときは <code>views/oauth/authorize</code> を使い、値は <code>ConsentView::from</code> で詰め替える」と決めています（laravel/mcp の見本の画面は外部の書体を読み込むので使いません）。</p>
+      <div class="code"><div class="file">src/app/Providers/AiConnectServiceProvider.php</div><pre><code>Passport::authorizationView(fn (array $parameters) =&gt; view('oauth.authorize', ConsentView::from($parameters)));</code></pre></div>
+      <p><code>ConsentView</code> は、画面で計算しないための詰め替え係です。AI の名前は AI の自己申告なので、確かな手がかりとして<b>戻る先の住所</b>も取り出し、その住所から「記録が渡る会社と国」を引きます。</p>
+      <div class="code"><div class="file">src/app/Support/Ai/ConsentView.php</div><pre><code>$appId = (string) $request-&gt;query('client_id');
+$host = (string) parse_url((string) $request-&gt;query('redirect_uri'), PHP_URL_HOST);
+$companies = config('ai_connect.consent.companies');
+
+return [
+    'appName' =&gt; Passport::client()-&gt;newQuery()-&gt;whereKey($appId)-&gt;value('name') ?? $host,
+    'redirectHost' =&gt; $host,
+    'company' =&gt; $companies[$host] ?? config('ai_connect.consent.unknown_company'),</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/oauth/authorize.blade.php</div><pre><code>&lt;x-layouts.guest :title="$t['page_title']"&gt;
+  &lt;x-ui.step-card icon="book" :title="strtr($t['title'], [':name' =&gt; $appName])" :hint="$t['lead']"&gt;
+    &lt;div class="rounded-xl bg-mark px-4 py-2.5"&gt;
+      &lt;p class="flex flex-wrap items-baseline gap-x-2"&gt;&lt;span class="text-sm text-muted"&gt;{{ $t['host_label'] }}&lt;/span&gt;&lt;span class="font-mono text-lg font-bold break-all"&gt;{{ $redirectHost }}&lt;/span&gt;&lt;/p&gt;</code></pre></div>
+      <div class="data"><b>同意の画面に出すもの</b>（文は <code>config/ai_connect.php</code> の <code>consent</code>）<ul>
+        <li>問い：「ChatGPT に、あなたの事件の記録（仕事の場面を除く）を読ませてよいですか？」と「書き換えはできません。読むだけです。」</li>
+        <li>許可したあとに戻る先（<code>chatgpt.com</code> など。太い字で）と「名前はだれでも名乗れるよ。使っている AI の住所か確かめてね。」</li>
+        <li>読めるもの（なぞ・手がかり・見立て、予想と答え合わせ、屋根裏の棚）と読めないもの（仕事の場面の事件、ほかの人の記録）。</li>
+        <li>記録が渡る会社と国（例：OpenAI（米国））、人から送られてきたリンクなら「やめる」を押す注意。</li>
+      </ul></div>
+      <p>この画面は、ほかのサイトの中に埋め込ませません（<code>X-Frame-Options: DENY</code> の札。laravel/mcp がルートの名前を見て付けます）。テスト <code>test_consent_screen_shows_app_host_and_scope</code> が、出す文と札を確かめています。</p>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>「許可する」→ 引換券を持って ChatGPT へ戻る</h4>
+      <p>画面の下に、ボタンが2つあります。「許可する」は <code>POST /oauth/authorize</code>、「やめる」は <code>DELETE /oauth/authorize</code>（HTML のフォームは POST しか送れないので、<code>@method('DELETE')</code> の隠し欄で伝えます）。どちらも、さきほどの合言葉 <code>auth_token</code> を隠し欄で送り返します。</p>
+      <div class="code"><div class="file">src/resources/views/oauth/authorize.blade.php</div><pre><code>&lt;form method="POST" action="{{ route('passport.authorizations.approve') }}"&gt;
+  @csrf
+  &lt;input type="hidden" name="state" value="{{ $state }}"&gt;
+  &lt;input type="hidden" name="client_id" value="{{ $appId }}"&gt;
+  &lt;input type="hidden" name="auth_token" value="{{ $authToken }}"&gt;
+  &lt;x-ui.big-button icon="check"&gt;{{ $t['approve'] }}&lt;/x-ui.big-button&gt;
+&lt;/form&gt;
+&lt;form method="POST" action="{{ route('passport.authorizations.deny') }}" class="mt-3"&gt;
+  @csrf
+  @method('DELETE')</code></pre></div>
+      <p>受け取った Passport は、まずセッションにしまった合言葉と送られてきた合言葉を比べます。違えば、そこで止めます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/passport/src/Http/Controllers/RetrievesAuthRequestFromSession.php</div><pre><code>if ($request-&gt;isNotFilled('auth_token') ||
+    $request-&gt;session()-&gt;pull('authToken') !== $request-&gt;input('auth_token')) {
+    $request-&gt;session()-&gt;forget(['authToken', 'authRequest']);
+
+    throw InvalidAuthTokenException::different();
+}</code></pre></div>
+      <p>合えば「許可した」と記して、申し込みを仕上げます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/passport/src/Http/Controllers/ApproveAuthorizationController.php</div><pre><code>$authRequest-&gt;setAuthorizationApproved(true);</code></pre></div>
+      <p>仕上げると、ブラウザは AI の戻り先（例：<code>https://chatgpt.com/connector/oauth/…</code>）へ送られます。住所の後ろには <code>code=…</code>（<dfn>引換券</dfn>＝認可コード。一度だけ使える短い期限の札）と、AI が最初に付けた <code>state</code> がそのまま付きます。「やめる」なら引換券の代わりに <code>error=access_denied</code> が付き、引換券は作りません（<code>test_deny_returns_access_denied</code>）。</p>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li><code>oauth_auth_codes</code> 表：引換券の行（だれが・どの AI に・範囲・期限）。本文は持たない。</li>
+        <li>セッション：<code>authToken</code> と <code>authRequest</code> は取り出したら消える（<code>pull</code>）。</li>
+      </ul></div>
+    </li>
+  </ol>
+
+  <h3>4. 引換券を通行証に引き換える</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">AI の会社のサーバー</span>
+      <h4>引換券＋合言葉 → 通行証（1時間）と更新の札（30日）</h4>
+      <p>引換券を受け取った AI の会社のサーバーは、推理手帳の <code>POST /oauth/token</code> に、引換券と<b>合言葉</b>を送ります。ここで守りになるのが <dfn>PKCE</dfn>（ピクシー）です。<b>役目</b>は「引換券を途中で盗まれても使えないようにする」こと。<b>たとえると</b>、預かり札に、あとで言う合言葉の「しるし」だけを先に書いておくやり方です。<b>中身</b>は、AI が最初にでたらめな合言葉（<code>code_verifier</code>）を作り、そのしるし（SHA-256 という計算で作った <code>code_challenge</code>。しるしから合言葉は逆算できない）だけを 3 の住所に付けておきます。引き換えのときに合言葉そのものを出し、Passport がしるしと合うかを確かめます。合言葉を知っているのは AI だけです。</p>
+      <div class="code"><div class="file">src/routes/ai.php</div><pre><code>// Passport の住所は AiConnectServiceProvider で止めているので、同じ名前のまま置く（案内の中身が route('passport.token') で作られる）
+Route::post('/oauth/token', [AccessTokenController::class, 'issueToken'])-&gt;name('passport.token');</code></pre></div>
+      <div class="code"><div class="file">src/vendor/laravel/passport/src/Http/Controllers/AccessTokenController.php</div><pre><code>public function issueToken(ServerRequestInterface $psrRequest, ResponseInterface $psrResponse): Response
+{
+    return $this-&gt;withErrorHandling(fn () =&gt; $this-&gt;convertResponse(
+        $this-&gt;server-&gt;respondToAccessTokenRequest($psrRequest, $psrResponse)
+    ));
+}</code></pre></div>
+      <p>通行証の期限は、推理手帳が決めています。Passport の初めの値は1年なので、必ず短くします。</p>
+      <div class="code"><div class="file">src/app/Providers/AiConnectServiceProvider.php</div><pre><code>Passport::tokensExpireIn(CarbonInterval::minutes(config('ai_connect.tokens.access_minutes')));
+Passport::refreshTokensExpireIn(CarbonInterval::days(config('ai_connect.tokens.refresh_days')));
+// AI が範囲を指定しなくても、窓口を読む範囲（mcp:use）の通行証にする
+Passport::defaultScopes([Registrar::OAUTH_SCOPE]);</code></pre></div>
+      <div class="code"><div class="file">src/config/ai_connect.php</div><pre><code>'tokens' =&gt; [
+    'access_minutes' =&gt; 60,
+    'refresh_days' =&gt; 30,
+],</code></pre></div>
+      <p>テストは、許可から引き換えまでを通しで確かめています。合言葉つきで引き換えると、通行証の期限が 3600 秒（1時間）で、<dfn>更新の札</dfn>（リフレッシュトークン。通行証が切れたとき、つなぎ直さずに新しい通行証へ取り替える札）も返ります。合言葉が違えば 400 で、引き換えられません（<code>test_wrong_code_verifier_is_rejected</code>）。</p>
+      <div class="code"><div class="file">src/tests/Feature/Ai/AuthorizeTest.php</div><pre><code>$tokens = $this-&gt;post('/oauth/token', [
+    'grant_type' =&gt; 'authorization_code',
+    'client_id' =&gt; $appId,
+    'redirect_uri' =&gt; self::CHATGPT_CALLBACK,
+    'code_verifier' =&gt; $verifier,
+    'code' =&gt; $query['code'],
+// …（省略）…
+])-&gt;assertOk()-&gt;assertJsonPath('expires_in', 3600)-&gt;json();
+$this-&gt;assertNotEmpty($tokens['refresh_token']);</code></pre></div>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li><code>oauth_access_tokens</code> 表：通行証の行（番号・だれの・どの AI の・範囲 <code>["mcp:use"]</code>・取り消したか・期限）。通行証の文字列そのものは署名つきで AI に渡し、表には番号だけを置く。</li>
+        <li><code>oauth_refresh_tokens</code> 表：更新の札の行（どの通行証の札か・期限 30 日）。</li>
+        <li>署名に使う鍵は <code>storage/</code> の <code>oauth-private.key</code>（git に入れない。本番では初回だけ <code>passport:keys</code> で作る）。</li>
+      </ul></div>
+      <p>1時間たつと、AI は同じ <code>/oauth/token</code> に更新の札を出して、新しい通行証をもらいます（案内の <code>grant_types_supported</code> の <code>refresh_token</code>）。だから利用者は、30日使わないままにしない限り、つなぎ直す必要はありません。</p>
+    </li>
+  </ol>
+
+  <h3>5. 窓口 /mcp：見張り役を通って、読むだけの道具へ</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>よその画面からの呼び出しを断る（RejectForeignOrigin）</h4>
+      <p>ここからは、利用者がチャットで「体操着の事件を見て、ほかの見立てを出して」のように頼んだときの流れです。AI の会社のサーバーは、通行証を <code>Authorization: Bearer …</code> のヘッダに入れて <code>POST /mcp</code> を呼びます。<code>routes/ai.php</code> で付けた見張り役が、上から順に4つ動きます（laravel/mcp が付ける形の確かめの見張り役のあと）。</p>
+      <p>1つ目の <code>RejectForeignOrigin</code> は、ブラウザから窓口を呼ばれたときの守りです。ブラウザは、よその画面から送るとき、どの画面から送ったかを <code>Origin</code> のヘッダで名乗ります。MCP の決まりでは、窓口がこれを確かめることになっています（悪いサイトが利用者のブラウザを使って窓口を呼ぶ攻撃を防ぐため）。AI の会社のサーバーからの呼び出しには <code>Origin</code> が付かないので、そのまま通ります。</p>
+      <div class="code"><div class="file">src/app/Http/Middleware/RejectForeignOrigin.php</div><pre><code>$origin = $request-&gt;headers-&gt;get('Origin');
+
+// Origin が付いていて、推理手帳自身でも、使う AI のサービスでもなければ断る
+if ($origin !== null &amp;&amp; ! $this-&gt;allowed($origin)) {
+    return response()-&gt;json(['error' =&gt; 'forbidden_origin'], 403);
+}</code></pre></div>
+      <p>認める住所は、推理手帳自身と、自己登録の戻り先と同じ3つ（<code>config('mcp.redirect_domains')</code>）です。一覧を1か所にしておくと、足すときに直し忘れません。</p>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>通行証を確かめる・範囲を確かめる・回数を数える</h4>
+      <p>2つ目の <code>auth:api</code> は、「<code>api</code> という見分け方でログインを確かめる」見張り役です。ふだんの画面の見分け方（<code>web</code>）はセッションの Cookie を見ますが、<code>api</code> は Passport の通行証を見るように決めています。</p>
+      <div class="code"><div class="file">src/config/auth.php</div><pre><code>// AI（ChatGPT・Claude）が窓口（/mcp）を呼ぶときの通行証（Laravel Passport）。routes/ai.php の auth:api で使う
+'api' =&gt; [
+    'driver' =&gt; 'passport',
+    'provider' =&gt; 'users',
+],</code></pre></div>
+      <p>Passport は通行証の署名と期限を確かめ、さらに表の行を見て「取り消していないか」を<b>呼ばれるたびに</b>確かめます。だから設定で取り消すと、次の呼び出しから 401 になります（この章の 6）。通れば、<code>$request-&gt;user()</code> が通行証の持ち主＝利用者本人になります。ここから先は、ふだんの画面と同じく、この人の記録だけを読みます。</p>
+      <p>3つ目の <code>CheckToken::using(Registrar::OAUTH_SCOPE)</code> は、通行証の範囲が <code>mcp:use</code>（窓口を読む）かを確かめます。範囲の違う通行証は 403 です（<code>test_token_without_scope_is_forbidden</code>）。4つ目の <code>throttle:mcp</code> は、人ごとに1分120回までの回数制限です。</p>
+      <div class="code"><div class="file">src/app/Providers/AiConnectServiceProvider.php</div><pre><code>RateLimiter::for('mcp', fn (Request $r) =&gt; Limit::perMinute(120)-&gt;by($r-&gt;user()?-&gt;id ?? $r-&gt;ip()));  // 窓口の道具を呼ぶ</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>窓口 SuiriServer：置いてある道具は読むだけの4つ</h4>
+      <p>見張り役を通ると、laravel/mcp が窓口 <code>SuiriServer</code> を動かします。窓口へのお願いは、<code>method</code>（何をしたいか）と <code>params</code>（その中身）を書いた JSON です。テストでは次の形で送っています。</p>
+      <div class="code"><div class="file">src/tests/Feature/Ai/Concerns/ConnectsAi.php</div><pre><code>return $this-&gt;postJson('/mcp', ['jsonrpc' =&gt; '2.0', 'id' =&gt; 1, 'method' =&gt; $method, 'params' =&gt; $params], [
+    'Accept' =&gt; 'application/json, text/event-stream',</code></pre></div>
+      <p>AI はまず <code>initialize</code>（あいさつ。窓口の名前と説明を受け取る）、次に <code>tools/list</code>（使える道具の一覧）、そして <code>tools/call</code>（道具を呼ぶ）を送ります。窓口のクラスには、置く道具を書き並べるだけです。</p>
+      <div class="code"><div class="file">src/app/Mcp/Servers/SuiriServer.php</div><pre><code>protected array $tools = [
+    ListCases::class,
+    GetCase::class,
+    ListDuePredictions::class,
+    SearchAttic::class,
+];
+// …（省略）…
+protected function boot(): void
+{
+    $this-&gt;name = config('ai_connect.server.name');
+    $this-&gt;version = config('ai_connect.server.version');
+    $this-&gt;instructions = config('ai_connect.instructions');
+}</code></pre></div>
+      <div class="data"><b>4つの道具</b>（どれも読むだけ）<ul>
+        <li><code>list_cases</code>（事件の一覧）：状態と題名の言葉で絞る。中身は <code>Queries/Ai/CaseListQuery</code>。</li>
+        <li><code>get_case</code>（事件の中身）：なぞ・手がかり・見立てと ○×・予想と答え合わせ。中身は <code>CaseSheetQuery</code>。</li>
+        <li><code>list_due_predictions</code>（答え合わせ待ちの予想）：確かめる日が今日から何日先までのもの。中身は <code>DuePredictionsQuery</code>。</li>
+        <li><code>search_attic</code>（屋根裏の棚）：「つまり？」と「たとえば？」を言葉で探す。中身は <code>AtticNotesQuery</code>。</li>
+      </ul></div>
+      <p><code>instructions</code> は、AI が最初に読む窓口の説明です。言葉の対応（事件・なぞ・手がかり・見立て…）と、「候補を出すのが役目で、どの見立てが正しいか・予想が当たったかは決めないで」「予想の文と確かさは変えられないので、直す案ではなく新しい予想の案として出して」などを、<code>config/ai_connect.php</code> に書いています。道具ひとつひとつの説明文も同じファイルから引き、最後に共通の一文を足します。</p>
+      <div class="code"><div class="file">src/app/Mcp/Concerns/DescribedInConfig.php</div><pre><code>public function description(): string
+{
+    return config('ai_connect.tools.'.$this-&gt;name().'.description').config('ai_connect.tool_tail');
+}</code></pre></div>
+      <div class="code"><div class="file">src/config/ai_connect.php</div><pre><code>'tool_tail' =&gt; '正誤は判定せず、ほかの見立て・確かめ方・まだ集めていない手がかりの案を出してください。予想の文と確かさは、書いたあと変えられない決まりです（考えが変わったら新しい予想を立てます）。この道具は読むだけです。',</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>get_case：見える事件だけを、見せてよい形で返す</h4>
+      <p>道具の中身は、受付（コントローラー）と同じく薄くしています。形を確かめる → 読み出し係で組み立てる → 形にして返す、の3つだけです。<code>get_case</code> を例に追います。</p>
+      <div class="code"><div class="file">src/app/Mcp/Tools/GetCase.php</div><pre><code>#[Name('get_case')]
+#[IsReadOnly]
+// …（省略）…
+$data = $request-&gt;validate(['case_id' =&gt; ['required', 'integer', 'min:1']]);
+$case = $visible-&gt;find($request-&gt;user(), (int) $data['case_id']);
+
+// 本人の・仕事の場面でない事件が見つからなければ、理由を分けずに同じ文で知らせる
+if ($case === null) {
+    return Response::error(config('ai_connect.messages.case_not_found'));
+}
+
+return Response::structured($sheet-&gt;for($case));</code></pre></div>
+      <p><code>#[IsReadOnly]</code> は、AI に「この道具は読むだけ」と伝える印です。<code>$visible-&gt;find</code> が、この章でいちばん大事な決まりの置き場所 <code>VisibleCases</code> です。<b>本人の事件</b>（<code>$user-&gt;caseFiles()</code>＝<code>user_id</code> で絞る）のうち、<b>場面が仕事でないもの</b>だけを探します。仕事の場面には、施術のときの体のことが混ざりうるためです。</p>
+      <div class="code"><div class="file">src/app/Queries/Ai/VisibleCases.php</div><pre><code>public function of(User $user): HasMany
+{
+    return self::scope($user-&gt;caseFiles());
+}
+// …（省略）…
+public static function scope(Builder|HasMany $query): Builder|HasMany
+{
+    return $query-&gt;where('scene', '!=', Scene::Work-&gt;value);
+}</code></pre></div>
+      <p>仕事の場面の事件・他人の事件・ない番号は、どれも <code>null</code> になり、同じ文「その事件は見つかりません。…仕事の場面の事件は、この窓口からは見えません。」で返します。理由を分けると、「その番号の事件はある」ことが AI に漏れるからです。</p>
+      <p>見つかった事件は、<code>CaseSheetQuery</code> が配列にします。相棒モードで<b>見せ合う前</b>（<code>hidesHypotheses()</code>）なら、見立てと予想を空にして、隠していることを一言添えます（<a href="#s8">8章</a>の「隠して書いて見せ合う」を、窓口からも破らないため）。</p>
+      <div class="code"><div class="file">src/app/Queries/Ai/CaseSheetQuery.php</div><pre><code>$hidden = $case-&gt;hidesHypotheses();
+// …（省略）…
+'hypotheses' =&gt; $hidden ? [] : $case-&gt;hypotheses-&gt;map(fn (Hypothesis $h) =&gt; $this-&gt;hypothesis($h))-&gt;all(),
+'hidden_note' =&gt; $hidden ? config('ai_connect.messages.hidden_note') : null,</code></pre></div>
+      <p>ほかの道具も同じ決まりを使います。答え合わせ待ちの予想は「事件が見えて、見せ合う前でない」もの、屋根裏の棚は「事件と結んでいない知識」か「見える事件の知識」だけです。</p>
+      <div class="code"><div class="file">src/app/Queries/Ai/DuePredictionsQuery.php</div><pre><code>-&gt;whereHas('caseFile', fn ($q) =&gt; VisibleCases::showingHypotheses(VisibleCases::scope($q)))</code></pre></div>
+      <div class="code"><div class="file">src/app/Queries/Ai/AtticNotesQuery.php</div><pre><code>-&gt;where(fn ($q) =&gt; $q-&gt;whereNull('case_file_id')-&gt;orWhereHas('caseFile', fn ($c) =&gt; VisibleCases::scope($c)))</code></pre></div>
+      <div class="point"><b>ここが大事：書き込みの道具を置かない</b>答え合わせ・取り下げ・○×・見立ての状態・直す・消す・作る・タスク・カレンダー・設定の道具は、わざと置いていません。当たり外れは本人が現実で確かめて書くもので、予想の文と確かさは保存後に変えない決まり（<a href="#s6">6章</a>）だからです。テスト <code>ReadOnlyToolsTest</code> が、道具が4つだけで、どれにも読むだけの印があることを確かめています。</div>
+      <div class="code"><div class="file">src/tests/Feature/Ai/ReadOnlyToolsTest.php</div><pre><code>$this-&gt;assertSame(['get_case', 'list_cases', 'list_due_predictions', 'search_attic'], $tools-&gt;pluck('name')-&gt;sort()-&gt;values()-&gt;all());
+// …（省略）…
+$this-&gt;assertTrue($tool['annotations']['readOnlyHint'], $tool['name']);</code></pre></div>
+    </li>
+  </ol>
+
+  <h3>6. やめる・片づける</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>設定の「つなぐのをやめる」→ その AI の通行証をすべて取り消す</h4>
+      <p>設定の枠の「つないでいる AI」には、AI ごとに1行（名前・戻る先・最後につながった日）と「つなぐのをやめる」が並びます。一覧を作るのは <code>ConnectedAppsQuery</code> で、「取り消していない通行証があり、その通行証か更新の札がまだ期限の中」の AI を、登録の番号ごとに1行にまとめます。</p>
+      <div class="code"><div class="file">src/app/Queries/Ai/ConnectedAppsQuery.php</div><pre><code>$tokens = Passport::token()-&gt;newQuery()
+    -&gt;where('user_id', $user-&gt;id)
+    -&gt;where('revoked', false)
+    -&gt;where(fn ($q) =&gt; $q-&gt;where('expires_at', '&gt;', $now)
+        -&gt;orWhereHas('refreshToken', fn ($r) =&gt; $r-&gt;where('revoked', false)-&gt;where('expires_at', '&gt;', $now)))</code></pre></div>
+      <p>「つなぐのをやめる」は、押すと確かめの文が開く部品 <code>&lt;x-ui.confirm&gt;</code> で、送り先は <code>DELETE /settings/ai/{app}</code>（<code>{app}</code> は AI の登録の番号）です。</p>
+      <div class="code"><div class="file">src/resources/views/components/settings/ai-app-row.blade.php</div><pre><code>&lt;x-ui.confirm :action="route('settings.ai.revoke', $app['id'])" :label="$p['stop']" :confirmLabel="$p['stop_confirm']"
+  :message="strtr($p['stop_message'], [':name' =&gt; $app['name']])" class="mt-1" /&gt;</code></pre></div>
+      <div class="code"><div class="file">src/routes/web/ai.php</div><pre><code>// 設定の「つなぐのをやめる」：その AI の通行証と更新の札をすべて取り消す（{app} は AI の登録の番号）
+Route::delete('/settings/ai/{app}', RevokeAiAppController::class)-&gt;whereUuid('app')-&gt;name('settings.ai.revoke');</code></pre></div>
+      <p>受付 <code>RevokeAiAppController</code> は、まず「この人がつないでいる AI か」を同じ一覧で確かめ、なければ 404 にします（他人の AI・ない番号に触れないため）。取り消しそのものは用事 <code>RevokeAiAccess</code> に任せます。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Settings/RevokeAiAppController.php</div><pre><code>$connected = collect($apps-&gt;for($request-&gt;user()))-&gt;firstWhere('id', $app);
+abort_if($connected === null, 404);
+
+$revoke-&gt;handle($request-&gt;user(), $app);</code></pre></div>
+      <p>用事は、その人のその AI の通行証・更新の札・引換券を、1つのトランザクション（全部できるか、全部やめるか）の中で「取り消した」にします。</p>
+      <div class="code"><div class="file">src/app/Actions/Ai/RevokeAiAccess.php</div><pre><code>return DB::transaction(function () use ($user, $appId) {
+    $tokenIds = Passport::token()-&gt;newQuery()-&gt;where('user_id', $user-&gt;id)-&gt;where('client_id', $appId)-&gt;pluck('id');
+    Passport::refreshToken()-&gt;newQuery()-&gt;whereIn('access_token_id', $tokenIds)-&gt;update(['revoked' =&gt; true]);
+    Passport::authCode()-&gt;newQuery()-&gt;where('user_id', $user-&gt;id)-&gt;where('client_id', $appId)-&gt;update(['revoked' =&gt; true]);</code></pre></div>
+      <p>5 で見たとおり、Passport は呼ばれるたびに「取り消したか」を見るので、<b>次の呼び出しから 401</b> になります。テスト <code>test_full_flow_from_consent_to_mcp_and_revoke</code> が、許可 → 引き換え → 窓口を読める → 取り消す → 401 を通しで確かめています。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">worker の箱</span>
+      <h4>毎日の片づけと、退会のとき</h4>
+      <p>取り消した行や期限の切れた行は、残しておく理由がないので毎日消します。決まった時刻の仕事の表 <code>routes/console.php</code> に3つ並べています（worker の箱の <code>schedule:work</code> が時刻を見て動かします。<a href="#s9">9章</a>）。</p>
+      <div class="code"><div class="file">src/routes/console.php</div><pre><code>Schedule::command('passport:purge --revoked')-&gt;daily();
+// …（省略）…
+Schedule::command('passport:purge --expired --hours='.((config('ai_connect.tokens.refresh_days') + 1) * 24))-&gt;daily();
+// だれにも使われないまま日がたった AI の自己登録を消す
+Schedule::command('ai:prune-apps')-&gt;daily();</code></pre></div>
+      <p>ChatGPT・Claude はつなぐたびに自己登録するので、途中でやめた登録が残ります。<code>ai:prune-apps</code> は、作ってから7日たち、通行証も引換券も1つもない登録を消します。</p>
+      <div class="code"><div class="file">src/app/Console/Commands/PruneAiApps.php</div><pre><code>$before = now()-&gt;subDays(config('ai_connect.prune_unused_apps_days'));
+$count = Passport::client()-&gt;newQuery()
+    -&gt;whereNull('owner_id')
+    -&gt;where('created_at', '&lt;', $before)
+    -&gt;whereDoesntHave('tokens')
+    -&gt;whereDoesntHave('authCodes')
+    -&gt;delete();</code></pre></div>
+      <p>退会（<a href="#s11">11章</a>）のときは、AI とつないだ許可の行も消します。Passport の表には「人を消すと一緒に消える」つながり（外部キー）がないので、用事 <code>DeleteAccount</code> が明示して消します。</p>
+      <div class="code"><div class="file">src/app/Actions/Account/DeleteAccount.php</div><pre><code>$tokenIds = Passport::token()-&gt;newQuery()-&gt;where('user_id', $user-&gt;id)-&gt;pluck('id');
+Passport::refreshToken()-&gt;newQuery()-&gt;whereIn('access_token_id', $tokenIds)-&gt;delete();
+Passport::token()-&gt;newQuery()-&gt;where('user_id', $user-&gt;id)-&gt;delete();
+Passport::authCode()-&gt;newQuery()-&gt;where('user_id', $user-&gt;id)-&gt;delete();</code></pre></div>
+    </li>
+  </ol>
+
+  <h3>7. 写すボタン：窓口を使わずに相談する</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>事件の画面の「AI に相談する用に写す」</h4>
+      <p>プランによっては、ChatGPT に窓口をつなげないことがあります。そのための、もう1つの道が事件の画面の写すボタンです。<b>役目</b>は「事件の中身を、AI に貼れる文にして端末のクリップボードに写す」こと。<b>たとえると</b>、相談したい事件のページをコピーして、自分の手で相手に渡すようなものです。<b>アプリからはどこにも送りません</b>。貼るのは本人です。</p>
+      <p>置き場所は、いまやることのカードの下の「ほかにできること」です（<a href="#s5">5章</a>）。見立てが見えていて（相棒の番の途中でない）、仕事の場面でない事件のときだけ、この行が出ます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/more.blade.php</div><pre><code>'ai-copy' =&gt; $together &amp;&amp; $hypotheses-&gt;isNotEmpty() &amp;&amp; $case-&gt;scene !== \App\Enums\Scene::Work ? ['sparkle', null] : null,
+// …（省略）…
+@if ($key === 'ai-copy')
+  &lt;div class="py-1"&gt;&lt;x-case.ai-copy :case="$case" :board="$board" /&gt;&lt;/div&gt;</code></pre></div>
+      <p>部品 <code>case.ai-copy</code> の中でも、もう一度、仕事の場面なら何も出さないことを確かめています（別の画面から部品を使っても、決まりが破れないように）。ボタンは <code>hidden</code> で始まり、写す文そのものは「写す文を見る」（<code>&lt;details&gt;</code>）の中の読むだけの欄に入れておきます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case/ai-copy.blade.php</div><pre><code>@unless ($case-&gt;scene === \App\Enums\Scene::Work)
+// …（省略）…
+    &lt;x-ui.button variant="secondary" type="button" data-ai-copy-button data-target="{{ $textId }}" hidden&gt;
+// …（省略）…
+      &lt;textarea id="{{ $textId }}" readonly rows="10" class="w-full rounded-xl border border-rule bg-sheet p-3 text-sm leading-relaxed"&gt;{{ \App\Support\Ai\ConsultText::for($case) }}&lt;/textarea&gt;</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>写す文を組み立てる（ConsultText）</h4>
+      <p>写す文は、画面を作るときにサーバーの <code>ConsultText::for</code> が組み立てます。なぞ・手がかり（番号つき）・見立て（合う／合わない手がかりの番号、予想と答え合わせ）・わかったこと、そして最後に<b>お願いの文</b>です。</p>
+      <div class="code"><div class="file">src/app/Support/Ai/ConsultText.php</div><pre><code>$lines = [$t['intro'], '', $t['title'], $case-&gt;title, '', $t['clues']];
+// …（省略）…
+return implode("\n", [...$lines, '', $t['request_title'], $t['request']]);</code></pre></div>
+      <p>相棒モードで見せ合う前なら、どちらの見立ても写さず「（相棒と見せ合う前なので、見立ては写していません）」の一行にします（窓口の <code>get_case</code> と同じ決まり）。</p>
+      <div class="code"><div class="file">src/app/Support/Ai/ConsultText.php</div><pre><code>if ($case-&gt;hidesHypotheses()) {
+    return [$t['hidden']];
+}</code></pre></div>
+      <p>お願いの文には、窓口の説明と同じく「正誤は判定しない」と「名前などの個人情報を書かない」を必ず入れています。</p>
+      <div class="code"><div class="file">src/config/ai_connect.php</div><pre><code>'request' =&gt; '正誤は判定せず、ほかの見立てと、見立てを見分ける確かめ方の案を出してください。まだ集めていない手がかり（とくに「なかった」こと）の案もあるとうれしいです。名前などの個人情報は書かないでください。',</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who js">画面のプログラム</span>
+      <h4>押すとクリップボードへ（ai-copy.js）</h4>
+      <p>写す動きは <code>resources/js/parts/ai-copy.js</code> です（<code>app.js</code> が読み込みます）。設定の枠の「住所を写す」も、同じ部品の印 <code>data-ai-copy</code> を使っているので、このファイル1つで両方が動きます。まず、画面の中の写すかたまりを探し、ボタンと写す欄がそろっていれば、隠していたボタンを見せます。</p>
+      <div class="code"><div class="file">src/resources/js/parts/ai-copy.js</div><pre><code>button.hidden = false;
+button.addEventListener('click', () =&gt; copy(box, field, box.querySelector('[data-ai-copy-status]')));
+// …（省略）…
+document.querySelectorAll('[data-ai-copy]').forEach(setupCopy);</code></pre></div>
+      <p>押すと、ブラウザの新しい写し方 <code>navigator.clipboard.writeText</code> を試します。許可がない・古いブラウザなどで失敗したら、「写す文を見る」を開いて文を選んだ状態にし、手で写してもらいます。どちらの場合も、サーバーには何も送りません。</p>
+      <div class="code"><div class="file">src/resources/js/parts/ai-copy.js</div><pre><code>try {
+    await navigator.clipboard.writeText(field.value);
+    show(status, status?.dataset.done);
+} catch {
+    const details = box.querySelector('[data-ai-copy-details]');
+// …（省略）…
+    field.select();
+    show(status, status?.dataset.failed);
+}</code></pre></div>
+      <p>JavaScript が動かないときは、ボタンが隠れたままで、「写す文を見る」を開けば手で写せます。</p>
+    </li>
+  </ol>
+
+  <div class="recap"><b>この章のまとめ</b><ol>
+    <li>窓口 <code>POST /mcp</code> は、利用者が自分の ChatGPT・Claude から推理手帳の記録を<b>読むだけ</b>の入口。AI は候補を出す役で、正誤は決めない。</li>
+    <li>AI の側の住所（案内・自己登録・通行証・窓口）は <code>routes/ai.php</code>（見張り役のグループなし）。利用者のブラウザで開く住所（同意の画面・つなぐのをやめる）は <code>routes/web/ai.php</code>（<code>auth</code>・<code>agreed</code>）。</li>
+    <li>つなぐ流れ：通行証なしで呼ぶ → 401 と案内の住所 → 自己登録（戻り先は3つだけ）→ 本人がログイン・利用規約の同意のうえで、自前の同意の画面で「許可する」→ 引換券＋PKCE の合言葉で通行証（1時間）と更新の札（30日）。</li>
+    <li>窓口では、よその画面を断る → 通行証 → 範囲 <code>mcp:use</code> → 回数制限、の順に見張り役が確かめ、読むだけの道具4つが <code>Queries/Ai/*</code> で組み立てる。見える事件の決まりは <code>VisibleCases</code> の1か所（本人の・仕事の場面でない事件）で、見せ合う前の相棒の見立ては隠す。</li>
+    <li>設定の「つなぐのをやめる」は、その AI の通行証・更新の札・引換券を取り消し、次の呼び出しから 401。取り消した行・使われなかった登録は毎日片づけ、退会のときは明示して消す。</li>
+    <li>窓口を使わない道として、事件の画面の写すボタンがある。文を端末のクリップボードに写すだけで、アプリからは送らない。</li>
+  </ol></div>
+</section>

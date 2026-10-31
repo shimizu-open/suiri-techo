@@ -1,0 +1,168 @@
+/*
+  推理手帳 — 見た目の決まり（Tailwind CSS v4）
+  テーマは「捜査の手帳」：うすい青みの紙に紺のインク。段ごとの色のつまみ（捜査ファイルのタブ）・証拠品の荷札・
+  「確かめた」のはんこなど、題材の形を部品にする。平らな紙なので、影や浮き上がりの動きは付けない。
+  ダークモードは「夜の書斎」：濃い紺の背景に、少し青みの白い文字（昼と同じ意味の色を、夜でも読める濃さで選び直す）。
+
+  色は :root の変数で決め、Tailwind の色の名前（bg-paper、text-ink など）からその変数を使う。
+  ダークモードは変数の値を入れ替えるだけで切り替わる（dark: を書かなくてよい）。
+  書体は端末にあるものだけを使う（外部の書体や CDN は読み込まない）。子どもにも読みやすい UD 書体を先頭に、見出しも同じ書体の太字。
+  明朝体（font-mincho）は「事件のなぞ」の1か所だけに使ってよい。
+  文字の大きさの段：xs 13px・sm 15px・base 16px（本文）・lg 18px・xl 22px・2xl 28px。数字は桁がそろう形（tabular-nums）。
+
+  色の名前（部品を作るときはこの名前だけを使う）。灰色はすべて紺に寄せた灰色
+    paper        … 画面の背景（うすい青みの紙）
+    sheet        … いまやることのカード・入力欄の面（白）
+    ink          … 文字・主なボタン（紺のインク）
+    on-ink       … ink や段の色で塗った面の上の文字（昼は白・夜は濃い紺なので、どの塗りの上でも読める）
+    muted        … やわらかい文字（説明・補足。紺寄りの灰色）
+    rule         … 罫線・枠線
+    accent       … 差し色（深い赤）：大事なしるし・エラー・消す
+    accent-soft  … 差し色の淡い面
+    ok / ok-soft … 保存したよ（緑）
+    mark         … 選んでいるものの下地（淡い紺）
+
+  段ごとの色（「いまどこにいるか」を色と絵で見分ける。文字にも面にも使える濃さ。-soft はその段の淡い面）
+    clue / clue-soft             … 見たこと（手がかり）：紺。目の絵
+    hypothesis / hypothesis-soft … どうして？（見立て）：からし色（黄土色）。はてなの絵
+    prediction / prediction-soft … もしそうなら（予想）と確かめる日：深い緑。矢印・カレンダーの絵
+    answer / answer-soft         … 答え合わせ：深い赤。チェックの絵
+  文字と背景の明るさの差（コントラスト比）は、昼も夜も、どの組み合わせでも 4.5 以上（docs/design/ui-kit.md）。
+  段ごとのクラスの組み合わせ（bg-clue-soft text-clue など）は、各部品の中の PHP の配列で選ぶ（ここに独自のクラスを足さない）
+*/
+@import 'tailwindcss';
+
+@source '../views';
+@source '../js';
+
+@theme inline {
+    --color-paper: var(--paper);
+    --color-sheet: var(--sheet);
+    --color-ink: var(--ink);
+    --color-on-ink: var(--on-ink);
+    --color-muted: var(--muted);
+    --color-rule: var(--rule);
+    --color-accent: var(--accent);
+    --color-accent-soft: var(--accent-soft);
+    --color-ok: var(--ok);
+    --color-ok-soft: var(--ok-soft);
+    --color-mark: var(--mark);
+    --color-clue: var(--clue);
+    --color-clue-soft: var(--clue-soft);
+    --color-hypothesis: var(--hypothesis);
+    --color-hypothesis-soft: var(--hypothesis-soft);
+    --color-prediction: var(--prediction);
+    --color-prediction-soft: var(--prediction-soft);
+    --color-answer: var(--answer);
+    --color-answer-soft: var(--answer-soft);
+}
+
+@theme {
+    --font-sans: 'BIZ UDPGothic', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', 'Noto Sans CJK JP', 'Yu Gothic UI', Meiryo, system-ui, sans-serif;
+    --font-mincho: 'Hiragino Mincho ProN', 'Hiragino Mincho Pro', 'Yu Mincho', 'YuMincho', 'Noto Serif JP', 'Noto Serif CJK JP', serif;
+    --radius-card: 0.75rem;
+    --radius-step: 1.25rem; /* いまやることのカード（step-card）の角丸 */
+
+    /* 文字の大きさの段（子どもと一緒に読むので、小さな文字も 13px から） */
+    --text-xs: 0.8125rem;
+    --text-xs--line-height: 1.6;
+    --text-sm: 0.9375rem;
+    --text-sm--line-height: 1.65;
+    --text-xl: 1.375rem;
+    --text-xl--line-height: 1.45;
+    --text-2xl: 1.75rem;
+    --text-2xl--line-height: 1.35;
+}
+
+/* 昼の手帳（ふだん） */
+:root {
+    color-scheme: light;
+    --paper: #f3f5f9;
+    --sheet: #ffffff;
+    --ink: #1d2a4d;
+    --on-ink: #ffffff;
+    --muted: #535d78;
+    --rule: #d3d9e5;
+    --accent: #962234;
+    --accent-soft: #f7e5e7;
+    --ok: #23654a;
+    --ok-soft: #e0efe7;
+    --mark: #e6eaf2;
+    --clue: #23457e;
+    --clue-soft: #e3e9f5;
+    --hypothesis: #7d5800;
+    --hypothesis-soft: #f6ead0;
+    --prediction: #1f6248;
+    --prediction-soft: #ddeee5;
+    --answer: #962234;
+    --answer-soft: #f7e5e7;
+}
+
+/* 夜の書斎（端末がダークモードのとき） */
+@media (prefers-color-scheme: dark) {
+    :root {
+        color-scheme: dark;
+        --paper: #0f1524;
+        --sheet: #172036;
+        --ink: #e7ebf4;
+        --on-ink: #0f1524;
+        --muted: #a2abc2;
+        --rule: #2c3753;
+        --accent: #ef9aa1;
+        --accent-soft: #3d2231;
+        --ok: #8fd1ad;
+        --ok-soft: #1a3329;
+        --mark: #222c45;
+        --clue: #a9c1ee;
+        --clue-soft: #1f2b48;
+        --hypothesis: #e6c065;
+        --hypothesis-soft: #352f1d;
+        --prediction: #8fd1ad;
+        --prediction-soft: #1a3329;
+        --answer: #ef9aa1;
+        --answer-soft: #3d2231;
+    }
+}
+
+@layer base {
+    html {
+        -webkit-text-size-adjust: 100%;
+    }
+
+    body {
+        background-color: var(--paper);
+        color: var(--ink);
+        font-family: var(--font-sans);
+        font-size: 1rem; /* 本文は 16px 以上（子どもと一緒に読む） */
+        line-height: 1.75;
+        font-variant-numeric: tabular-nums; /* 数字の幅をそろえる（件数・日付・事件の番号が揺れない） */
+    }
+
+    /* 見出しは本文と同じ UD 書体の太字（明朝体は事件のなぞの1か所だけ） */
+    h1, h2, h3 {
+        font-weight: 700;
+        letter-spacing: 0.01em;
+        line-height: 1.4;
+    }
+
+    /* 文章の中のリンクは下線で見分ける（ナビやボタンは no-underline で消す） */
+    a {
+        color: inherit;
+        text-decoration-line: underline;
+        text-underline-offset: 3px;
+    }
+
+    /* キーボードで動かしたときに、いまどこにいるかがわかる枠 */
+    :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+    }
+
+    /* 消す前の確認（<details>）の三角を隠す */
+    summary {
+        list-style: none;
+    }
+    summary::-webkit-details-marker {
+        display: none;
+    }
+}

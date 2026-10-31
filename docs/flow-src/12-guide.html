@@ -1,0 +1,429 @@
+<section class="story" id="s12">
+  <h2><span class="no">12</span>手引き：名推理カードで推理して裏返す</h2>
+  <p class="userstory">ホームズのものの見方を学びたい人として、物語の場面の手がかりだけを読んで、自分ならどう考えるかを考えてから、ホームズの推理と比べたい。だから、手引きの入口で「このカードで遊ぶ」を押し、カードの表を読んで「裏返す」を押す（考えをメモしておきたいときは「メモして裏返す」）。</p>
+  <p class="summary">この章で追う道筋：<code>GET /guide</code> → 受付 <code>GuideController::index</code> → 教材の係 <code>GuideLibrary</code>（<code>database/data/guide/*.json</code> を読んでキャッシュ。<code>nextScene</code> で次に遊ぶカードを選ぶ）→ <code>GET /guide/scenes</code>（一覧）→ <code>GET /guide/scenes/{key}</code>（表。ホームズの推理は渡さない）→ <code>POST /guide/scenes/{key}/attempt</code> → 形の検証 <code>StoreSceneAttemptRequest</code> → 用事 <code>SaveSceneAttempt</code>（メモがあれば <code>scene_attempts</code> に上書き）→ 転送 → <code>GET /guide/scenes/{key}?side=back</code>（裏：自分の考えとホームズの推理を上下に並べる）→ 「次のカードへ」</p>
+
+  <h3>教材を開く</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>手引きの住所は、1つの囲みに名前の頭と住所の頭をまとめて付ける</h4>
+      <div class="code"><div class="file">src/routes/web/guide.php</div><pre><code>Route::middleware(['auth', 'agreed'])-&gt;prefix('guide')-&gt;name('guide.')-&gt;group(function () {
+    Route::get('/', [GuideController::class, 'index'])-&gt;name('index');
+    Route::get('/reasoning', [GuideController::class, 'reasoning'])-&gt;name('reasoning');
+    Route::get('/skills/{key}', [SkillController::class, 'show'])-&gt;name('skills.show');
+    Route::get('/scenes', [SceneController::class, 'index'])-&gt;name('scenes.index');
+    Route::get('/scenes/{key}', [SceneController::class, 'show'])-&gt;name('scenes.show');
+    Route::post('/scenes/{key}/attempt', SaveSceneAttemptController::class)-&gt;middleware('throttle:writes')-&gt;name('scenes.attempt');
+    Route::get('/practices', [PracticeController::class, 'index'])-&gt;name('practices.index');
+});</code></pre></div>
+      <ul>
+        <li><code>-&gt;prefix('guide')</code>：囲みの中の住所の頭に <code>/guide</code> を付けます。<code>'/'</code> は <code>/guide</code>、<code>'/scenes/{key}'</code> は <code>/guide/scenes/{key}</code> になります。</li>
+        <li><code>-&gt;name('guide.')</code>：囲みの中のルート名の頭に <code>guide.</code> を付けます。<code>'index'</code> は <code>guide.index</code>、<code>'scenes.show'</code> は <code>guide.scenes.show</code> です。</li>
+        <li>見張り役は、ほかの画面と同じ <code>auth</code>・<code>agreed</code>（ログインして同意した人だけ。<a href="#s1">1章</a>）。記録を書くのはカードのメモの保存だけなので、そこにだけ <code>throttle:writes</code>（1分に60回まで。<a href="#s11">11章</a>）を足しています。</li>
+        <li>穴 <code>{key}</code> には <code>scarlet-watson</code> のような教材のキーが入ります。教材はデータベースの行ではないので、行に取り換える見張り役（<a href="#s0">0章</a>）は働かず、文字のまま受付に渡ります。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>ナビの「手引き」を押す</h4>
+      <p>ログインしたあとの画面には、スマホなら下、パソコンなら左にナビ（今日・タスク・事件・手引き・ふりかえり）があります。「手引き」はただのリンクなので、押すとブラウザは <code>GET /guide</code> を送ります。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>GuideController::index</code>：次に遊ぶカードと、ほかの行き先を集める</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Guide/GuideController.php</div><pre><code>public function index(Request $request, GuideLibrary $library, SceneAttemptReader $attempts, DailyPractice $daily): View
+{
+    $doneKeys = $attempts-&gt;keys($request-&gt;user());
+    $nextScene = $library-&gt;nextScene($doneKeys);
+
+    return view('guide.index', [
+        'overview' =&gt; $library-&gt;overview(),
+        'skills' =&gt; array_column($library-&gt;skills(), null, 'key'),
+        'scenes' =&gt; array_column($library-&gt;scenes(), null, 'key'),
+        'reasoningNames' =&gt; array_column($library-&gt;reasoning()['items'], 'name', 'key'),
+        'nextScene' =&gt; $nextScene,
+        'nextNumber' =&gt; $nextScene ? $library-&gt;position('scenes', $nextScene['key']) : null,
+        'nextFresh' =&gt; $nextScene &amp;&amp; ! in_array($nextScene['key'], $doneKeys, true), // まだ書いていないカードか（全部書いたら最初に戻る）
+        'practice' =&gt; $daily-&gt;for($request-&gt;user()),
+        'kid' =&gt; $request-&gt;user()-&gt;prefersKidWords(),
+    ]);
+}</code></pre></div>
+      <p>引数の <code>GuideLibrary $library</code> などは、Laravel がその場で作って渡す係です（<a href="#s0">0章</a> の「依存性の注入」）。受付がしていることは、上から次の4つです。</p>
+      <ol>
+        <li><code>$attempts-&gt;keys(…)</code>：この人がメモを書いたカードのキーの一覧を読みます（中身は下の一覧の歩で見ます）。</li>
+        <li><code>$library-&gt;nextScene($doneKeys)</code>：次に遊ぶカードを1枚選びます。<code>position</code> は、そのカードが並びの何枚目か（カードに出す「No.02」）です。</li>
+        <li><code>nextFresh</code>：選んだカードが「まだ書いていないカード」か。全部書き終えて最初のカードに戻ったときは偽になり、見本の右上の札が「次のカード」から「はじめのカード」に変わります。</li>
+        <li><code>$daily-&gt;for(…)</code>：今日の練習を1つ選びます。今日の画面と同じ係で、日付と利用者で決まるので、同じ日に何度開いても同じものが出ます（<a href="#s2">2章</a>）。</li>
+      </ol>
+      <p><code>array_column($list, null, 'key')</code> は「並びを、キーで引ける形に並べ替える」PHP の関数で、画面の中で <code>$skills['S1']</code> のように技能をキーで取り出せるようにしています。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>教材はデータベースではなくファイル：<code>GuideLibrary::load</code></h4>
+      <p>手引きの中身（10の技能・名推理カード・練習メニュー・3つの考え方の説明・入口の案内）は、利用者の記録ではなく、だれが見ても同じ「本の中身」です。なので表ではなく、<code>src/database/data/guide/</code> の5つの JSON ファイル（<code>overview.json</code>・<code>skills.json</code>・<code>scenes.json</code>・<code>practices.json</code>・<code>reasoning.json</code>）に置き、プログラムと一緒に変えます。</p>
+      <div class="code"><div class="file">src/app/Support/Guide/GuideLibrary.php</div><pre><code>/** JSON を読んで配列にする。ファイルが変わったら読み直すよう、更新日時をキャッシュのキーに入れる */
+private function load(string $name): array
+{
+    $path = database_path("data/guide/{$name}.json");
+
+    return Cache::rememberForever(
+        "guide:{$name}:".filemtime($path),
+        fn () =&gt; json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR),
+    );
+}</code></pre></div>
+      <ul>
+        <li><code>json_decode(…, true)</code>：JSON の文字を、PHP の配列にします。形が壊れていれば <code>JSON_THROW_ON_ERROR</code> で失敗として止めます。</li>
+        <li><code>Cache::rememberForever(鍵, 作り方)</code>：<dfn>キャッシュ</dfn>（一度作ったものを覚えておく置き場）に鍵があればそれを返し、なければ作り方を動かして結果を覚えます。推理手帳のキャッシュの置き場はデータベースの <code>cache</code> 表です。</li>
+        <li>鍵に <code>filemtime($path)</code>（ファイルを最後に変えた時刻）を入れているので、教材のファイルを直すと鍵が変わり、次に開いたときに読み直されます。</li>
+      </ul>
+      <div class="analogy"><b>たとえると</b>図書館の本です。利用者のノート（事件やタスク）は一人ずつ別の棚にしまいますが、本（教材）は全員が同じものを読むので、1冊を書庫に置き、よく読まれるページはコピーをカウンターに置いておきます。本が改訂されたら、コピーの日付が合わなくなるので取り替えます。</div>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>src/database/data/guide/*.json</code>（キャッシュがないときだけ）</li><li>読む・書く：<code>cache</code> 表（<code>guide:scenes:更新時刻</code> などの鍵）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>次に遊ぶカードを選ぶ：<code>GuideLibrary::nextScene</code></h4>
+      <div class="code"><div class="file">src/app/Support/Guide/GuideLibrary.php</div><pre><code>public function nextScene(array $doneKeys): ?array
+{
+    $scenes = $this-&gt;scenes();
+
+    return collect($scenes)-&gt;first(fn (array $scene) =&gt; ! in_array($scene['key'], $doneKeys, true)) ?? ($scenes[0] ?? null);
+}</code></pre></div>
+      <ul>
+        <li><code>collect($scenes)-&gt;first(条件)</code>：カードを並びの順に見て、条件に合う最初の1枚を返します。条件は「書いたカードの一覧（<code>$doneKeys</code>）に入っていない」です。</li>
+        <li><code>?? ($scenes[0] ?? null)</code>：<code>??</code> は「左が空なら右を使う」という書き方です。全部のカードに書き終えていたら最初の1枚に戻り、カードが1枚もなければ空（<code>null</code>）になります。</li>
+      </ul>
+      <p>選ぶ順をデータベースに覚えさせず、「書いたカードの一覧」と「並び」から毎回計算しているので、新しいカードを教材に足しても、そのまま「まだのカード」として選ばれます。</p>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>入口でいちばん大きいのは「このカードで遊ぶ」</h4>
+      <p>入口の画面 <code>guide/index.blade.php</code> は、上から「名推理カードで遊ぼう」（部品 <code>&lt;x-guide.play-card&gt;</code>）→ ほかの行き先（<code>&lt;x-guide.entry-list&gt;</code>：今日の練習・ホームズの10のわざ・3つの考え方）→ 手帳の段ごとのホームズの10のわざ、の順に並べます。1画面に「いまやること」は1つ、という決まりに沿って、いちばん大きく見せるものを「このカードで遊ぶ」の1つにしています。</p>
+      <div class="code"><div class="file">src/resources/views/guide/index.blade.php</div><pre><code>&lt;x-guide.play-card :play="$overview['play']" :scene="$nextScene" :number="$nextNumber" :total="count($scenes)" :fresh="$nextFresh" /&gt;
+
+&lt;x-guide.entry-list :entries="$overview['entries']" :practice="$practice" class="mt-6" /&gt;</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/components/guide/play-card.blade.php</div><pre><code>{{-- 遊べるカードがあれば、そのカードの見本（題・作品名・表の書き出し）を本物のカードの形で見せる --}}
+@if ($scene)
+  &lt;x-guide.card-face :number="$number"&gt;
+    &lt;x-slot:corner&gt;&lt;span class="text-answer"&gt;{{ $fresh ? $play['label_next'] : $play['label_again'] }}&lt;/span&gt;&lt;/x-slot:corner&gt;
+{{-- …（省略）… --}}
+&lt;x-ui.big-button :href="$scene ? route('guide.scenes.show', $scene['key']) : route('guide.scenes.index')" tone="answer" icon="sparkle"&gt;{{ $play['button'] }}&lt;/x-ui.big-button&gt;</code></pre></div>
+      <ul>
+        <li><code>&lt;x-guide.card-face&gt;</code> は、名推理カードの紙の形（二重の枠、左上に番号、右上に「表」「裏」）の部品です。入口の見本・カードの表・カードの裏のどれもこの形にして、「これはカード」とひと目でわかるようにしています。右上には、渡されたもの（ここでは「次のカード」「はじめのカード」の札）を置けます（<code>&lt;x-slot:corner&gt;</code>）。</li>
+        <li><code>&lt;x-ui.big-button&gt;</code> は横いっぱいの大きなボタンで、<code>:href</code> があればリンクになります。押すと、選んだカードの表（<code>/guide/scenes/{key}</code>）へ進みます。</li>
+        <li>入口では行き先の一覧そのものが案内なので、ほかの手引きの画面の上にあるタブ（入口・名推理カード・練習・3つの考え方）は置きません。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-guide.png" alt="手引きの入口の画面"><figcaption>手引きの入口。次のカードの見本と「このカードで遊ぶ」、その下にほかの行き先</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>名推理カードの一覧 <code>GET /guide/scenes</code>：書いたカードにはんこを押す</h4>
+      <p>入口の「ほかのカードを選ぶ」や、手引きのタブの「名推理カード」からは、カードの一覧へ来ます。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Guide/SceneController.php</div><pre><code>public function index(Request $request, GuideLibrary $library, SceneAttemptReader $attempts): View
+{
+    $doneKeys = $attempts-&gt;keys($request-&gt;user());
+
+    return view('guide.scenes.index', [
+        'scenes' =&gt; $library-&gt;scenes(),
+        'skillNames' =&gt; $library-&gt;skillNames(),
+        'doneKeys' =&gt; $doneKeys,
+        'nextScene' =&gt; $library-&gt;nextScene($doneKeys), // 「まだのカードで遊ぶ」の行き先
+    ]);
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Support/Guide/SceneAttemptReader.php</div><pre><code>/** その人が推理を書いたカードのキーの一覧を返す（一覧の画面で「書いた」の印を付けるため） */
+public function keys(User $user): array
+{
+    return $user-&gt;sceneAttempts()-&gt;pluck('scene_key')-&gt;all();
+}</code></pre></div>
+      <p><code>$user-&gt;sceneAttempts()</code> は「この人の推理」という関係（<code>User</code> モデルの <code>hasMany(SceneAttempt::class)</code>）なので、問い合わせには必ず <code>where user_id = この人</code> が付きます。他人の推理が混ざることはありません。<code>pluck('scene_key')</code> は、行の中の <code>scene_key</code> の欄だけを集めます。</p>
+      <div class="code"><div class="file">src/resources/views/guide/scenes/index.blade.php</div><pre><code>{{-- 遊べるカードがあれば、まだのカード（全部書いたら最初のカード）へ進む大きなボタンを出す --}}
+@if ($nextScene)
+  &lt;x-ui.big-button :href="route('guide.scenes.show', $nextScene['key'])" tone="answer" icon="sparkle" class="mt-4"&gt;
+    {{ count($doneKeys) &lt; count($scenes) ? config('suiri.guide.scenes.play_next') : config('suiri.guide.scenes.play_again') }}
+  &lt;/x-ui.big-button&gt;
+@endif</code></pre></div>
+      <p>一覧でも、いちばん大きいのは「まだのカードで遊ぶ」のボタンです（全部書き終えていれば「最初のカードから遊ぶ」）。その下に「23枚のうち、2枚に考えを書いたよ」のような書いた枚数と、カードの行が並びます。</p>
+      <div class="code"><div class="file">src/resources/views/components/guide/scene-item.blade.php</div><pre><code>{{-- ホームズが外した場面なら、赤いはんこで知らせる --}}
+@if ($scene['is_mistake'])
+  &lt;x-guide.stamp tone="accent"&gt;{{ config('suiri.guide.scenes.mistake') }}&lt;/x-guide.stamp&gt;
+@endif
+{{-- 自分の推理を書いたカードなら、緑のはんこを押す --}}
+@if ($done)
+  &lt;x-guide.stamp tone="ok"&gt;{{ config('suiri.guide.scenes.done') }}&lt;/x-guide.stamp&gt;
+@endif</code></pre></div>
+      <p><code>&lt;x-guide.stamp&gt;</code> は、丸い枠と少しの傾きで「押した印」に見せる小さなはんこの部品です。言葉（「ホームズが外した」「推理を書いた」）は <code>config/suiri.php</code> の <code>guide.scenes</code> にあります。カードには、ホームズが外した場面（<code>is_mistake: true</code>）もわざと混ぜてあります。当たる話だけでなく、外れから直す姿も見せるためです。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>scene_attempts</code> のこの人の行の <code>scene_key</code></li></ul></div>
+      <figure class="shot"><img data-img="screen-scenes.png" alt="名推理カードの一覧の画面"><figcaption>名推理カードの一覧。「まだのカードで遊ぶ」と書いた枚数、カードの行と「推理を書いた」のはんこ</figcaption></figure>
+    </li>
+  </ol>
+
+  <h3>カードの表を開いて、裏返す</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>カードの表 <code>GET /guide/scenes/{key}</code>：ホームズの推理は HTML に入れない</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Guide/SceneController.php</div><pre><code>/** 裏返す前の表に渡さない欄（ホームズの推理・確かめ方・答えに近い引用） */
+private const BACK_ONLY = ['reasoning', 'verification', 'quote_en'];
+// …（省略）…
+public function show(Request $request, GuideLibrary $library, SceneAttemptReader $attempts, string $key): View
+{
+    $scene = $library-&gt;scene($key) ?? abort(404);
+    $back = $request-&gt;query('side') === 'back';
+
+    return view('guide.scenes.show', [
+        'scene' =&gt; $back ? $scene : Arr::except($scene, self::BACK_ONLY),
+        'back' =&gt; $back,
+        'steps' =&gt; $back ? ReasoningSteps::split($scene['reasoning']) : [],
+        'attempt' =&gt; $attempts-&gt;find($request-&gt;user(), $key),
+        'skillNames' =&gt; $library-&gt;skillNames(),
+        'neighbors' =&gt; $library-&gt;neighbors('scenes', $key),
+        'position' =&gt; $library-&gt;position('scenes', $key), // 何枚目か（No.07・「7 / 23 枚目」）
+        'total' =&gt; count($library-&gt;scenes()),
+        'mistakeNote' =&gt; $library-&gt;overview()['mistake_note'],
+        'kid' =&gt; $request-&gt;user()-&gt;prefersKidWords(), // 子ども向けのヒントを開いておくか（ふだんの場面が親子の人）
+    ]);
+}</code></pre></div>
+      <ol>
+        <li><code>$library-&gt;scene($key)</code> で、<code>scenes.json</code> の中からキーの合うカードを1枚探します。なければ <code>abort(404)</code>（そのカードはない）。</li>
+        <li>住所の後ろに <code>?side=back</code> が付いていれば裏、なければ表です（<code>$request-&gt;query('side')</code> は住所の <code>?</code> のあとの値を読む）。</li>
+        <li>表のときは <code>Arr::except($scene, self::BACK_ONLY)</code> で、ホームズの推理（<code>reasoning</code>）・どう確かめたか（<code>verification</code>）・英語の引用（<code>quote_en</code>）の欄を取り除いてから画面に渡します。</li>
+        <li><code>$attempts-&gt;find(…)</code> で、前にこのカードに書いた自分のメモがあれば探します（ここでも自分の行だけ）。</li>
+        <li><code>neighbors</code>（並びの1つ前と1つ後ろのカード）・<code>position</code>（何枚目か）・<code>total</code>（全部で何枚か）は、カードの「No.02 / 23」と、裏の「次のカードへ」や下の「前へ・次へ」に使います。</li>
+      </ol>
+      <div class="point"><b>ここが大事</b>見た目で隠す（CSS で見えなくする）のではなく、表の HTML にはホームズの推理を最初から入れていません。ブラウザの「ページのソースを表示」で見ても、答えは書かれていません。自分で考える前に答えが目に入らないようにするためです。</div>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>scenes.json</code>（キャッシュから）の1枚</li><li>読む：<code>scene_attempts</code> の「この人・このカード」の1行（あれば）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>大きな問いとカードを読み、「裏返す」を押す</h4>
+      <p>画面 <code>guide/scenes/show.blade.php</code> は、<code>$back</code> で表と裏の部品を出し分けます。</p>
+      <div class="code"><div class="file">src/resources/views/guide/scenes/show.blade.php</div><pre><code>{{-- 裏を開いたときはホームズの推理と次のカードへのボタンを、そうでなければ表の手がかりと「裏返す」を出す --}}
+@if ($back)
+{{-- …（省略）… --}}
+  &lt;x-guide.scene-back :scene="$scene" :attempt="$attempt" :steps="$steps" :skill-names="$skillNames" :mistake-note="$mistakeNote" :number="$position" :total="$total" /&gt;
+{{-- …（省略）… --}}
+@else
+  &lt;x-guide.scene-front :scene="$scene" :attempt="$attempt" :kid="$kid" :number="$position" :total="$total" /&gt;
+@endif</code></pre></div>
+      <p>表の部品 <code>&lt;x-guide.scene-front&gt;</code> は、全体が1つのフォームです。上から、大きな問い「この手がかりから、何がわかる？」→ カード（番号・題・作品名と章・手がかり）→ 横いっぱいの「裏返す」→ たたんだ「ヒントを見る」→ たたんだ「考えをメモしておく（なくてもOK）」の順に並びます。</p>
+      <div class="code"><div class="file">src/resources/views/components/guide/scene-front.blade.php</div><pre><code>&lt;form method="POST" action="{{ route('guide.scenes.attempt', $scene['key']) }}" {{ $attributes-&gt;class(['space-y-3']) }}&gt;
+  @csrf
+  &lt;div&gt;
+    &lt;h2 class="text-xl leading-snug tracking-normal sm:text-2xl"&gt;{{ $words['question'] }}&lt;/h2&gt;
+    &lt;p class="text-base text-muted"&gt;{{ $kid ? $words['say_aloud'] : $words['think_first'] }}&lt;/p&gt;
+  &lt;/div&gt;
+
+  &lt;x-guide.card-face :number="$number" :total="$total"&gt;
+{{-- …（省略）… --}}
+    &lt;p class="mt-2 border-t border-dashed border-rule pt-2 text-base leading-relaxed"&gt;{{ $scene['front'] }}&lt;/p&gt;
+  &lt;/x-guide.card-face&gt;
+
+  &lt;x-ui.big-button tone="clue" icon="sparkle"&gt;{{ $words['flip'] }}&lt;/x-ui.big-button&gt;
+{{-- …（省略）… --}}
+  &lt;details class="rounded-xl border border-rule bg-sheet px-4" @if ($attempt || $errors-&gt;has('answer')) open @endif&gt;
+{{-- …（省略）… --}}
+      &lt;x-ui.textarea name="answer" :label="$words['memo_label']" :value="$attempt?-&gt;answer" rows="3"
+        :maxlength="config('suiri.limits.scene_answer')" :placeholder="$words['memo_placeholder']"
+{{-- …（省略）… --}}
+      &lt;x-ui.button variant="secondary" block class="min-h-12"&gt;{{ $words['flip_with_memo'] }}&lt;/x-ui.button&gt;</code></pre></div>
+      <ul>
+        <li>問いの下のひとことは、ふだんの場面が親子の人には「まずは声に出して言ってみよう。」、ほかの人には「見えていることを、頭の中で並べてみよう。」です（<code>$kid</code>。<code>User::prefersKidWords()</code>）。書かなくても、声に出したり頭の中で並べたりしてから裏返せるようにしています。</li>
+        <li>「裏返す」（<code>&lt;x-ui.big-button&gt;</code>。<code>:href</code> がないので送信のボタン）も、メモの欄の下の「メモして裏返す」も、同じフォームを <code>POST /guide/scenes/{key}/attempt</code> に送ります。メモの欄は <code>&lt;details&gt;</code>（押すと開く、たたんだ囲み）の中にありますが、たたんでいてもフォームの一部なので、書いてあれば一緒に送られ、書いていなければ空で送られます。</li>
+        <li>メモの欄を最初から開いておくと、いまやること（考えて裏返す）がぼやけるので、たたんでおきます。前に書いたメモがあるとき（<code>$attempt</code>）と、長すぎて戻されたとき（<code>$errors-&gt;has('answer')</code>）だけ、開いておきます（<code>open</code>）。</li>
+        <li><code>:value="$attempt?-&gt;answer"</code>：前に書いたメモがあれば、欄に入れておきます（<code>?-&gt;</code> は「<code>$attempt</code> が空なら空のまま」という書き方）。</li>
+        <li><code>:maxlength</code>：書ける長さの上限を <code>config/suiri.php</code> の <code>limits.scene_answer</code>（500字）から入れます。ブラウザも長すぎる入力を止めますが、本当の確かめはサーバー側でします（あとの歩）。</li>
+        <li>ヒント（<code>kid_hint</code>）があるカードでは「ヒントを見る」をたたんで出し、親子の人には最初から開いておきます。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-scene-front.png" alt="名推理カードの表の画面"><figcaption>カードの表。大きな問い、二重の枠のカード、「裏返す」、ヒントとメモ（どちらもたたんである）</figcaption></figure>
+      <div class="data"><b>このとき動くデータ</b><ul><li>送る：<code>POST /guide/scenes/scarlet-watson/attempt</code>（「初対面のワトソン」のカードのとき）</li><li>送る：<code>answer</code>（メモ。書いていなければ空）と <code>_token</code>（合言葉）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>見張り役：ログイン・回数・同意（持ち主の確かめは要らない）</h4>
+      <p>この住所の見張り役を Laravel の優先順位で並べると、web のひとまとまり（セッション・合言葉の確かめ）→ <code>auth</code> → <code>throttle:writes</code> → <code>SubstituteBindings</code> → <code>agreed</code> の順です（並べ替えのしくみは <a href="#s0">0章</a>）。</p>
+      <p>事件やタスクの住所と違って <code>-&gt;can()</code> がありません。住所の <code>{key}</code> は教材のキーで、だれかの記録の番号ではないからです。保存する行は、いつも「ログイン中の本人の推理」です（あとの歩の用事が <code>$request-&gt;user()</code> の関係を通して書く）。他人の推理を書き換える道は、はじめからありません。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>形の検証 <code>StoreSceneAttemptRequest</code>：書かなくてもよい、書くなら500字まで</h4>
+      <div class="code"><div class="file">src/app/Http/Requests/Guide/StoreSceneAttemptRequest.php</div><pre><code>/** 確かめる前に、前後の空白を取る（空白だけの推理は「書かなかった」として扱う） */
+protected function prepareForValidation(): void
+{
+    $this-&gt;merge(['answer' =&gt; trim((string) $this-&gt;input('answer'))]);
+}
+
+/** 項目ごとの決まり（長さの上限は config/suiri.php の limits.scene_answer） */
+public function rules(): array
+{
+    return [
+        'answer' =&gt; ['nullable', 'string', 'max:'.config('suiri.limits.scene_answer')],
+    ];
+}</code></pre></div>
+      <ul>
+        <li><code>prepareForValidation</code>：確かめる前に値を整える関数。前後の空白を取ります。</li>
+        <li><code>nullable</code>：空でもよい（メモを書かずに「裏返す」を押してもよい）。<code>max:500</code>：500字まで。超えていれば、受付まで届かずに表の画面へ戻り、「自分の推理は 500 文字以内にしてください。」という誤りが出ます（項目の名前「自分の推理」は <code>attributes()</code> で決めている）。このときメモの欄は開いた状態で出るので（前の歩の <code>open</code>）、誤りが目に入ります。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>SaveSceneAttemptController</code>：ないカードなら 404、あれば用事へ</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Guide/SaveSceneAttemptController.php</div><pre><code>public function __invoke(StoreSceneAttemptRequest $request, GuideLibrary $library, SaveSceneAttempt $save, string $key): RedirectResponse
+{
+    abort_unless($library-&gt;scene($key), 404);
+    $attempt = $save-&gt;handle($request-&gt;user(), $key, $request-&gt;validated('answer'));
+
+    return redirect()-&gt;route('guide.scenes.show', ['key' =&gt; $key, 'side' =&gt; 'back'])
+        -&gt;with($attempt ? ['status' =&gt; config('suiri.guide.back.saved')] : []);
+}</code></pre></div>
+      <ol>
+        <li><code>abort_unless(…, 404)</code>：教材にないキー（住所を手で書き換えたなど）なら、保存せずに 404 で止めます。ないカードへの推理が表に残らないようにするためです。</li>
+        <li>用事 <code>SaveSceneAttempt</code> に「この人の、このカードへの、このメモ」を渡します。</li>
+        <li>裏（<code>?side=back</code>）へ転送します。保存したときだけ、お知らせ「あなたの考えをとっておいたよ。」（<code>config/suiri.php</code> の <code>guide.back.saved</code>）をセッションに一度だけ入れます（<code>-&gt;with</code>。次の画面の <code>&lt;x-ui.flash /&gt;</code> が出す）。メモが空なら、お知らせなしで裏へ進みます。</li>
+      </ol>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>用事 <code>SaveSceneAttempt</code>：1人1カードに1行、書き直すと上書き</h4>
+      <div class="code"><div class="file">src/app/Actions/Guide/SaveSceneAttempt.php</div><pre><code>/** 推理を保存して返す。何も書いていなければ保存せずに null を返す（前に書いた推理はそのまま残る） */
+public function handle(User $user, string $sceneKey, ?string $answer): ?SceneAttempt
+{
+    // 空のまま送られたとき（書かずに裏返したとき）は、何も書き換えない
+    if (blank($answer)) {
+        return null;
+    }
+
+    return $user-&gt;sceneAttempts()-&gt;updateOrCreate(['scene_key' =&gt; $sceneKey], ['answer' =&gt; $answer]);
+}</code></pre></div>
+      <ul>
+        <li><code>blank($answer)</code>：空なら何もしません。前に書いたメモを、空で消してしまわないためです。</li>
+        <li><code>updateOrCreate(探す条件, 書く値)</code>：「この人の推理」の中から <code>scene_key</code> が同じ行を探し、あれば <code>answer</code> を書き換え、なければ新しい行を作ります。<code>$user-&gt;sceneAttempts()</code> を通しているので、新しい行の <code>user_id</code> には自動でこの人の番号が入ります。</li>
+      </ul>
+      <div class="code"><div class="file">src/database/migrations/2026_10_31_000011_create_scene_attempts_table.php</div><pre><code>Schema::create('scene_attempts', function (Blueprint $table) {
+    $table-&gt;id();
+    $table-&gt;foreignId('user_id')-&gt;constrained()-&gt;cascadeOnDelete();
+    $table-&gt;string('scene_key', 40); // database/data/guide/scenes.json のキー
+    $table-&gt;string('answer', 500); // 自分の推理
+    $table-&gt;timestamps();
+    $table-&gt;unique(['user_id', 'scene_key']);
+});</code></pre></div>
+      <ul>
+        <li><code>unique(['user_id', 'scene_key'])</code>：同じ人・同じカードの行は1つまで、という決まりをデータベース自身にも持たせています。</li>
+        <li><code>cascadeOnDelete()</code>：利用者の行が消えると（退会。<a href="#s11">11章</a>）、その人の推理も一緒に消えます。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>scene_attempts</code>（<code>user_id</code> と <code>scene_key</code> が同じ行）</li><li>書く：その行の <code>answer</code> と <code>updated_at</code>（なければ新しい1行）。メモが空なら書かない</li></ul></div>
+    </li>
+  </ol>
+
+  <h3>裏返して比べ、次のカードへ</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>転送を受けて、裏の住所を開き直す</h4>
+      <p>返事は「302 → <code>/guide/scenes/scarlet-watson?side=back</code>」です。ブラウザはすぐにその住所へ GET を送り直します。受付は表のときと同じ <code>SceneController::show</code> で、今度は <code>$back</code> が真になるので、ホームズの推理の欄も含めた全部を画面に渡します。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>ホームズの推理を段に分ける（<code>ReasoningSteps::split</code>）</h4>
+      <p><code>scenes.json</code> のホームズの推理は、「事実：…推理：…結論：…」という1つの文で書いてあります。裏の画面で段ごとに見出しを付けて読みやすく並べるため、目印で区切ります。</p>
+      <div class="code"><div class="file">src/app/Support/Guide/ReasoningSteps.php</div><pre><code>/** 分ける目印（文の中の書き方）と、画面に出す見出し */
+private const MARKS = ['事実：' =&gt; '事実', '推理：' =&gt; '推理', '結論：' =&gt; '結論'];
+// …（省略）…
+$pattern = '/('.implode('|', array_map('preg_quote', array_keys(self::MARKS))).')/u';
+$parts = preg_split($pattern, $reasoning, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY);</code></pre></div>
+      <p><code>preg_split</code> は、決まった形（ここでは「事実：」「推理：」「結論：」のどれか）で文を切り分ける関数です。<code>PREG_SPLIT_DELIM_CAPTURE</code> を付けると、切れ目の目印そのものも結果に残るので、続くループで「目印なら次の段の見出しにする、文ならその見出しを付けて段にする」と組み立てます。目印が1つもない推理は、見出しなしの1段になります。</p>
+      <p>画面では、この見出し（事実・推理・結論）を、子どもにも読みやすい「見えたこと・考えたこと・だから」に言いかえて出します（<code>config/suiri.php</code> の <code>guide.back.step_labels</code>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>自分の考えとホームズの推理を、上下に並べて読む</h4>
+      <p>裏の部品 <code>&lt;x-guide.scene-back&gt;</code> は、上から、たたんだ「表の手がかりをもう一度読む」→ あなたの考え（付箋の色）→ カードの裏「ホームズはこう考えた」→ どうやって確かめた？ → この場面で練習できるわざ → 原作の英語の引用、の順に並べます。</p>
+      <div class="code"><div class="file">src/resources/views/components/guide/scene-back.blade.php</div><pre><code>&lt;div class="rounded-lg bg-hypothesis-soft px-4 py-3"&gt;
+  &lt;p class="text-sm font-bold text-hypothesis"&gt;{{ $words['mine'] }}&lt;/p&gt;
+  {{-- 書いた考えがあれば書いた日と一緒に、なければ表にもどって書けることを出す --}}
+  @if ($attempt)
+    &lt;p class="mt-1 whitespace-pre-line"&gt;{{ $attempt-&gt;answer }}&lt;/p&gt;
+{{-- …（省略）… --}}
+&lt;x-guide.card-face :number="$number" :total="$total" side="back"&gt;
+{{-- …（省略）… --}}
+  &lt;h3 class="text-xl"&gt;{{ $words['holmes'] }}&lt;/h3&gt;
+  &lt;ol class="mt-3 space-y-3"&gt;
+    {{-- 推理を段（見えたこと・考えたこと・だから）ごとに、絵と見出しを付けて並べる --}}
+    @foreach ($steps as $step)
+{{-- …（省略）… --}}
+          &lt;p @class(['text-sm font-bold', $color])&gt;{{ $words['step_labels'][$step['label']] ?? $step['label'] }}&lt;/p&gt;</code></pre></div>
+      <ul>
+        <li>自分の考えとホームズの推理を上下に並べ、どこが同じでどこが違うかを見比べられるようにしています。メモがあれば書いた日と「表にもどって直す」、書かずに裏返したときは「表にもどって書いてみる」が出ます。表に戻ると、前に書いたメモが欄に入っているので、直して送ると上書きされます。</li>
+        <li>カードの裏も、表と同じ紙の形（<code>&lt;x-guide.card-face side="back"&gt;</code>。裏は淡い紺の色）です。段ごとに、段の絵と色（見えたこと・考えたこと・だから）を付けます。</li>
+        <li>ホームズが外した場面なら、カードの右上に「ホームズが外した」のはんこを押し、外れから直すことを伝えるひとこと（<code>overview.json</code> の <code>mistake_note</code>）を添えます。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>裏のいちばん下は「次のカードへ」</h4>
+      <div class="code"><div class="file">src/resources/views/guide/scenes/show.blade.php</div><pre><code>{{-- 次のカードがあれば大きなボタンで進めるようにし、最後のカードなら一覧へもどるボタンにする --}}
+@if ($neighbors['next'])
+  &lt;x-ui.big-button :href="route('guide.scenes.show', $neighbors['next']['key'])" tone="answer" icon="sparkle"&gt;{{ config('suiri.guide.back.next') }}&lt;/x-ui.big-button&gt;
+{{-- …（省略）… --}}
+@else
+  &lt;x-ui.big-button :href="route('guide.scenes.index')" tone="secondary"&gt;{{ config('suiri.guide.back.list') }}&lt;/x-ui.big-button&gt;
+@endif</code></pre></div>
+      <div class="code"><div class="file">src/app/Support/Guide/GuideLibrary.php</div><pre><code>public function neighbors(string $name, string $key): array
+{
+    $items = $this-&gt;load($name);
+    $index = array_search($key, array_column($items, 'key'), true);
+// …（省略）…
+    return ['prev' =&gt; $items[$index - 1] ?? null, 'next' =&gt; $items[$index + 1] ?? null];
+}</code></pre></div>
+      <p><code>array_search</code> で、並びの中でそのカードが何番目かを探し、1つ前（<code>$index - 1</code>）と1つ後ろ（<code>$index + 1</code>）を返します。端ならそこは空（<code>null</code>）です。裏のいちばん下は、次のカードがあれば横いっぱいの「次のカードへ」、最後のカードなら「カードの一覧にもどる」。その下に、表でも裏でも「前へ・次へ」のリンク（部品 <code>&lt;x-guide.pager&gt;</code>）が並びます。読み終えたら、そのまま次のカードの表へ進めます。</p>
+      <figure class="shot"><img data-img="screen-scene-back.png" alt="名推理カードの裏の画面"><figcaption>カードの裏。あなたの考え、「ホームズはこう考えた」（見えたこと・考えたこと・だから）、どうやって確かめた？、「次のカードへ」</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>ほかの手引きの画面：わざ・3つの考え方・練習メニュー</h4>
+      <p>残りの手引きの画面も、同じ教材の係から読むだけです。どの画面の上にも、手引きのタブ（入口・名推理カード・練習・3つの考え方。部品 <code>&lt;x-guide.tabs&gt;</code>）が並びます。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Guide/SkillController.php</div><pre><code>public function show(Request $request, GuideLibrary $library, string $key): View
+{
+    $skill = $library-&gt;skill($key) ?? abort(404);
+
+    return view('guide.skills.show', [
+        'skill' =&gt; $skill,
+        'kid' =&gt; $request-&gt;has('kid') ? $request-&gt;boolean('kid') : $request-&gt;user()-&gt;prefersKidWords(),
+        'practices' =&gt; $library-&gt;practicesFor($key),
+        'scenes' =&gt; $library-&gt;scenesFor($key),</code></pre></div>
+      <ul>
+        <li><code>GET /guide/skills/{key}</code>（10のわざの1つ）と <code>GET /guide/reasoning</code>（3つの考え方の説明）は、「だれと読む？」の2つのボタンで、説明を「子ども向け」「大人向け」に切り替えられます。切り替えは JavaScript ではなく、<code>?kid=1</code>・<code>?kid=0</code> を付けたリンク（部品 <code>&lt;x-guide.audience-toggle&gt;</code>）です。何も選んでいなければ、ふだんの場面が親子の人は子ども向けになります。</li>
+        <li>わざの画面には、そのわざを練習できる練習メニュー（<code>practicesFor</code>）と、そのわざが出てくる名推理カード（<code>scenesFor</code>）が並びます。</li>
+        <li><code>GET /guide/practices</code>（練習メニュー）は、上に11種の名前のボタン（押すと下の説明へ飛ぶ）、その下にメニューごとの説明と「この練習を始める」が並びます。受付 <code>PracticeController::index</code> は、教材の係から練習メニューと技能の名前を集めて渡すだけです。</li>
+      </ul>
+      <div class="code"><div class="file">src/resources/views/components/guide/practice-item.blade.php</div><pre><code>{{-- 事件を作る画面があれば始めるボタン、まだなければ準備中の札を出す --}}
+@if (Route::has('cases.create'))
+  &lt;x-ui.big-button :href="route('cases.create', ['origin' =&gt; 'practice', 'practice' =&gt; $practice['key']])" tone="secondary" icon="plus" class="mt-3"&gt;{{ $words['start'] }}&lt;/x-ui.big-button&gt;</code></pre></div>
+      <p>「この練習を始める」は、問いかけ入りの事件を作る画面（<code>/cases/create?origin=practice&amp;practice=キー</code>）へのリンクです。<code>Route::has('cases.create')</code> は「その名前のルートがあるか」を確かめる関数で、事件の住所がまだない作りかけのときでも、手引きの画面が壊れないようにしています。続きは <a href="#s4">4章</a>。</p>
+      <figure class="shot"><img data-img="screen-practices.png" alt="練習メニューの画面"><figcaption>練習メニュー。11種の名前のボタンと、メニューごとの説明</figcaption></figure>
+    </li>
+  </ol>
+
+  <div class="recap"><b>この章のまとめ</b><ol>
+    <li>手引きの住所は <code>prefix('guide')</code>・<code>name('guide.')</code> の1つの囲みにまとめ、見張り役は <code>auth</code>・<code>agreed</code>。書き込みのメモの保存にだけ <code>throttle:writes</code>。</li>
+    <li>教材は利用者の記録ではないので、表ではなく JSON のファイル。<code>GuideLibrary</code> が読んで、ファイルの更新時刻つきの鍵でキャッシュする。</li>
+    <li>入口と一覧でいちばん大きいのは「このカードで遊ぶ」「まだのカードで遊ぶ」。行き先は <code>nextScene</code> が「書いたカードの一覧」と「並び」から毎回選ぶ（全部書いたら最初に戻る）。</li>
+    <li>カードの表の HTML には、ホームズの推理・確かめ方・引用を入れない（<code>Arr::except</code>）。裏は <code>?side=back</code> の別の画面。</li>
+    <li>「裏返す」も「メモして裏返す」も同じフォーム。メモが書いてあれば <code>scene_attempts</code> に1人1カード1行で上書き保存し、空なら保存せずに裏へ進む。いつも本人の関係（<code>$user-&gt;sceneAttempts()</code>）を通して読み書きするので、他人の推理は見えず、書き換えられない。</li>
+    <li>裏では、ホームズの推理を段に分けて「見えたこと・考えたこと・だから」の見出しを付け、自分の考えと上下に並べて比べる。いちばん下の「次のカードへ」で、そのまま次のカードへ進める。</li>
+  </ol></div>
+</section>

@@ -1,0 +1,173 @@
+{
+  "intro": "ホームズの考え方を、遊びながら練習するページです。原作の場面で推理したり、名探偵の「わざ」を読んだりしてみよう。",
+  "play": {
+    "title": "名推理カードで遊ぼう",
+    "hint": "原作の手がかりを読んで、親子で推理してみよう。考えがまとまったら、カードを裏返して答え合わせ。",
+    "label_next": "次のカード",
+    "label_again": "はじめのカード",
+    "button": "このカードで遊ぶ",
+    "more": "ほかのカードを選ぶ（全部で:count枚）"
+  },
+  "entries": [
+    {
+      "key": "practices",
+      "route": "guide.practices.index",
+      "icon": "calendar",
+      "name": "今日の練習",
+      "description": "今日は「:name」はどう？　毎日の事件で試せる練習メニューから1つ。",
+      "description_none": "毎日の事件で試せる練習メニューから、1つ選んでみよう。"
+    },
+    {
+      "key": "skills",
+      "route": "guide.index",
+      "anchor": "skills",
+      "icon": "book",
+      "name": "ホームズの10のわざ",
+      "description": "よく見る、決めつけない、外れたら直す…。名探偵のわざを10個に分けて紹介するよ。"
+    },
+    {
+      "key": "reasoning",
+      "route": "guide.reasoning",
+      "icon": "question",
+      "name": "3つの考え方",
+      "description": "演繹・帰納・アブダクションって何？　雨の日のたとえで説明するよ。"
+    }
+  ],
+  "flow_title": "ホームズの10のわざ",
+  "flow_intro": "手帳の段の一つひとつが、ホームズのわざの練習になっているよ。気になるわざを開いてみよう。",
+  "steps": [
+    {
+      "key": "clue-seen",
+      "step": "手がかり：見た",
+      "icon": "eye",
+      "tone": "clue",
+      "note": "自分の目や耳で確かめたこと。",
+      "skills": [
+        "S1",
+        "S2"
+      ],
+      "example": "『ボヘミアの醜聞』階段は何段？",
+      "scene": "scandal-17-steps",
+      "reasoning": null
+    },
+    {
+      "key": "clue-heard",
+      "step": "手がかり：聞いた",
+      "icon": "eye",
+      "tone": "clue",
+      "note": "人から聞いたこと。本当かどうかは、まだわからない。",
+      "skills": [
+        "S3"
+      ],
+      "example": "『四つの署名』第1章 ウィグモア街の郵便局",
+      "scene": "sign-post-office",
+      "reasoning": null
+    },
+    {
+      "key": "clue-absent",
+      "step": "手がかり：なかった",
+      "icon": "eye",
+      "tone": "clue",
+      "note": "あるはずなのに、なかったこと。",
+      "skills": [
+        "S6"
+      ],
+      "example": "『白銀号事件』吠えなかった犬",
+      "scene": "silver-blaze-dog",
+      "reasoning": null
+    },
+    {
+      "key": "hypothesis",
+      "step": "見立て（どうして？）",
+      "icon": "question",
+      "tone": "hypothesis",
+      "note": "見立て＝「どうしてだろう？」の答えの案。2つ以上出してみよう。",
+      "skills": [
+        "S4",
+        "S5"
+      ],
+      "example": "『ブラック・ピーター』壁に刺さった銛",
+      "scene": "black-peter-harpoon",
+      "reasoning": "abduction"
+    },
+    {
+      "key": "fit",
+      "step": "合う・合わない（○×）",
+      "icon": "question",
+      "tone": "hypothesis",
+      "note": "手がかりに合わない見立てに×を付けて、消していく。",
+      "skills": [
+        "S5"
+      ],
+      "example": "『四つの署名』第6章 ありえないものを消して残ったもの",
+      "scene": null,
+      "reasoning": "deduction"
+    },
+    {
+      "key": "prediction",
+      "step": "もしそうなら",
+      "icon": "arrow",
+      "tone": "prediction",
+      "note": "見立てが合っていたら、次に見えるはずのこと。",
+      "skills": [
+        "S7"
+      ],
+      "example": "『赤毛組合』ズボンの膝を見に行く",
+      "scene": "redheaded-tunnel",
+      "reasoning": "deduction"
+    },
+    {
+      "key": "resolve",
+      "step": "答え合わせ",
+      "icon": "check",
+      "tone": "answer",
+      "note": "見に行って、予想が当たったかを確かめる。",
+      "skills": [
+        "S7"
+      ],
+      "example": "『ソア橋』欄干の欠けを試して確かめる",
+      "scene": "thor-bridge-chip",
+      "reasoning": "induction"
+    },
+    {
+      "key": "backward",
+      "step": "原因をさかのぼる",
+      "icon": "arrow",
+      "tone": "plain",
+      "note": "今ある結果から、1つ前の出来事をたどる。",
+      "skills": [
+        "S8"
+      ],
+      "example": "『踊る人形』指の間のチョーク",
+      "scene": "dancing-men-chalk",
+      "reasoning": null
+    },
+    {
+      "key": "attic",
+      "step": "屋根裏の棚",
+      "icon": "attic",
+      "tone": "plain",
+      "note": "屋根裏の棚＝わかったきまりを、例と一緒にためておく所。",
+      "skills": [
+        "S9"
+      ],
+      "example": "『四つの署名』第1章 タバコの灰の研究",
+      "scene": null,
+      "reasoning": "induction"
+    },
+    {
+      "key": "norbury",
+      "step": "ノーベリ帳",
+      "icon": "norbury",
+      "tone": "plain",
+      "note": "ノーベリ帳＝外れた予想を残すノート。名探偵も外すから。",
+      "skills": [
+        "S10"
+      ],
+      "example": "『黄色い顔』「ノーベリ」とささやいて",
+      "scene": "yellow-face-norbury",
+      "reasoning": null
+    }
+  ],
+  "mistake_note": "名探偵だって外します。外れたら直せばいい。それが強さです。"
+}

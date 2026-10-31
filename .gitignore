@@ -1,0 +1,15 @@
+.env
+
+# docs を HTML にまとめる道具の部品（npm ci で入れる）
+/tools/docs-html/node_modules/
+
+# Python が作る一時ファイル（bin/ の道具を動かすとできる）
+__pycache__/
+
+# 秘密の値・鍵（bin/check も止める）。見本の .env.example だけは入れる
+.env.*
+!.env.example
+*.pem
+
+# HTML 版の道具が npm で作るログ
+/tools/docs-html/npm-debug.log*

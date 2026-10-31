@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""
+Claude Code のフック（PostToolUse・Edit / Write / MultiEdit）：AI がファイルを直した直後に、
+  1. PHP なら pint で整形する（コンテナの中で。ホストに PHP はない）
+  2. そのファイルを決まりのチェック（bin/check rules：1行ずつの決まり・言葉・行数の上限・コメントの抜け）にかける
+違反があれば {"decision": "block", "reason": …} を出す（Claude Code が理由を AI にすぐ返し、その場で直させる）
+"""
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+# 直したファイルの場所を受け取る。受け取れなければ何もしない
+try:
+    path = json.load(sys.stdin).get('tool_input', {}).get('file_path', '') or ''
+except Exception:
+    sys.exit(0)
+# 場所がなければ何もしない
+if not path:
+    sys.exit(0)
+path = os.path.abspath(path)
+# このプロジェクトの外のファイルと、消えたファイルは確かめない
+if not path.startswith(str(ROOT) + os.sep) or not os.path.exists(path):
+    sys.exit(0)
+rel = os.path.relpath(path, ROOT)
+
+# アプリの PHP なら、先に整形する（整形で直る違反を AI に返さないため）
+if rel.startswith('src/') and rel.endswith('.php'):
+    subprocess.run(['docker', 'compose', 'exec', '-T', 'app', 'vendor/bin/pint', rel[len('src/'):]], cwd=ROOT, capture_output=True)
+
+r = subprocess.run([str(ROOT / 'bin/check'), 'rules', rel], cwd=ROOT, capture_output=True, text=True)
+# 違反があれば、理由と直し方を AI に返す
+if r.returncode != 0:
+    print(json.dumps({'decision': 'block', 'reason': r.stderr.strip()}, ensure_ascii=False))
+sys.exit(0)

@@ -1,0 +1,696 @@
+<section class="story" id="s1">
+  <h2><span class="no">1</span>Google でログインする（登録から同意まで）</h2>
+  <p class="userstory">Google アカウントを持っている人として、推理手帳を使いはじめたい。だから、トップの「Google ではじめる」を押し、Google でアカウントを選び、はじめる前の2つの確認にチェックを入れる。</p>
+  <p class="summary">この章で追う道筋：<code>GET /</code>（<code>HomeController</code>）→ 「Google ではじめる」→ <code>GET /auth/google</code>（見張り役 <code>StartSession</code>・<code>throttle:auth</code>・<code>guest</code> → <code>GoogleLoginController::redirect</code> → Socialite が合言葉 state と PKCE を預かり箱に入れて Google へ転送）→ Google の画面 → <code>GET /auth/google/callback</code>（<code>GoogleLoginController::callback</code> → Socialite が合言葉を確かめて利用者の情報をもらう → 用事 <code>LoginWithGoogle</code>：<code>users</code> を探す／新しく登録（招待制のときだけ <code>invitations</code> で招待を確かめる）→ <code>Auth::login</code> → セッションを作り直す）→ <code>GET /agree</code> → <code>POST /agree</code>（<code>AcceptTermsRequest</code> → <code>AcceptTerms</code>：<code>agreed_at</code>）→ <code>/today</code>。おまけに <code>POST /logout</code>。</p>
+
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>トップ <code>/</code> を開く</h4>
+      <p>アドレスバーに <code>https://suiri.agi-japan.com/</code>（手元では <code>http://localhost:8086/</code>）と入れると、ブラウザは <code>GET /</code> を送ります。住所の表では、トップは <code>routes/web/auth.php</code> のいちばん上にあります。</p>
+      <div class="code"><div class="file">src/routes/web/auth.php</div><pre><code>// トップ（ログイン前）。ログイン済みなら最初の画面へ送る
+Route::get('/', HomeController::class)-&gt;name('home');</code></pre></div>
+      <p>受付の書き方が <code>[HomeController::class, 'index']</code> ではなく <code>HomeController::class</code> だけになっています。これは<dfn>1つの用事だけの受付（シングルアクションコントローラー）</dfn>で、Laravel はそのクラスの <code>__invoke</code> という関数を呼びます。トップには <code>auth</code> も <code>guest</code> も付いていないので、ログインしていてもいなくても届きます（通る見張り役は、どの住所にも付く web のひとまとまりだけ。<a href="#s0">0章</a>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>HomeController</code>：ログイン前ならトップ、ログイン済みなら今日の画面へ</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/HomeController.php</div><pre><code>/** トップを返す。ログイン済みなら最初の画面（いつも今日の画面。行き先は App\Support\Landing が決める）へ送る */
+public function __invoke(Request $request): View|RedirectResponse
+{
+    // ログイン済みなら、トップは見せずに今日の画面へ送る
+    if ($request-&gt;user() !== null) {
+        return redirect(Landing::url());
+    }
+
+    return view('home', ['googleReady' =&gt; GoogleLoginController::enabled()]);
+}</code></pre></div>
+      <p><code>$request-&gt;user()</code> は「いまログインしている人」を返します（していなければ <code>null</code>）。ログイン済みの人にトップを見せても意味がないので、<code>Landing::url()</code>（最初の画面の住所を決める小さな係）へ転送します。</p>
+      <div class="code"><div class="file">src/app/Support/Landing.php</div><pre><code>/** 最初の画面の URL を返す */
+public static function url(): string
+{
+    return route('today');
+}</code></pre></div>
+      <p>まだログインしていない人には、画面 <code>home</code>（<code>src/resources/views/home.blade.php</code>）を返します。そのとき <code>googleReady</code> という値を1つ渡します。中身は <code>GoogleLoginController::enabled()</code> の答えで、「Google の鍵が設定してあるか」です。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Auth/GoogleLoginController.php</div><pre><code>/** Google でのログインが使えるか（クライアント ID とシークレットが両方設定されているか）を返す */
+public static function enabled(): bool
+{
+    return filled(config('services.google.client_id')) &amp;&amp; filled(config('services.google.client_secret'));
+}</code></pre></div>
+      <p><code>config('services.google.client_id')</code> は設定ファイル <code>src/config/services.php</code> の値で、元は <code>.env</code> の <code>GOOGLE_CLIENT_ID</code> です。Google に「このアプリです」と名乗るための番号と合言葉で、Google Cloud で作ります（作り方は解体新書の 11章）。<code>filled</code> は「空でない」かを返す関数です。</p>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>トップの画面と「Google ではじめる」のボタン</h4>
+      <p>トップの画面は、題字・ひとことの説明・親子で手帳を使う絵・できることの3行・ログインのボタンを上から並べ、その下に手帳の使い方（4つの手順）とお約束を置きます。スマホでもスクロールせずにボタンを押せる高さに収めています。文は画面に直書きせず、<code>config('suiri.home')</code> から引きます。</p>
+      <div class="code"><div class="file">src/resources/views/home.blade.php</div><pre><code>@php($h = config('suiri.home'))
+{{-- …（省略）… --}}
+    &lt;ul class="mt-4 space-y-2.5"&gt;
+      {{-- できることの3行を1つずつ取り出し、段の絵つきで並べる --}}
+      @foreach ($h['points'] as $point)
+        &lt;x-auth.intro-line :icon="$point['icon']" :tone="$point['tone']"&gt;{{ $point['text'] }}&lt;/x-auth.intro-line&gt;
+      @endforeach
+    &lt;/ul&gt;
+
+    &lt;div class="mt-5 space-y-2"&gt;
+      &lt;x-auth.google-button :ready="$googleReady" :label="$h['button']" /&gt;
+      &lt;p class="text-xs text-muted"&gt;{{ config('suiri.invite_only') ? $h['invite'] : $h['open'] }}&lt;/p&gt;
+    &lt;/div&gt;</code></pre></div>
+      <p><code>&lt;x-auth.intro-line&gt;</code> は、段の色の丸に段の絵（目・はてな・チェック）を描き、その横に1行の文を置く部品です。3行は「気になったことを『事件』にして、」「『どうしてかな？』の答えを考え、」「決めた日に、本当か確かめよう。」で、手帳の流れをひと目で伝えます。ボタンは部品 <code>&lt;x-auth.google-button&gt;</code> に任せています。ボタンの下の一文は、招待制（<code>config('suiri.invite_only')</code> が true）なら「招待制です。はじめると、…」（<code>invite</code>）、既定の一般公開なら「はじめると、利用規約とプライバシーポリシーを確かめる画面に進むよ。」（<code>open</code>）を出し分けます（<code>? :</code> は「左が正しければ前、そうでなければ後ろ」の書き方）。</p>
+      <div class="code"><div class="file">src/resources/views/components/auth/google-button.blade.php</div><pre><code>@props(['ready' =&gt; false, 'label' =&gt; 'Google でログイン'])
+{{-- 鍵が設定されていればログインのボタン、なければ「準備中」の札を出す --}}
+@if ($ready)
+  &lt;a href="{{ route('auth.google') }}" class="flex min-h-14 w-full items-center justify-center gap-3 rounded-full border border-[#747775] bg-white px-5 text-lg font-medium text-[#1f1f1f] no-underline hover:bg-[#f8f9fa]"&gt;
+{{-- …（省略）… --}}
+    {{ $label }}
+  &lt;/a&gt;
+@else
+  &lt;p class="flex min-h-14 w-full items-center justify-center rounded-full border border-dashed border-rule px-5 text-base font-semibold text-muted"&gt;
+    Google でのログインは準備中です
+  &lt;/p&gt;
+@endif</code></pre></div>
+      <p><code>:ready="$googleReady"</code> の <code>:</code> は「文字ではなく PHP の値として渡す」という印です。部品の側では <code>@props</code> で受け取り、鍵があれば <code>&lt;a href="/auth/google"&gt;</code> のリンクを、なければ押せない「準備中」の札を出します。ボタンの文字は <code>label</code> で受け取り、トップでは「Google ではじめる」です。高さは 56px（<code>min-h-14</code>）で、子どもの指でも押しやすい大きさです。ボタンの見た目（白い面に色つきの G）は Google の決まりどおりで、変えていません。</p>
+      <p>ここで大事なのは、ボタンが<b>フォームではなくただのリンク</b>だということです。押すと、ブラウザは <code>GET /auth/google</code> を送ります。</p>
+      <figure class="shot"><img data-img="screen-home.png" alt="トップの画面。題字と説明の下に Google のボタン、その下に手帳の使い方"><figcaption>トップ（ログイン前）。ボタンの下に、同意の画面に進むことの一文がある（招待制にしているときは「招待制です」から始まる）</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>住所の表：<code>/auth/google</code> には <code>guest</code> と <code>throttle:auth</code> が付く</h4>
+      <div class="code"><div class="file">src/routes/web/auth.php</div><pre><code>// Google へ送り出す・Google から戻る（ログイン前だけ。回数制限つき）
+Route::middleware(['guest', 'throttle:auth'])-&gt;group(function () {
+    Route::get('/auth/google', [GoogleLoginController::class, 'redirect'])-&gt;name('auth.google');
+    Route::get('/auth/google/callback', [GoogleLoginController::class, 'callback'])-&gt;name('auth.google.callback');
+});</code></pre></div>
+      <p>送り出す住所と戻ってくる住所の2つを、同じ囲みに入れています。囲みに付けた見張り役は2つです。</p>
+      <ul>
+        <li><code>guest</code>：ログイン<b>していない</b>人だけ通す。</li>
+        <li><code>throttle:auth</code>：1分あたりの回数を数え、多すぎたら止める。</li>
+      </ul>
+      <p>web のひとまとまりと合わせて、Laravel に並べ替えさせた実際の順番を出すと、次のとおりでした（<a href="#s0">0章</a> の並べ替えの表のとおり）。</p>
+      <ol>
+        <li><code>EncryptCookies</code>：Cookie を暗号から元に戻す</li>
+        <li><code>AddQueuedCookiesToResponse</code>：あとで渡すと決めた Cookie を返事に付ける</li>
+        <li><code>StartSession</code>：番号札から預かり箱（セッション）を開く（次のステップ）</li>
+        <li><code>ShareErrorsFromSession</code>：前の入力の間違いを画面で使えるようにする</li>
+        <li><code>PreventRequestForgery</code>：ニセの送信でないか（GET は読むだけなので素通り。<a href="#s11">11章</a>）</li>
+        <li><code>ThrottleRequests:auth</code>：回数を数える</li>
+        <li><code>SubstituteBindings</code>：住所の穴を表の行に替える（この住所には穴がないので何もしない）</li>
+        <li><code>RedirectIfAuthenticated</code>（<code>guest</code>）：ログイン済みなら追い返す</li>
+      </ol>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>StartSession</code>：番号札（Cookie）から、その人の預かり箱（セッション）を開く</h4>
+      <p>ログインのしくみの土台は<dfn>セッション</dfn>です。サーバーは、お願いが来るたびに「前のお願いと同じ人か」を覚えていません。そこで、初めて来たブラウザに<b>番号札</b>（セッション ID を入れた Cookie）を渡し、サーバーの側にはその番号の<b>預かり箱</b>を用意します。ブラウザは次から毎回その番号札を見せるので、サーバーは同じ箱を開けて「この人はさっきの人だ」と分かります。</p>
+      <div class="analogy"><b>たとえると</b>コインロッカーです。鍵（番号札）は客が持ち、荷物（ログイン中の人の番号・途中の合言葉・お知らせの文）はロッカー（サーバー）の中にあります。鍵だけ見ても中身は分かりません。</div>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Session/Middleware/StartSession.php</div><pre><code>public function getSession(Request $request)
+{
+    return tap($this-&gt;manager-&gt;driver(), function ($session) use ($request) {
+        $session-&gt;setId($request-&gt;cookies-&gt;get($session-&gt;getName()));
+    });
+}</code></pre></div>
+      <p>お願いに付いてきた Cookie から番号を取り出し、その番号の箱を用意します。番号札がない・知らない番号なら、新しい番号の空の箱になります。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Session/Middleware/StartSession.php</div><pre><code>protected function handleStatefulRequest(Request $request, $session, Closure $next)
+{
+    // …（省略）…
+    $request-&gt;setLaravelSession(
+        $this-&gt;startSession($request, $session)
+    );
+
+    $this-&gt;collectGarbage($session);
+
+    $response = $next($request);
+
+    $this-&gt;storeCurrentUrl($request, $session);
+
+    $this-&gt;addCookieToResponse($response, $session);
+
+    // …（省略）…
+    $this-&gt;saveSession($request);
+
+    return $response;
+}</code></pre></div>
+      <ol>
+        <li><code>startSession</code>：箱の中身を読み込み、お願い（<code>$request</code>）に持たせる。これで受付や見張り役が <code>$request-&gt;session()</code> で箱を使える。</li>
+        <li><code>$next($request)</code>：次の見張り役 → 受付へ進む。返事ができるまで待つ。</li>
+        <li><code>addCookieToResponse</code>：返事に番号札（<code>Set-Cookie</code>）を付ける。</li>
+        <li><code>saveSession</code>：箱の中身を保存する。</li>
+      </ol>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>箱の置き場所は <code>sessions</code> 表（<code>.env</code> の <code>SESSION_DRIVER=database</code>）。1つの箱が1行で、列は <code>id</code>（番号）・<code>user_id</code>（ログイン中の人。まだなら空）・<code>ip_address</code>・<code>user_agent</code>・<code>payload</code>（中身）・<code>last_activity</code>。</li>
+        <li>番号札の Cookie の名前は設定 <code>session.cookie</code> で、元は <code>APP_NAME</code> を英数字にしたものです。手元の環境で確かめると <code>-session</code> でした（アプリ名が日本語の「推理手帳」で、英数字にすると空になるため）。中身の番号は、見張り役 <code>EncryptCookies</code> が暗号にしてから渡します。</li>
+        <li>箱は <code>SESSION_LIFETIME=120</code>（分）使われないと期限切れになります。</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>throttle:auth</code>：1つの IP から1分に10回まで</h4>
+      <p><dfn>回数制限（throttle）</dfn>は、同じ相手から短い間にたくさん来たお願いを止める見張り役です。<code>auth</code> は数え方の名前で、中身は <code>AppServiceProvider</code> に書いてあります。</p>
+      <div class="code"><div class="file">src/app/Providers/AppServiceProvider.php</div><pre><code>RateLimiter::for('auth', fn (Request $r) =&gt; Limit::perMinute(10)-&gt;by($r-&gt;ip()));       // Google へのログイン・戻り</code></pre></div>
+      <p>ログイン前はまだ「誰か」が分からないので、<b>IP アドレスごと</b>に数えます。送り出し（<code>/auth/google</code>）と戻り（<code>/auth/google/callback</code>）は同じ <code>auth</code> の数え方なので、1回のログインで2回と数えます。11回目からは「429（多すぎる）」の画面になります。数え方のしくみは <a href="#s11">11章</a> でくわしく追います。</p>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>guest</code>：ログイン済みの人は今日の画面へ追い返す</h4>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Auth/Middleware/RedirectIfAuthenticated.php</div><pre><code>public function handle(Request $request, Closure $next, string ...$guards): Response
+{
+    $guards = empty($guards) ? [null] : $guards;
+
+    foreach ($guards as $guard) {
+        if (Auth::guard($guard)-&gt;check()) {
+            return redirect($this-&gt;redirectTo($request));
+        }
+    }
+
+    return $next($request);
+}</code></pre></div>
+      <p><code>Auth::guard()-&gt;check()</code> は「ログインしているか」です。していれば受付まで進ませず、<code>redirectTo</code> の行き先へ転送します。行き先は <code>bootstrap/app.php</code> で決めてあります。</p>
+      <div class="code"><div class="file">src/bootstrap/app.php</div><pre><code>// ログインが必要な画面に、ログインしていない人が来たときの行き先（トップ）。
+// AI（ChatGPT・Claude）の同意の画面から来た人だけは、トップのボタンを1回減らすため Google のログインへ直接送る（ログイン後にここへ戻る）
+$middleware-&gt;redirectGuestsTo(fn (Request $request) =&gt; $request-&gt;is('oauth/authorize') ? route('auth.google') : route('home'));
+// ログイン前だけの画面（Google へ送り出すなど）に、ログイン済みの人が来たときの行き先（最初の画面）
+$middleware-&gt;redirectUsersTo(fn () =&gt; Landing::url());</code></pre></div>
+      <p>まだログインしていない今回は、そのまま受付へ進みます。上の <code>redirectGuestsTo</code> は逆向きの決まりで、ログインが要る画面にログインしていない人が来たときの行き先です。ふだんはトップへ送りますが、ChatGPT・Claude とつなぐ同意の画面（<code>/oauth/authorize</code>）から来た人だけは、トップを飛ばして Google のログインへ直接送ります。ログインが済むと、下の <code>intended</code> の仕組みで同意の画面へ戻ります（<a href="#s13">13章</a>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>GoogleLoginController::redirect</code>：Google の画面へ送り出す</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Auth/GoogleLoginController.php</div><pre><code>/** Google の画面へ送り出す（GET /auth/google）。鍵が未設定なら「準備中」と知らせてトップへ戻す */
+public function redirect(): RedirectResponse|SymfonyRedirect
+{
+    // Google の鍵がまだ設定されていなければ、トップへ戻して「準備中」と知らせる
+    if (! self::enabled()) {
+        return redirect()-&gt;route('home')-&gt;with('error', 'Google でのログインは準備中です。');
+    }
+
+    return Socialite::driver('google')
+        -&gt;enablePKCE() // 戻りでも enablePKCE() を呼ぶ（呼ばないと確かめの合言葉が Google に送られない）
+        -&gt;with(['prompt' =&gt; 'select_account']) // 家族で同じ端末を使うことがあるので、毎回アカウントを選ばせる
+        -&gt;redirect();
+}</code></pre></div>
+      <p><dfn>Socialite</dfn> は、Google や GitHub でのログインを引き受ける Laravel の公式の道具です（<code>src/vendor/laravel/socialite</code>）。Google とのやりとりの細かい決まり（<dfn>OAuth</dfn>：アプリが本人の許しを得て、Google から情報を受け取る手順）を代わりにこなします。</p>
+      <ul>
+        <li><code>driver('google')</code>：Google 用の係（<code>GoogleProvider</code>）を使う。</li>
+        <li><code>enablePKCE()</code>：PKCE という確かめを付ける（次のステップ）。</li>
+        <li><code>with(['prompt' =&gt; 'select_account'])</code>：Google の画面で、毎回アカウントを選ばせる。家族で1台の端末を使うと、前の人のアカウントのまま入ってしまうことがあるからです。</li>
+        <li><code>redirect()</code>：Google の画面への転送を作る。</li>
+      </ul>
+      <p><code>-&gt;with('error', '…')</code> は、転送先の画面で1回だけ出すお知らせを預かり箱に入れる書き方です（鍵が未設定のときだけ）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>Socialite が合言葉（state）と PKCE の種を預かり箱に入れ、Google の住所を作る</h4>
+      <div class="code"><div class="file">src/vendor/laravel/socialite/src/Two/AbstractProvider.php</div><pre><code>public function redirect()
+{
+    $state = null;
+
+    if ($this-&gt;usesState()) {
+        $this-&gt;request-&gt;session()-&gt;put('state', $state = $this-&gt;getState());
+    }
+
+    if ($this-&gt;usesPKCE()) {
+        $this-&gt;request-&gt;session()-&gt;put('code_verifier', $this-&gt;getCodeVerifier());
+    }
+
+    return new RedirectResponse($this-&gt;getAuthUrl($state));
+}</code></pre></div>
+      <p>Google へ送り出す前に、2つの「あとで照らし合わせる種」を作り、この人の預かり箱に入れます。</p>
+      <ul>
+        <li><dfn>state</dfn>：でたらめな40文字の合言葉。Google から戻ってきたとき、同じ合言葉を持っているかを確かめます。別の人が作った戻りの住所を踏まされても、合言葉が合わないので止まります。</li>
+        <li><dfn>PKCE</dfn>（ピクシー）の <code>code_verifier</code>：でたらめな96文字。Google にはこれを <code>sha256</code> で混ぜた形（<code>code_challenge</code>）だけを渡し、元の96文字は戻りのときに初めて Google に見せます。途中で受け渡しの番号（code）を盗まれても、元の96文字を知らない人は使えません。</li>
+      </ul>
+      <div class="code"><div class="file">src/vendor/laravel/socialite/src/Two/AbstractProvider.php</div><pre><code>protected function getCodeFields($state = null)
+{
+    $fields = [
+        'client_id' =&gt; $this-&gt;clientId,
+        'redirect_uri' =&gt; $this-&gt;redirectUrl,
+        'scope' =&gt; $this-&gt;formatScopes($this-&gt;getScopes(), $this-&gt;scopeSeparator),
+        'response_type' =&gt; 'code',
+    ];
+
+    if ($this-&gt;usesState()) {
+        $fields['state'] = $state;
+    }
+
+    if ($this-&gt;usesPKCE()) {
+        $fields['code_challenge'] = $this-&gt;getCodeChallenge();
+        $fields['code_challenge_method'] = $this-&gt;getCodeChallengeMethod();
+    }
+
+    return array_merge($fields, $this-&gt;parameters);
+}</code></pre></div>
+      <div class="code"><div class="file">src/vendor/laravel/socialite/src/Two/GoogleProvider.php</div><pre><code>protected $scopes = [
+    'openid',
+    'profile',
+    'email',
+];
+// …（省略）…
+protected function getAuthUrl($state)
+{
+    return $this-&gt;buildAuthUrlFromBase('https://accounts.google.com/o/oauth2/auth', $state);
+}</code></pre></div>
+      <p>Google の住所 <code>https://accounts.google.com/o/oauth2/auth</code> のうしろに、<code>?client_id=…&amp;redirect_uri=…/auth/google/callback&amp;scope=openid profile email&amp;response_type=code&amp;state=…&amp;code_challenge=…&amp;code_challenge_method=S256&amp;prompt=select_account</code> を付けます。<code>scope</code>（もらいたい情報の範囲）は <code>openid</code>・<code>profile</code>・<code>email</code> の3つだけ、つまり名前・メールアドレス・アイコン・Google の利用者番号だけです。カレンダーの許しはここでは求めません（つなぐのは別の手順。<a href="#s9">9章</a>）。</p>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>書く：預かり箱（<code>sessions</code> 表の <code>payload</code>）に <code>state</code> と <code>code_verifier</code></li>
+        <li>返す：<code>302</code> の転送。行き先（<code>Location</code>）は上の Google の住所</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>Google の画面でアカウントを選ぶ → 推理手帳へ戻される</h4>
+      <p>ブラウザは転送に従って Google の画面を開きます。ここから先は Google のサーバーとのやりとりで、推理手帳のプログラムは動いていません。利用者がアカウントを選び、（初めてなら）「推理手帳に名前・メールアドレス・プロフィール写真を見せてよいか」に同意すると、Google はブラウザを <code>redirect_uri</code> へ転送し直します。</p>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>送る：<code>GET /auth/google/callback?state=（行きと同じ合言葉）&amp;code=（受け渡しの番号）&amp;scope=…</code></li>
+        <li>送る：番号札の Cookie（行きと同じ預かり箱を開けるため）</li>
+      </ul></div>
+      <div class="analogy"><b>たとえると</b>役所の窓口（Google）で本人確認をしてもらい、「この人は本人です」という引換券（code）をもらって、元の店（推理手帳）に戻ってくるようなものです。店は引換券を役所に持っていき、本物の証明書（利用者の情報）と取り換えます。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>GoogleLoginController::callback</code>：戻ってきた人を受け取る</h4>
+      <p>見張り役は行きと同じ（<code>StartSession</code> → <code>throttle:auth</code> → <code>guest</code>）です。受付の前半は、Google からの情報の受け取りです。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Auth/GoogleLoginController.php</div><pre><code>public function callback(Request $request, LoginWithGoogle $login): RedirectResponse
+{
+    // Google の鍵がまだ設定されていなければ、トップへ戻して「準備中」と知らせる
+    if (! self::enabled()) {
+        return redirect()-&gt;route('home')-&gt;with('error', 'Google でのログインは準備中です。');
+    }
+
+    // Google から利用者の情報を受け取る。キャンセルや時間切れ・合言葉の食い違いで失敗したら、トップへ戻して知らせる
+    try {
+        $google = Socialite::driver('google')-&gt;enablePKCE()-&gt;user();
+    } catch (Throwable $e) {
+        Log::info('Google ログインを中断', ['error' =&gt; class_basename($e)]); // メールアドレスなどはログに書かない
+
+        return redirect()-&gt;route('home')-&gt;with('error', 'Google でのログインを完了できませんでした。もう一度お試しください。');
+    }</code></pre></div>
+      <p>引数の <code>LoginWithGoogle $login</code> は、Laravel がその場で作って渡してくれる用事の係です（<a href="#s0">0章</a>）。</p>
+      <p><code>try { … } catch (Throwable $e) { … }</code> は「試してみて、どんな失敗が起きても受け止める」書き方です。Google の画面で「キャンセル」を押した・時間がたって合言葉が消えた・Google につながらない、などのとき、エラーの画面を出さずにトップへ戻して「もう一度お試しください」と知らせます。ログには失敗の種類（<code>class_basename($e)</code>：たとえば <code>InvalidStateException</code>）だけを書き、メールアドレスなどは書きません（<a href="#s11">11章</a>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>Socialite が合言葉を照らし合わせ、引換券を利用者の情報に換える</h4>
+      <div class="code"><div class="file">src/vendor/laravel/socialite/src/Two/AbstractProvider.php</div><pre><code>public function user()
+{
+    if ($this-&gt;user) {
+        return $this-&gt;user;
+    }
+
+    if ($this-&gt;hasInvalidState()) {
+        throw new InvalidStateException;
+    }
+
+    $response = $this-&gt;getAccessTokenResponse($this-&gt;getCode());
+
+    $user = $this-&gt;getUserByToken(Arr::get($response, 'access_token'));
+
+    return $this-&gt;userInstance($response, $user);
+}</code></pre></div>
+      <p>3段で進みます。</p>
+      <ol>
+        <li><b>合言葉の照らし合わせ</b>（<code>hasInvalidState</code>）：預かり箱から <code>state</code> を取り出し（<code>pull</code>：取り出したら箱から消す）、住所に付いてきた <code>state</code> と比べます。違えば <code>InvalidStateException</code> を投げ、前のステップの <code>catch</code> でトップへ戻ります。
+          <div class="code"><div class="file">src/vendor/laravel/socialite/src/Two/AbstractProvider.php</div><pre><code>$state = $this-&gt;request-&gt;session()-&gt;pull('state');
+
+return empty($state) || ! hash_equals($state, (string) $this-&gt;request-&gt;input('state'));</code></pre></div>
+        </li>
+        <li><b>引換券を鍵に換える</b>（<code>getAccessTokenResponse</code>）：サーバーから Google（<code>https://www.googleapis.com/oauth2/v4/token</code>）へ直接、code と、預かり箱から取り出した PKCE の元の96文字（<code>code_verifier</code>）と、アプリの秘密（<code>client_secret</code>）を送ります。Google は、行きにもらった <code>code_challenge</code> と合うかを確かめてから、<dfn>アクセストークン</dfn>（情報を読むための一時的な鍵）を返します。
+          <div class="code"><div class="file">src/vendor/laravel/socialite/src/Two/AbstractProvider.php</div><pre><code>if ($this-&gt;usesPKCE()) {
+    $fields['code_verifier'] = $this-&gt;request-&gt;session()-&gt;pull('code_verifier');
+}</code></pre></div>
+        </li>
+        <li><b>鍵で利用者の情報を読む</b>（<code>getUserByToken</code>）：Google の <code>userinfo</code> から名前などを読み、Socialite の <code>User</code> の形にそろえます。
+          <div class="code"><div class="file">src/vendor/laravel/socialite/src/Two/GoogleProvider.php</div><pre><code>return (new User)-&gt;setRaw($user)-&gt;map([
+    'id' =&gt; Arr::get($user, 'sub'),
+    'nickname' =&gt; Arr::get($user, 'nickname'),
+    'name' =&gt; Arr::get($user, 'name'),
+    'email' =&gt; Arr::get($user, 'email'),
+    'avatar' =&gt; $avatarUrl = Arr::get($user, 'picture'),
+    'avatar_original' =&gt; $avatarUrl,
+]);</code></pre></div>
+        </li>
+      </ol>
+      <p><code>id</code> に入る <code>sub</code> は、Google がその人に付けた変わらない番号です。メールアドレスは変えられることがありますが、<code>sub</code> は変わりません。だから推理手帳は、この番号でその人を見分けます。</p>
+      <div class="point"><b>ここが大事</b>受け取ったアクセストークンは、推理手帳はどこにも保存しません。ログインに要るのは「誰か」だけだからです（カレンダーの鍵は別に、つなぐときだけもらい、暗号にして保存します。<a href="#s9">9章</a>）。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>用事 <code>LoginWithGoogle</code>：前から使っている人か探す</h4>
+      <p>受付の後半は、受け取った情報を用事の係に渡すだけです。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Auth/GoogleLoginController.php</div><pre><code>// 利用者を探すか登録する。招待がないなどで断られたら、その理由をトップに出す
+try {
+    $user = $login-&gt;handle($google);
+} catch (LoginRefused $e) {
+    return redirect()-&gt;route('home')-&gt;with('error', $e-&gt;getMessage());
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Actions/Auth/LoginWithGoogle.php</div><pre><code>/** 利用者を返す。登録できないときは LoginRefused（理由は利用者に向けた文） */
+public function handle(GoogleUser $google): User
+{
+    $user = User::where('google_id', $google-&gt;getId())-&gt;first();
+
+    // 前から使っている人なら、アイコンだけ新しくしてそのまま返す（表示名は本人が設定で直すので上書きしない）
+    if ($user !== null) {
+        $user-&gt;forceFill(['avatar_url' =&gt; $this-&gt;avatar($google)])-&gt;save();
+
+        return $user;
+    }
+
+    return $this-&gt;register($google);
+}</code></pre></div>
+      <p><code>users</code> 表から、<code>google_id</code> が Google の <code>sub</code> と同じ行を1つ探します。見つかれば前から使っている人なので、アイコンの URL だけ新しくして返します。表示名は上書きしません（本人が設定の画面で「ワトソン」などに直しているかもしれないからです）。</p>
+      <p><code>forceFill</code> は「書き込んでよい列の一覧（<code>#[Fillable]</code>）に関係なく値を入れる」書き方です。<code>google_id</code> や <code>agreed_at</code> は、画面からの入力でうっかり書き換えられないよう一覧に入れておらず、プログラムの中からだけ <code>forceFill</code> で入れます。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>users</code> の1行（<code>google_id = sub</code>）</li><li>書く（前から使っている人のとき）：その行の <code>avatar_url</code></li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>初めての人：確かめてから登録する（招待制のときだけ招待も確かめる）</h4>
+      <div class="code"><div class="file">src/app/Actions/Auth/LoginWithGoogle.php</div><pre><code>private function register(GoogleUser $google): User
+{
+    $email = Invitation::normalize((string) $google-&gt;getEmail());
+
+    // メールアドレスがないか、Google がそのアドレスを確認していなければ、本人のものか確かめられないので断る
+    if ($email === '' || ! $this-&gt;verified($google)) {
+        throw new LoginRefused('Google アカウントのメールアドレスを確かめられませんでした。確認済みのメールアドレスの Google アカウントでログインしてください。');
+    }
+
+    $invitation = Invitation::findFor($email);
+
+    // 招待制で、招待のないメールアドレスなら、新しく登録しない（一般公開のときは招待がなくても進む）
+    if (config('suiri.invite_only') &amp;&amp; $invitation === null) {
+        throw new LoginRefused('推理手帳はいま招待制です。招待を受けたメールアドレスの Google アカウントでログインしてください。');
+    }
+
+    // 同じメールアドレスで、別の Google アカウントの利用者がすでにいれば、乗っ取りを防ぐため結びつけない
+    if (User::where('email', $email)-&gt;exists()) {
+        throw new LoginRefused('このメールアドレスは、別の Google アカウントで登録されています。');
+    }
+
+    return DB::transaction(function () use ($google, $email, $invitation) {
+        $user = new User([
+            'name' =&gt; $this-&gt;displayName($google, $email),
+            'email' =&gt; $email,
+            'avatar_url' =&gt; $this-&gt;avatar($google),
+        ]);
+        $user-&gt;forceFill(['google_id' =&gt; $google-&gt;getId()])-&gt;save(); // google_id は書き込める列に入れていないので forceFill で入れる
+        $invitation?-&gt;forceFill(['used_at' =&gt; now()])-&gt;save(); // 招待の行がない（一般公開で招待なし）ときは何もしない
+
+        return $user;
+    });
+}</code></pre></div>
+      <p>推理手帳は、既定では<dfn>一般公開</dfn>です。Google アカウントがあれば、だれでも新しく登録できます。設定 <code>config('suiri.invite_only')</code>（<code>.env</code> の <code>SUIRI_INVITE_ONLY</code>。既定は <code>false</code>）を <code>true</code> にすると<dfn>招待制</dfn>になり、運営者がコマンド <code>php artisan invite:add メールアドレス</code> で名簿に足したメールアドレスの人だけが、新しく登録できます（管理の画面は作っていません）。コードは同じままで、札1つで切り替わります。上から順に4つ確かめます（3つめは招待制のときだけ）。</p>
+      <ol>
+        <li><b>メールアドレスを小文字にそろえる</b>（<code>Invitation::normalize</code>）：<code>Irene@Example.com</code> と <code>irene@example.com</code> を同じものとして扱うため。招待を足すときも、探すときも、必ずこれを通します。
+          <div class="code"><div class="file">src/app/Models/Invitation.php</div><pre><code>public static function normalize(string $email): string
+{
+    return mb_strtolower(trim($email));
+}
+
+/** このメールアドレスが招待されているか（その招待を返す。なければ null） */
+public static function findFor(string $email): ?self
+{
+    return self::where('email', self::normalize($email))-&gt;first();
+}</code></pre></div>
+        </li>
+        <li><b>Google がそのメールアドレスを確認済みか</b>（<code>verified</code>）：確認されていないアドレスなら、他人のアドレスを名乗っているかもしれないので、登録しません。一般公開でも招待制でも同じです。</li>
+        <li><b>招待制なら、招待があるか</b>（<code>config('suiri.invite_only') &amp;&amp; $invitation === null</code>）：招待制のときだけ、<code>invitations</code> 表にそのアドレスがなければ断ります。一般公開のときは、招待がなくても次へ進みます。</li>
+        <li><b>同じアドレスの別の人がいないか</b>：いれば、別の Google アカウントで登録済みということなので、結びつけずに断ります（乗っ取りの防止）。</li>
+      </ol>
+      <p>ぜんぶ通れば、<code>DB::transaction</code> の中で「<code>users</code> に1行足す」と「招待の <code>used_at</code> に今の日時を入れる」を一緒に行います。招待の行がなければ（一般公開で名簿にない人）、<code>$invitation?-&gt;</code> の <code>?-&gt;</code>（左が null なら何もしない書き方）で、招待のほうは何もしません。<dfn>トランザクション</dfn>は「全部できたら確定、途中で失敗したら全部なかったことにする」というまとまりです。片方だけ書けて止まる、ということが起きません。</p>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>読む：<code>invitations</code> の1行（<code>email</code>。あれば）、<code>users</code>（同じ <code>email</code> がいるか）</li>
+        <li>書く：<code>users</code> に1行（<code>google_id</code>・<code>name</code>・<code>email</code>・<code>avatar_url</code>。<code>agreed_at</code> はまだ空）</li>
+        <li>書く（招待の行があるとき）：<code>invitations</code> のその行の <code>used_at</code></li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>断るとき：<code>LoginRefused</code> の文をトップに出す</h4>
+      <div class="code"><div class="file">src/app/Exceptions/LoginRefused.php</div><pre><code>/**
+ * Google での本人確認はできたが、推理手帳にはログインさせないとき（招待がない など）に投げる。
+ * メッセージはそのまま画面に出すので、利用者に向けた日本語で書く
+ */
+class LoginRefused extends RuntimeException {}</code></pre></div>
+      <p><code>throw new LoginRefused('…')</code> は「ここで止めて、この理由を上に知らせる」という書き方です（<dfn>例外</dfn>）。受付の <code>catch (LoginRefused $e)</code> がそれを受け止め、<code>$e-&gt;getMessage()</code>（理由の文）をお知らせとして預かり箱に入れ、トップへ転送します。トップの骨組み（<code>layouts.guest</code>）が置いているお知らせの部品が、それを赤い札で出します。</p>
+      <div class="code"><div class="file">src/resources/views/components/ui/flash.blade.php</div><pre><code>{{-- うまくいかなかったお知らせがあれば、赤の札で出す --}}
+@if (session('error'))
+  &lt;p role="alert" class="mb-4 rounded-lg border border-accent/30 bg-accent-soft px-4 py-3 text-sm font-semibold text-accent"&gt;{{ session('error') }}&lt;/p&gt;
+@endif</code></pre></div>
+      <p>このとき、ログインもしていないし、<code>users</code> に行も足していません。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>Auth::login</code>：預かり箱に「この人がログイン中」と書き、箱の番号を作り直す</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Auth/GoogleLoginController.php</div><pre><code>Auth::login($user, remember: true); // Google ログインは「ログインしたまま」にする
+$request-&gt;session()-&gt;regenerate(); // セッション ID を作り直す（セッション固定攻撃の対策）</code></pre></div>
+      <p><code>Auth::login</code> の中（Laravel 本体の <code>SessionGuard</code>）では、次のことが起きます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Auth/SessionGuard.php</div><pre><code>public function login(AuthenticatableContract $user, $remember = false)
+{
+    $this-&gt;updateSession($user-&gt;getAuthIdentifier());
+    // …（省略）…
+    if ($remember) {
+        $this-&gt;ensureRememberTokenIsSet($user);
+
+        $this-&gt;queueRecallerCookie($user);
+    }
+    // …（省略）…
+    $this-&gt;setUser($user);
+}
+// …（省略）…
+protected function updateSession($id)
+{
+    $this-&gt;session-&gt;put($this-&gt;getName(), $id);
+
+    $this-&gt;session-&gt;regenerate(true);
+}</code></pre></div>
+      <ol>
+        <li><b>ログインの印を箱に書く</b>：<code>put($this-&gt;getName(), $id)</code>。名前は <code>login_web_</code> に続く記号の並び、値は <code>users</code> の <code>id</code> です。次のお願いからは、この印を見て「ログイン中の人」を見分けます。</li>
+        <li><b>箱の番号を作り直す</b>：<code>regenerate(true)</code>。中身はそのまま、番号札の番号だけ新しくし、古い番号の箱は捨てます。</li>
+        <li><b>「ログインしたまま」の札</b>（<code>remember: true</code>）：<code>users.remember_token</code> にでたらめな文字を入れ、それを暗号にした長持ちする Cookie（<code>remember_web_…</code>、Laravel の既定で 400 日）を返事に付けます。箱が期限切れ（120分）になっても、この札があれば次に来たときに自動でログインし直せます。</li>
+      </ol>
+      <div class="point"><b>ここが大事：番号を作り直す理由（セッション固定攻撃）</b>悪い人が、自分の知っている番号札を、前もって利用者のブラウザに持たせることができたとします。その番号のままログインさせてしまうと、悪い人も同じ番号札で「ログイン中の箱」を開けてしまいます。ログインの瞬間に番号を作り直せば、悪い人の知っている番号は役に立ちません。Laravel の <code>Auth::login</code> の中ですでに作り直していますが、受付でももう一度 <code>regenerate()</code> を呼び、この対策をしていることをコードに書き残しています（2回作り直しても困ることはありません）。</div>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>書く：<code>sessions</code>（新しい番号の行。<code>user_id</code> にこの人の id が入る）。古い番号の行は消える</li>
+        <li>書く：<code>users.remember_token</code>（まだ空なら）</li>
+        <li>返す：番号札の Cookie（新しい番号）と、<code>remember_web_…</code> の Cookie</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>同意がまだなら同意の画面へ、済んでいれば元の画面か今日の画面へ</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Auth/GoogleLoginController.php</div><pre><code>// まだ同意していない人（初めての人）は、同意の画面へ。済んでいる人は元の画面か最初の画面へ
+if (! $user-&gt;hasAgreed()) {
+    return redirect()-&gt;route('agree.show');
+}
+
+return redirect()-&gt;intended(Landing::url());</code></pre></div>
+      <div class="code"><div class="file">src/app/Models/User.php</div><pre><code>/** 利用規約・プライバシーポリシー・年齢の確認に同意したかを返す（していなければ同意の画面へ送る） */
+public function hasAgreed(): bool
+{
+    return $this-&gt;agreed_at !== null;
+}</code></pre></div>
+      <p>初めての人は <code>agreed_at</code> が空なので、<code>/agree</code> へ転送します。前から使っている人は <code>redirect()-&gt;intended(…)</code> です。<dfn>intended（行きたかった所）</dfn>は、「ログインしていないのに <code>/cases/12</code> を開こうとしてトップへ回された」ようなとき、預かり箱に覚えておいた元の住所 <code>url.intended</code> です。あればそこへ、なければ今日の画面（<code>Landing::url()</code>）へ送ります。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Routing/Redirector.php</div><pre><code>public function intended($default = '/', $status = 302, $headers = [], $secure = null)
+{
+    $path = $this-&gt;session-&gt;pull('url.intended', $default);
+
+    return $this-&gt;to($path, $status, $headers, $secure);
+}</code></pre></div>
+      <p>番号を作り直しても箱の中身は引き継ぐので、<code>url.intended</code> は消えずに残っています。</p>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>GET /agree</code>：<code>auth</code> がログイン中の人かを確かめる</h4>
+      <div class="code"><div class="file">src/routes/web/auth.php</div><pre><code>// ログイン中の人だけ（同意の前でも使える）：ログアウトと同意
+Route::middleware('auth')-&gt;group(function () {
+    Route::post('/logout', LogoutController::class)-&gt;name('logout');
+    Route::get('/agree', [AgreementController::class, 'show'])-&gt;name('agree.show');
+    Route::post('/agree', [AgreementController::class, 'store'])-&gt;middleware('throttle:writes')-&gt;name('agree.store');
+});</code></pre></div>
+      <p>同意の画面とログアウトには <code>auth</code> だけを付け、ほかの画面に付いている <code>agreed</code> は付けていません。同意の前の人が使う画面だからです（付けると、同意の画面へ送る → 同意の画面がまた同意の画面へ送る、の繰り返しになります）。</p>
+      <p><code>auth</code>（<code>Authenticate</code>）は、ログイン中の人がいるかを確かめます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Auth/Middleware/Authenticate.php</div><pre><code>protected function authenticate($request, array $guards)
+{
+    if (empty($guards)) {
+        $guards = [null];
+    }
+
+    foreach ($guards as $guard) {
+        if ($this-&gt;auth-&gt;guard($guard)-&gt;check()) {
+            return $this-&gt;auth-&gt;shouldUse($guard);
+        }
+    }
+
+    $this-&gt;unauthenticated($request, $guards);
+}</code></pre></div>
+      <p><code>check()</code> の奥では、<code>SessionGuard::user()</code> が預かり箱からログインの印（<code>users</code> の id）を読み、<code>users</code> 表からその行を読みます。箱に印がなければ「ログインしたまま」の Cookie を確かめ、それも使えなければ <code>unauthenticated</code> で <code>AuthenticationException</code> を投げます。Laravel の例外の係はそれを「行きたかった住所を覚えて、トップ（<code>redirectGuestsTo</code> で決めた <code>home</code>）へ転送」に変えます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Auth/SessionGuard.php</div><pre><code>$id = $this-&gt;session-&gt;get($this-&gt;getName());
+
+// First we will try to load the user using the identifier in the session if
+// one exists. Otherwise we will check for a "remember me" cookie in this
+// request, and if one exists, attempt to retrieve the user using that.
+if (! is_null($id) &amp;&amp; $this-&gt;user = $this-&gt;provider-&gt;retrieveById($id)) {
+    $this-&gt;fireAuthenticatedEvent($this-&gt;user);
+}</code></pre></div>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>sessions</code> の1行（番号札の番号）と、<code>users</code> のこの人の1行</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>AgreementController::show</code> と同意の画面</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Auth/AgreementController.php</div><pre><code>/** 同意の画面を返す。すでに同意済みなら最初の画面へ送る */
+public function show(Request $request): View|RedirectResponse
+{
+    // もう同意している人には、この画面は要らない
+    if ($request-&gt;user()-&gt;hasAgreed()) {
+        return redirect(Landing::url());
+    }
+
+    return view('auth.agree');
+}</code></pre></div>
+      <p>この画面でいまやることは「2つにチェックして、はじめる」の1つだけです。なので画面 <code>auth/agree.blade.php</code> は、いまやることのカード <code>&lt;x-ui.step-card&gt;</code>（問いの見出し・一言の説明・中身・主なボタンを1枚にまとめる部品）を1枚だけ置き、それをフォームで包んでいます。文は <code>config('suiri.agree')</code> から引きます。</p>
+      <div class="code"><div class="file">src/resources/views/auth/agree.blade.php</div><pre><code>@php($a = config('suiri.agree'))
+&lt;x-layouts.guest title="はじめる前に"&gt;
+  &lt;form method="POST" action="{{ route('agree.store') }}"&gt;
+    @csrf
+    &lt;x-ui.step-card icon="check" :title="$a['title']" :hint="$a['lead']"&gt;
+      &lt;div class="space-y-3"&gt;
+{{-- …（省略）… --}}
+        &lt;x-auth.agree-check name="confirm_age"&gt;{{ $a['age'] }}&lt;/x-auth.agree-check&gt;
+      &lt;/div&gt;
+      &lt;p class="text-xs leading-relaxed text-muted"&gt;{{ config('suiri.notes.privacy') }}&lt;/p&gt;
+      &lt;x-slot:action&gt;&lt;x-ui.big-button icon="check"&gt;{{ $a['button'] }}&lt;/x-ui.big-button&gt;&lt;/x-slot:action&gt;
+    &lt;/x-ui.step-card&gt;
+  &lt;/form&gt;</code></pre></div>
+      <p>省いた所には、もう1つのチェック <code>&lt;x-auth.agree-check name="accept_terms"&gt;</code>（利用規約とプライバシーポリシーのリンクつき「〜を読んで、同意します。」）があります。チェックの1つずつは部品 <code>&lt;x-auth.agree-check&gt;</code> です。</p>
+      <div class="code"><div class="file">src/resources/views/components/auth/agree-check.blade.php</div><pre><code>@props(['name'])
+&lt;div {{ $attributes }}&gt;
+  &lt;label @class([
+    'flex min-h-14 cursor-pointer items-start gap-3 rounded-xl border-2 bg-sheet px-4 py-3 has-checked:border-ink has-checked:bg-mark',
+    'border-accent' =&gt; $errors-&gt;has($name),
+    'border-rule' =&gt; ! $errors-&gt;has($name),
+  ])&gt;
+    &lt;input type="checkbox" name="{{ $name }}" value="1" class="mt-0.5 size-6 shrink-0 accent-[var(--ink)]" @checked(old($name))&gt;
+    &lt;span class="text-base leading-relaxed"&gt;{{ $slot }}&lt;/span&gt;
+  &lt;/label&gt;
+  @error($name)
+    &lt;p class="mt-1 text-sm text-accent"&gt;{{ $message }}&lt;/p&gt;
+  @enderror
+&lt;/div&gt;</code></pre></div>
+      <ul>
+        <li><code>@csrf</code>：フォームの合言葉 <code>_token</code> を隠し欄で入れる（<a href="#s11">11章</a>）。</li>
+        <li><code>&lt;label&gt;</code> で行全体を包み、高さ 56px 以上（<code>min-h-14</code>）の大きな枠にしています。小さな四角を狙わなくても、行のどこを押してもチェックが入ります。<code>has-checked:</code> は「中のチェックが入っていたら」の印で、入れると枠が紺になります。</li>
+        <li><code>@checked(old($name))</code>：送ったあとに片方が足りず戻されたとき、前に入れたチェックを残しておく。</li>
+        <li><code>@error($name)</code>：その欄のエラーがあれば、枠を赤くし、下に赤い一文を出す（文は次のステップの <code>validation.php</code>）。</li>
+        <li><code>config('suiri.notes.privacy')</code>：「ほかの人の名前や健康の情報は書かない」という注意書き。文言は設定ファイル <code>src/config/suiri.php</code> に集めています。</li>
+        <li>カードの下にはもう1つ、「同意しないでログアウトする」の小さなフォーム（<code>POST /logout</code>）があります。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-agree.png" alt="はじめる前に：2つのチェックと「はじめる」ボタン"><figcaption>同意の画面。2つのチェックを両方入れると「はじめる」で進める</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>POST /agree</code>：<code>AcceptTermsRequest</code> が2つのチェックを確かめる</h4>
+      <p>「はじめる」を押すと、<code>POST /agree</code> に <code>_token</code>・<code>accept_terms=1</code>・<code>confirm_age=1</code> が届きます（チェックを入れていない欄は、ブラウザが送りません）。見張り役は <code>StartSession</code> → <code>PreventRequestForgery</code>（合言葉の確かめ）→ <code>auth</code> → <code>throttle:writes</code>（1人1分60回まで）の順です。</p>
+      <div class="code"><div class="file">src/app/Http/Requests/Auth/AcceptTermsRequest.php</div><pre><code>/** 2つのチェックが両方入っていることを求める */
+public function rules(): array
+{
+    return [
+        'accept_terms' =&gt; ['accepted'],
+        'confirm_age' =&gt; ['accepted'],
+    ];
+}</code></pre></div>
+      <p><dfn>FormRequest</dfn> は「受付に入る前に、送られてきた値の形を確かめる係」です。受付の関数の引数に <code>AcceptTermsRequest $request</code> と書いておくと、Laravel が受付を呼ぶ前にこの係を動かします。<code>accepted</code> は「<code>1</code>・<code>yes</code>・<code>on</code>・<code>true</code> のどれかが入っていること」という決まりです。</p>
+      <p>どちらかが欠けていれば、受付は呼ばれません。Laravel が「元の画面（同意の画面）へ戻し、間違いの文を預かり箱に入れる」転送を返し、画面の <code>@error('confirm_age')</code> が「年齢の確認にチェックを入れてください。」と出します。文の元は <code>src/lang/ja/validation.php</code> です。</p>
+      <div class="code"><div class="file">src/lang/ja/validation.php</div><pre><code>'accepted' =&gt; ':attributeにチェックを入れてください。',
+// …（省略）…
+'accept_terms' =&gt; '利用規約とプライバシーポリシーへの同意',
+'confirm_age' =&gt; '年齢の確認',</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>用事 <code>AcceptTerms</code>：同意した日時を <code>agreed_at</code> に入れる</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Auth/AgreementController.php</div><pre><code>/** 同意を記録して、元の画面か最初の画面へ送る（チェックの確かめは AcceptTermsRequest） */
+public function store(AcceptTermsRequest $request, AcceptTerms $acceptTerms): RedirectResponse
+{
+    $acceptTerms-&gt;handle($request-&gt;user());
+
+    return redirect()-&gt;intended(Landing::url())-&gt;with('status', 'ようこそ、推理手帳へ。');
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Actions/Auth/AcceptTerms.php</div><pre><code>/** 同意した日時を記録する。すでに同意済みなら最初の日時のまま変えない */
+public function handle(User $user): void
+{
+    // まだ同意していなければ、今の日時を入れる
+    if (! $user-&gt;hasAgreed()) {
+        $user-&gt;forceFill(['agreed_at' =&gt; now()])-&gt;save();
+    }
+}</code></pre></div>
+      <p>受付は薄く、用事を呼んで転送するだけです。用事は、まだ同意していなければ <code>agreed_at</code> に今の日時を入れます。2回送られても、最初に同意した日時は変えません。そのあと、行きたかった所（なければ今日の画面）へ「ようこそ、推理手帳へ。」の緑のお知らせつきで転送します。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>書く：<code>users</code> のこの人の行の <code>agreed_at</code></li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>ほかの画面には <code>agreed</code>：同意の前の人を同意の画面へ回す</h4>
+      <p>今日・タスク・事件・手引き・ふりかえり・設定・カレンダー・ChatGPT とつなぐ同意の画面の住所には、どれも <code>['auth', 'agreed']</code> が付いています（<a href="#s0">0章</a>）。<code>agreed</code> は、このアプリが自分で足した見張り役 <code>EnsureAgreed</code> の呼び名です（<code>bootstrap/app.php</code> の <code>alias</code>）。</p>
+      <div class="code"><div class="file">src/app/Http/Middleware/EnsureAgreed.php</div><pre><code>/** 同意済みならそのまま進め、まだなら同意の画面へ送る */
+public function handle(Request $request, Closure $next): Response
+{
+    // ログイン中で、まだ同意していなければ、同意の画面へ送る（同意したあとは元の画面へ戻れるよう覚えておく）
+    if ($request-&gt;user() !== null &amp;&amp; ! $request-&gt;user()-&gt;hasAgreed()) {
+        return redirect()-&gt;guest(route('agree.show'));
+    }
+
+    return $next($request);
+}</code></pre></div>
+      <p><code>redirect()-&gt;guest(…)</code> は、ただの転送ではなく「いま開こうとした住所を <code>url.intended</code> に覚えてから転送する」書き方です。だから、同意の前に <code>/settings</code> を開こうとした人は、同意のあと <code>/settings</code> に戻れます（テスト <code>AgreementTest</code> の <code>test_both_checks_are_required_to_agree</code> で確かめています）。</p>
+      <p>同意が済めば、ふだんは <code>/today</code>（<a href="#s2">2章</a>）に着きます。ChatGPT・Claude とつなぐ途中で初めてログインした人は、覚えておいた同意の画面（<code>/oauth/authorize</code>）へ戻ります（<a href="#s13">13章</a>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>おまけ：ログアウト（<code>POST /logout</code>）</h4>
+      <p>設定の画面の下のほう、ログインしているアカウントの横の「ログアウト」（部品 <code>&lt;x-settings.account&gt;</code>）は、<code>@csrf</code> 入りのフォームで <code>POST /logout</code> を送ります。リンク（GET）にしないのは、ほかのサイトに置かれたリンクや画像で勝手にログアウトさせられないようにするためです。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Auth/LogoutController.php</div><pre><code>/** ログアウトして、セッションを作り直し、トップへ戻す */
+public function __invoke(Request $request): RedirectResponse
+{
+    Auth::logout();
+    $request-&gt;session()-&gt;invalidate(); // セッションの中身を捨てる
+    $request-&gt;session()-&gt;regenerateToken(); // フォームの合言葉（CSRF トークン）も作り直す
+
+    return redirect()-&gt;route('home')-&gt;with('status', 'ログアウトしました。');
+}</code></pre></div>
+      <ol>
+        <li><code>Auth::logout()</code>：預かり箱からログインの印を消し、「ログインしたまま」の Cookie も消します。<code>users.remember_token</code> も新しい文字に替えるので、ほかの端末に残っていた「ログインしたまま」の札も使えなくなります。</li>
+        <li><code>invalidate()</code>：箱の中身を全部捨て、番号も作り直します。</li>
+        <li><code>regenerateToken()</code>：フォームの合言葉も新しくします。</li>
+      </ol>
+      <div class="data"><b>このとき動くデータ</b><ul><li>書く：<code>users.remember_token</code>（新しい文字に）</li><li>書く：<code>sessions</code>（古い番号の行を消し、新しい空の箱）</li></ul></div>
+    </li>
+  </ol>
+
+  <div class="recap"><b>この章のまとめ</b><ol>
+    <li>ログインの土台はセッション。ブラウザは番号札（Cookie）を持ち、中身は <code>sessions</code> 表の預かり箱にある。</li>
+    <li>「Google ではじめる」はただのリンク。<code>GoogleLoginController::redirect</code> → Socialite が合言葉 state と PKCE の種を箱に入れ、Google へ転送する。もらう情報は名前・メール・アイコン・Google の番号（sub）だけ。</li>
+    <li>戻り（<code>callback</code>）で Socialite が合言葉を照らし合わせ、引換券（code）を利用者の情報に換える。失敗はトップへ戻し、ログには失敗の種類だけを書く。</li>
+    <li>用事 <code>LoginWithGoogle</code> は、<code>google_id</code>（sub）で前からの人を探し、初めての人は「確認済みのメール・（招待制のときだけ）招待あり・同じメールの別人なし」を確かめてから <code>users</code> に登録し、招待の行があれば <code>used_at</code> を入れる。既定は一般公開で、<code>SUIRI_INVITE_ONLY=true</code> で招待制に切り替わる。だめなら <code>LoginRefused</code> の文をトップに出す。</li>
+    <li><code>Auth::login</code> が箱にログインの印を書き、番号を作り直す（セッション固定攻撃の対策）。「ログインしたまま」の札も渡す。</li>
+    <li>初めての人は <code>/agree</code> で2つのチェック（<code>AcceptTermsRequest</code>）→ <code>AcceptTerms</code> が <code>agreed_at</code> を入れる。ほかの画面の見張り役 <code>agreed</code> が、同意の前の人を同意の画面へ回し、済んだら元の画面（なければ <code>/today</code>）へ戻す。</li>
+  </ol></div>
+</section>

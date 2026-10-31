@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""
+Claude Code のフック（PreToolUse・Bash）：AI がコマンドを打つ前に、してはいけないコマンドを止める。
+止めたときは理由を stderr に書いて終了コード 2（Claude Code が実行をやめ、理由を AI に返す）。
+決まりの元：.claude/rules/deploy.md・domain.md・CLAUDE.md の「どの作業でも守ること」。手本は Baker Street English の同じフック
+"""
+import json
+import re
+import sys
+
+try:
+    raw = json.load(sys.stdin).get('tool_input', {}).get('command', '') or ''
+except Exception:
+    sys.exit(0)
+
+# 文字列の中身（コミットのメッセージ・echo の文・ヒアドキュメント）はコマンドではないので、見る前に消す
+cmd = re.sub(r"<<-?\s*'?(\w+)'?.*?^\1\s*$", ' ', raw, flags=re.S | re.M)
+cmd = re.sub(r'"(?:\\.|[^"\\])*"', '""', cmd)
+cmd = re.sub(r"'[^']*'", "''", cmd)
+
+BLOCK = [
+    (r'aws\s+(ssm\s+start-session|ec2-instance-connect)', 'サーバーには AWS の画面・SSM から入らない（本番の作業は決まった SSH の手順だけ。.claude/rules/deploy.md）'),
+    (r'artisan\s+(migrate:fresh|migrate:reset|migrate:refresh|db:wipe)', '記録が消えるコマンドは使わない（表の追加・修正は移行と php artisan migrate だけ）'),
+    (r'docker\s+compose\s+[^|;&]*\bdown\b[^|;&]*(\s-v\b|--volumes)|docker\s+volume\s+(rm|prune)\b', 'データベースの入れ物（ボリューム）を消さない（記録が消える）。止めるだけなら docker compose stop'),
+    (r'git\s+push\s+[^|;&]*(--force\b|-f\b|--force-with-lease)', '強制プッシュはしない'),
+    (r'git\s+(commit|push)\s+[^|;&]*--no-verify', 'コミット前のチェック（.githooks/pre-commit）を飛ばさない'),
+    (r'git\s+config\s+[^|;&]*core\.hooksPath(?!\s+\.githooks\s*($|[;&|]))', 'コミット前のチェックの場所を変えない（決まった場所は core.hooksPath .githooks だけ）'),
+    (r'git\s+add\b[^|;&]*(?<![\w.-])\.env(?![\w.])', '.env（秘密の値）は git に入れない'),
+    (r'git\s+add\s+[^|;&]*\s-f\b|git\s+add\s+[^|;&]*--force\b', '.gitignore で外したファイルを無理に入れない'),
+]
+# 決まりに当たるかを上から順に見て、当たったら理由を返して止める
+for pat, why in BLOCK:
+    if re.search(pat, cmd):
+        print(f'このコマンドは決まりで止めています：{why}', file=sys.stderr)
+        sys.exit(2)
+
+# 本番 EC2（suiri-prod-ec2・13.197.78.156）への SSH は、オーナーが AI に任せている（2026-10-31：このアプリのデプロイ＝GitHub に上げたコードの反映と、サーバーの準備）。
+# 当たるのは、鍵 suiri-prod-key.pem で ec2-user@13.197.78.156 へ入る ssh だけ（ほかの住所・鍵・ユーザーは、ほかの SSH と同じく止まる）。
+# 許すのは「見る」（ps・logs・curl など）と「コードの反映」：git pull --ff-only・composer install --no-dev・npm ci / npm run build・
+#   php artisan migrate --force / optimize / optimize:clear / invite:add・list・remove・docker compose up -d（--build）/ restart、
+#   初回だけの php artisan passport:keys（AI の窓口の通行証に署名する鍵を作る。--force を付けた作り直しは止める：つないでいる人が全員つなぎ直しになる）。
+# 下の PROD_FORBIDDEN に当たる操作は、許した SSH の中でも止める（手本は Baker Street English の同じフック）：
+#   .env を読む・書く（中身を見せる tinker・config:show・env・printenv・docker compose config・docker inspect も）、利用者の記録を読む mysql・mysqldump、
+#   記録が消える migrate:fresh 系・db:wipe・seed、
+#   ファイルを手で直す（エディタ・sed -i・tee・> での書き込み・< で手元のファイルを流し込む）、rm、箱を止める・壊す（down・stop・rm・kill）、
+#   ボリューム・イメージの削除、履歴を書き換える git（push・reset・checkout・clean など）、ff-only でない pull、key:generate（初回は済み）、passport:keys --force、
+#   権限・パッケージ・電源の操作（chmod・chown・dnf・yum・reboot・shutdown）
+PROD_SSH = re.compile(r'-i\s+~?/?[\w./-]*suiri-prod-key\.pem\s.*\bec2-user@13\.197\.78\.156(?![\w.])')
+PROD_FORBIDDEN = re.compile(r'migrate:(fresh|reset|refresh|rollback)|db:wipe|\.env\b|vim|nano|\brm\b|(?<![-=])>|(?<!<)<(?![<(])|tee\b|sed\s+-i|key:generate|passport:keys[^|;&]*--force|db:seed|--seed'
+                            r'|tinker|config:show|printenv|(?<![\w.$-])env(?![\w.=-])|/proc/\S*environ|docker\s+(compose\s+)?(config|inspect)\b|\bmysql(dump)?\b'
+                            r'|git\s+(push|reset|checkout|clean|rebase|merge|stash|commit|restore)|git\s+pull(?![^|;&]*--ff-only)'
+                            r'|docker\s+compose\s+(down|stop|rm|kill)|docker\s+(system|volume|image|container|builder)\s+(prune|rm)|docker\s+rmi\b'
+                            r'|chmod|chown|dnf|yum|reboot|shutdown')
+
+# コマンドの頭（; && || | で区切った各部分の最初の語）で判断するもの
+for seg in re.split(r'&&|\|\||;|\|', cmd):
+    s = re.sub(r'^(sudo|env\s+\S+=\S+|timeout\s+\d+)\s+', '', seg.strip())
+    # 例外：オーナーが許した本番 EC2 への SSH（鍵 suiri-prod-key で ec2-user@13.197.78.156 へ）。見る・コードの反映だけで、禁じた操作を含まないとき
+    if re.match(r'^ssh\s', s) and PROD_SSH.search(s) and not PROD_FORBIDDEN.search(raw):
+        continue
+    # SSH・SCP・SFTP と、よそのサーバーへの rsync は止める
+    if re.match(r'^(ssh|scp|sftp|rsync)(\s|$)', s) and (not s.startswith('rsync') or re.search(r'\S+@\S+:|\s[\w.-]+\.[\w.-]+:', s)):
+        print('このコマンドは決まりで止めています：サーバーに入ってよいのは、本番 EC2 へ鍵 ~/.ssh/suiri-prod-key.pem で'
+              ' ec2-user@13.197.78.156 に入る ssh だけ。中でしてよいのは「見る」と「コードの反映」だけで、.env を読む・書く、消す、'
+              '箱を止める・壊す、ファイルを手で直す、seed・key:generate・passport:keys --force などは止める（.claude/rules/deploy.md の「本番で AI がしてよいこと」）', file=sys.stderr)
+        sys.exit(2)
+    # PHP・Composer はホストにない。コンテナの外で動かそうとしたら直し方を返す
+    if re.match(r'^(php|composer)\s', s) or re.match(r'^vendor/bin/', s):
+        print('PHP のコマンドはコンテナ経由で動かす：docker compose exec -T app ' + s, file=sys.stderr)
+        sys.exit(2)
+sys.exit(0)

@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" font-family="'Hiragino Sans','Noto Sans JP','Yu Gothic',sans-serif"><defs><marker id="a2a2118" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2a2118"/></marker><marker id="a1f2d4a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#1f2d4a"/></marker><marker id="a8c1c2b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#8c1c2b"/></marker><marker id="a1e4d3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#1e4d3a"/></marker><marker id="a9a7634" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#9a7634"/></marker></defs>
+<rect width="1200" height="800" fill="#ffffff"/>
+<text x="40" y="44" font-size="22" fill="#2a2118" font-weight="bold">推理の流れ（中心の輪）</text>
+<rect x="40" y="80" width="250" height="100" rx="12" fill="#fbf8f1" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M40 92a12 12 0 0 1 12 -12h226a12 12 0 0 1 12 12v20h-250z" fill="#1f2d4a"/>
+<text x="165.0" y="102" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">① 事件を作る</text>
+<text x="52" y="136" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">なぞ・場面・きっかけ</text>
+<text x="52" y="162" font-size="12" fill="#6b5d4b" font-weight="normal" text-anchor="start">CreateCase</text>
+<rect x="330" y="80" width="250" height="100" rx="12" fill="#fbf8f1" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M330 92a12 12 0 0 1 12 -12h226a12 12 0 0 1 12 12v20h-250z" fill="#1f2d4a"/>
+<text x="455.0" y="102" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">② 手がかり</text>
+<text x="342" y="136" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">見た・聞いた・なかった</text>
+<text x="342" y="162" font-size="12" fill="#6b5d4b" font-weight="normal" text-anchor="start">AddClue ／ S1・S2・S3・S6</text>
+<rect x="620" y="80" width="250" height="100" rx="12" fill="#fbf8f1" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M620 92a12 12 0 0 1 12 -12h226a12 12 0 0 1 12 12v20h-250z" fill="#1f2d4a"/>
+<text x="745.0" y="102" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">③ 見立て</text>
+<text x="632" y="136" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">説明の案。2つ目を勧める</text>
+<text x="632" y="162" font-size="12" fill="#6b5d4b" font-weight="normal" text-anchor="start">AddHypothesis ／ S4・S5</text>
+<rect x="910" y="80" width="250" height="100" rx="12" fill="#fbf8f1" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M910 92a12 12 0 0 1 12 -12h226a12 12 0 0 1 12 12v20h-250z" fill="#1f2d4a"/>
+<text x="1035.0" y="102" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">④ ○×で消す</text>
+<text x="922" y="136" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">合わない見立ては「消えた」へ</text>
+<text x="922" y="162" font-size="12" fill="#6b5d4b" font-weight="normal" text-anchor="start">SetFit ／ S5</text>
+<rect x="910" y="250" width="250" height="104" rx="12" fill="#fbf8f1" stroke="#8c1c2b" stroke-width="3.4"/>
+<path d="M910 262a12 12 0 0 1 12 -12h226a12 12 0 0 1 12 12v20h-250z" fill="#8c1c2b"/>
+<text x="1035.0" y="272" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">⑤ もしそうなら（予想）</text>
+<text x="922" y="306" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">予想の文・確かさ・確かめる日</text>
+<text x="922" y="332" font-size="12" fill="#6b5d4b" font-weight="normal" text-anchor="start">MakePrediction ／ S7　★ここが演繹</text>
+<rect x="910" y="420" width="250" height="100" rx="12" fill="#fbf8f1" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M910 432a12 12 0 0 1 12 -12h226a12 12 0 0 1 12 12v20h-250z" fill="#1f2d4a"/>
+<text x="1035.0" y="442" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">⑥ 確かめるタスク</text>
+<text x="922" y="476" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">予想と同時に自動で作る</text>
+<text x="922" y="502" font-size="12" fill="#6b5d4b" font-weight="normal" text-anchor="start">Task（kind = verify）</text>
+<rect x="620" y="420" width="250" height="100" rx="12" fill="#fbf8f1" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M620 432a12 12 0 0 1 12 -12h226a12 12 0 0 1 12 12v20h-250z" fill="#1f2d4a"/>
+<text x="745.0" y="442" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">⑦ 答え合わせ</text>
+<text x="632" y="476" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">4択。最初の予想と日時を見せる</text>
+<text x="632" y="502" font-size="12" fill="#6b5d4b" font-weight="normal" text-anchor="start">ResolvePrediction</text>
+<rect x="330" y="420" width="250" height="100" rx="12" fill="#fbf8f1" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M330 432a12 12 0 0 1 12 -12h226a12 12 0 0 1 12 12v20h-250z" fill="#1f2d4a"/>
+<text x="455.0" y="442" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">⑧ 見立てを直す</text>
+<text x="342" y="476" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">当たり／消えた（考えを変えた記録）</text>
+<text x="342" y="502" font-size="12" fill="#6b5d4b" font-weight="normal" text-anchor="start">ChangeHypothesisStatus ／ S10</text>
+<path d="M290 130 L328 130" fill="none" stroke="#2a2118" stroke-width="2.2" marker-end="url(#a2a2118)"/>
+<path d="M580 130 L618 130" fill="none" stroke="#2a2118" stroke-width="2.2" marker-end="url(#a2a2118)"/>
+<path d="M870 130 L908 130" fill="none" stroke="#2a2118" stroke-width="2.2" marker-end="url(#a2a2118)"/>
+<path d="M1035 180 L1035 248" fill="none" stroke="#2a2118" stroke-width="2.2" marker-end="url(#a2a2118)"/>
+<path d="M1035 354 L1035 418" fill="none" stroke="#2a2118" stroke-width="2.2" marker-end="url(#a2a2118)"/>
+<path d="M910 470 L872 470" fill="none" stroke="#2a2118" stroke-width="2.2" marker-end="url(#a2a2118)"/>
+<path d="M620 470 L582 470" fill="none" stroke="#2a2118" stroke-width="2.2" marker-end="url(#a2a2118)"/>
+<path d="M455 420 L455 182" fill="none" stroke="#1f2d4a" stroke-width="2.6" marker-end="url(#a1f2d4a)"/>
+<text x="445" y="345" font-size="12" fill="#1f2d4a" font-weight="bold" text-anchor="end">次の観察へ（もう一周）</text>
+<rect x="910" y="600" width="250" height="100" rx="12" fill="#fbf8f1" stroke="#1e4d3a" stroke-width="2"/>
+<path d="M910 612a12 12 0 0 1 12 -12h226a12 12 0 0 1 12 12v20h-250z" fill="#1e4d3a"/>
+<text x="1035.0" y="622" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Google カレンダー</text>
+<text x="922" y="656" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">専用カレンダー「推理手帳」</text>
+<text x="922" y="682" font-size="12" fill="#6b5d4b" font-weight="normal" text-anchor="start">その日に予定で知らせる（6章）</text>
+<path d="M1035 520 L1035 598" fill="none" stroke="#1e4d3a" stroke-width="2.2" marker-end="url(#a1e4d3a)"/>
+<rect x="620" y="600" width="250" height="100" rx="12" fill="#fbf8f1" stroke="#9a7634" stroke-width="2"/>
+<path d="M620 612a12 12 0 0 1 12 -12h226a12 12 0 0 1 12 12v20h-250z" fill="#9a7634"/>
+<text x="745.0" y="622" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">ノーベリ帳</text>
+<text x="632" y="656" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">外れ＋何を見落とした？</text>
+<text x="632" y="682" font-size="12" fill="#6b5d4b" font-weight="normal" text-anchor="start">NorburyQuery ／ S10</text>
+<path d="M745 520 L745 598" fill="none" stroke="#9a7634" stroke-width="2.2" marker-end="url(#a9a7634)"/>
+<text x="753" y="566" font-size="12" fill="#9a7634" font-weight="bold" text-anchor="start">外れ</text>
+<rect x="330" y="600" width="250" height="100" rx="12" fill="#fbf8f1" stroke="#9a7634" stroke-width="2"/>
+<path d="M330 612a12 12 0 0 1 12 -12h226a12 12 0 0 1 12 12v20h-250z" fill="#9a7634"/>
+<text x="455.0" y="622" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">週のふりかえり</text>
+<text x="342" y="656" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">確かさの答え合わせ（区間ごと）</text>
+<text x="342" y="682" font-size="12" fill="#6b5d4b" font-weight="normal" text-anchor="start">WeeklyStats ／ Calibration</text>
+<path d="M660 520 L660 560 L455 560 L455 598" fill="none" stroke="#9a7634" stroke-width="2.2" marker-end="url(#a9a7634)"/>
+<text x="560" y="553" font-size="11" fill="#9a7634" font-weight="normal" text-anchor="middle">結果を集める</text>
+<rect x="40" y="600" width="250" height="100" rx="12" fill="#fbf8f1" stroke="#9a7634" stroke-width="2"/>
+<path d="M40 612a12 12 0 0 1 12 -12h226a12 12 0 0 1 12 12v20h-250z" fill="#9a7634"/>
+<text x="165.0" y="622" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">屋根裏の棚</text>
+<text x="52" y="656" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">閉じるとき つまり？・たとえば？</text>
+<text x="52" y="682" font-size="12" fill="#6b5d4b" font-weight="normal" text-anchor="start">CloseCase ／ S9</text>
+<path d="M330 490 L165 490 L165 598" fill="none" stroke="#9a7634" stroke-width="2.2" marker-end="url(#a9a7634)"/>
+<text x="172" y="520" font-size="11" fill="#9a7634" font-weight="normal" text-anchor="start">当たりが出たら</text>
+<text x="172" y="536" font-size="11" fill="#9a7634" font-weight="normal" text-anchor="start">事件を閉じる</text>
+<path d="M100 600 L100 300 L908 300" fill="none" stroke="#9a7634" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#a9a7634)"/>
+<text x="705" y="292" font-size="11.5" fill="#9a7634" font-weight="normal" text-anchor="middle">棚の知識を予想に結べる（attic_note_id）</text>
+<rect x="560" y="318" width="330" height="86" rx="10" fill="#ffffff" stroke="#6b5d4b" stroke-dasharray="3 3"/>
+<text x="575" y="341" font-size="13" fill="#2a2118" font-weight="bold" text-anchor="start">ワトソンのひとこと（AI ではない）</text>
+<text x="575" y="363" font-size="12" fill="#2a2118" font-weight="normal" text-anchor="start">「見たこと？考えたこと？」「ほかの説明は？」</text>
+<text x="575" y="383" font-size="12" fill="#2a2118" font-weight="normal" text-anchor="start">「いつ確かめる？」など。WatsonNotes が</text>
+<text x="575" y="399" font-size="12" fill="#2a2118" font-weight="normal" text-anchor="start">決まった規則で1つだけ選ぶ</text>
+<rect x="40" y="728" width="1120" height="52" rx="8" fill="#ffffff" stroke="#d8cfbd"/>
+<text x="56" y="750" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">① で事件を作り、②〜⑧ をくり返す。⑤ は「見立てが正しいなら何が見えるはずか」を導く段（演繹）。④ の「合わないものを消す」も演繹。</text>
+<text x="56" y="770" font-size="12.5" fill="#2a2118" font-weight="normal" text-anchor="start">S1〜S10 は手引きの10の技能（調査 R1）。細い字はその段を受け持つクラス。金の枠は輪の外にたまる記録。</text>
+</svg>

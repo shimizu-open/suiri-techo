@@ -1,0 +1,534 @@
+<section class="story" id="s0">
+  <h2><span class="no">0</span>地図の読み方：住所の表から画面まで</h2>
+  <p class="userstory">この解説を読む人として、どの章から読んでも迷わないように、まず「ブラウザとサーバーのやりとり」と、プログラムの入口である住所の表（<code>routes/web.php</code> と <code>routes/web/{機能}.php</code>）の読み方を知りたい。だから、最初に全体の地図を見る。</p>
+  <p class="summary">この章で追う道筋：アドレスバーに URL → ブラウザがお願い（リクエスト）を送る → web の箱（nginx）→ <code>public/index.php</code> → <code>bootstrap/app.php</code> → 見張り役（ミドルウェア）の3段 → <code>routes/web.php</code> が読み込んだ <code>routes/web/{機能}.php</code> で行き先を決める → 受付（コントローラー）→ 形の検証・権限・用事・読み出し → 表（データベース）→ 画面（Blade と部品）→ 返事（レスポンス）</p>
+
+  <h3>お願いと返事、4つの箱</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>すべては「お願い」と「返事」の1往復でできている</h4>
+      <p>画面を開く・ボタンを押す・フォームを送る。推理手帳の利用者のどの行動も、ブラウザからサーバーへの1回の <dfn>リクエスト</dfn>（お願い）と、サーバーからブラウザへの1回の <dfn>レスポンス</dfn>（返事）でできています。返事の中身は、画面の HTML か、「別の住所へ行ってください」という <dfn>転送（リダイレクト）</dfn>のどちらかです（推理手帳には、画面の中のプログラムがデータだけをやりとりする所がほとんどありません。あとで説明します）。</p>
+      <div class="analogy"><b>たとえると</b>図書館の貸し出しカウンターです。利用者（ブラウザ）が申込用紙（リクエスト）を出し、カウンター（サーバー）が本（レスポンス）を渡します。「その本は2階のカウンターで」と案内されるのが転送です。案内されたら、利用者はもう一度そのカウンターに用紙を出し直します（ブラウザが自動でもう1回リクエストを送る）。</div>
+      <div class="data"><b>お願いに書いてあること</b><ul>
+        <li><b>メソッド</b>：<code>GET</code>（見せて）・<code>POST</code>（これを受け取って・何かして）・<code>PATCH</code>／<code>PUT</code>（書き換えて）・<code>DELETE</code>（消して）。HTML のフォームは GET と POST しか送れないので、Laravel はフォームの中の隠し欄 <code>_method</code> で PATCH・PUT・DELETE を表します（Blade では <code>@method('DELETE')</code> と書く）。推理手帳では、直すのは <code>PATCH</code>（○× と週のふりかえりは <code>PUT</code>）、消す・取り消すのは <code>DELETE</code> です。</li>
+        <li><b>住所（パス）</b>：<code>/today</code>・<code>/tasks</code>・<code>/cases/12</code> など。</li>
+        <li><b>Cookie</b>：前にサーバーから渡された「番号札」。ブラウザはそのサイトに来るたびに自動で送ります（ログインの見分けに使う。<a href="#s1">1章</a>）。</li>
+        <li><b>中身</b>：POST のときはフォームに入れた値（題名・本文など）と、ニセの送信を見分ける合言葉 <code>_token</code>。</li>
+      </ul></div>
+      <div class="data"><b>返事に書いてあること</b><ul>
+        <li><b>状態の番号</b>：<code>200</code>（成功）、<code>302</code>（転送。行き先は <code>Location</code> に書く）、<code>403</code>（あなたには許されていない。他人の記録など）、<code>404</code>（その住所・その番号の記録はない）、<code>419</code>（ニセの送信の疑い）、<code>429</code>（回数が多すぎる）、<code>500</code>（サーバーの中の失敗）。403・419・429 のしくみは <a href="#s11">11章</a>。</li>
+        <li><b>Cookie を渡す</b>：<code>Set-Cookie</code>。番号札を渡したり、書き換えたりします。</li>
+        <li><b>守りの札</b>：どの返事にも、セキュリティのヘッダが付きます（<a href="#s11">11章</a>）。</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>サーバーの中は4つの箱（Docker）</h4>
+      <p><dfn>Docker</dfn> は、プログラムを「箱（コンテナ）」に入れて、どのパソコンでも同じように動かす道具です。推理手帳は4つの箱で動きます。箱の組み合わせは、プロジェクト直下の <code>docker-compose.yml</code> に書いてあります。</p>
+      <div class="code"><div class="file">docker-compose.yml</div><pre><code>services:
+  # PHP（Laravel）を動かす係。画面の CSS・JS のビルド（Node.js）もここで行う
+  app:
+    build: ./infra/php
+# …（省略）…
+  # 決まった時刻の仕事（カレンダーの取り込み・期限の過ぎたキャッシュの掃除）と、後回しにした仕事（カレンダーへの書き込み）を片づける係
+  worker:
+    build: ./infra/php
+    user: "1000:1000"
+    command: sh -c "php artisan schedule:work &amp; php artisan queue:work --sleep=3 --tries=3 --max-time=3600"
+# …（省略）…
+  # 入口（nginx）。ブラウザからの通信を受けて、PHP の係に渡す
+  web:
+    image: nginx:1.27-alpine
+# …（省略）…
+  # データベース（MySQL）
+  db:
+    build: ./infra/mysql</code></pre></div>
+      <div class="data"><b>4つの箱の役目</b><ul>
+        <li><b>web</b>（nginx）：入口の門番。CSS・JS・画像のような「置いてあるだけのファイル」は自分で返し、それ以外を app に回す。</li>
+        <li><b>app</b>（PHP 8.4 と Laravel 13）：お願いを受けて、記録を読み書きし、画面を作る。この解説のほとんどは、この箱の中の話です。</li>
+        <li><b>db</b>（MySQL 8.4）：記録の保管庫。利用者・事件・タスク・予想などの表と、セッション・キャッシュ・後回しの仕事（<code>jobs</code>）の表もここにあります。</li>
+        <li><b>worker</b>：app と同じ中身で、画面を作らずに裏の仕事だけをする係。<code>queue:work</code> が後回しにした仕事（カレンダーへの書き出し）を片づけ、<code>schedule:work</code> が決まった時刻の仕事（15分ごとの取り込み・5分ごとのキャッシュの掃除・毎日の AI の通行証の掃除）を始めます（<a href="#s9">9章</a>・<a href="#s13">13章</a>）。</li>
+      </ul></div>
+      <figure class="shot"><img data-img="architecture.svg" alt="推理手帳の全体の部品の図"><figcaption>本番の形。CloudFront（https の受付）→ EC2 の中の4つの箱。外のサービスで、アプリから呼びに行くのは Google だけ（利用者がつないだ ChatGPT・Claude は、窓口を読みに来る側。<a href="#s13">13章</a>）</figcaption></figure>
+      <div class="analogy"><b>たとえると</b>web は店の入口の案内係、app は厨房、db は食材の倉庫、worker は閉店後や決まった時刻に仕込みをする裏方です。客（ブラウザ）と話すのは入口と厨房だけで、裏方は客を待たせずに働きます。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>web の箱（nginx）：ファイルならそのまま返し、ほかは Laravel へ</h4>
+      <div class="code"><div class="file">infra/nginx/default.conf</div><pre><code>    if ($http_content_type ~* "multipart/form-data") { return 415; }
+// …（省略）…
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        fastcgi_pass app:9000;</code></pre></div>
+      <ul>
+        <li>1行目：ファイルを送る形（<code>multipart/form-data</code>）の送信は、PHP に届く前に「415（受け付けない形）」で止めます。推理手帳にはファイルを上げる機能がないので、使わない入口を閉じておくためです。</li>
+        <li><code>try_files</code> は「その名前のファイルがあればそれを返す。なければ <code>index.php</code> に回す」という意味です。<code>/build/assets/app-….css</code> はファイルがあるので nginx がそのまま返し、<code>/today</code> のようなファイルのない住所は <code>index.php</code> に回ります。</li>
+        <li><code>.php</code> の仕事は <code>fastcgi_pass app:9000</code> で app の箱の 9000 番へ渡します。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>Laravel の入口：<code>public/index.php</code> と組み立て図 <code>bootstrap/app.php</code></h4>
+      <p>Laravel に回ってきたお願いは、必ずこのファイルから始まります。お願いを <code>Request</code>（リクエストの中身をまとめた入れ物）にして、アプリに渡します。</p>
+      <div class="code"><div class="file">src/public/index.php</div><pre><code>// Bootstrap Laravel and handle the request...
+/** @var Application $app */
+$app = require_once __DIR__.'/../bootstrap/app.php';
+
+$app-&gt;handleRequest(Request::capture());</code></pre></div>
+      <p><code>bootstrap/app.php</code> は、アプリの組み立て図です。「住所の表はどこか」「見張り役に何を足すか」「ログインしていない人をどこへ送るか」をここで決めています。</p>
+      <div class="code"><div class="file">src/bootstrap/app.php</div><pre><code>return Application::configure(basePath: dirname(__DIR__))
+    -&gt;withRouting(
+        web: __DIR__.'/../routes/web.php', // 中身は routes/web/{機能}.php。web.php はそれを読み込むだけ
+        commands: __DIR__.'/../routes/console.php',
+        health: '/up', // 死活確認の住所（アプリが動いているか）
+    )
+    -&gt;withMiddleware(function (Middleware $middleware): void {
+        $middleware-&gt;alias([
+            'agreed' =&gt; EnsureAgreed::class, // ルートで middleware('agreed') と書くと、同意前の人を /agree へ送る
+        ]);
+        // どの画面にも守りの札（セキュリティのヘッダ）を付ける。ログイン中の応答は取り置かせない
+        $middleware-&gt;append(SecurityHeaders::class);
+        // ログインが必要な画面に、ログインしていない人が来たときの行き先（トップ）。
+        // AI（ChatGPT・Claude）の同意の画面から来た人だけは、トップのボタンを1回減らすため Google のログインへ直接送る（ログイン後にここへ戻る）
+        $middleware-&gt;redirectGuestsTo(fn (Request $request) =&gt; $request-&gt;is('oauth/authorize') ? route('auth.google') : route('home'));
+        // ログイン前だけの画面（Google へ送り出すなど）に、ログイン済みの人が来たときの行き先（最初の画面）
+        $middleware-&gt;redirectUsersTo(fn () =&gt; Landing::url());
+        // …（省略）…
+        $middleware-&gt;trustProxies(at: '*');
+    })</code></pre></div>
+      <div class="data"><b>ここで決めていること</b><ul>
+        <li><code>web:</code>：画面の住所の表は <code>routes/web.php</code>。<code>commands:</code> の <code>routes/console.php</code> は、決まった時刻の仕事の表（<a href="#s9">9章</a>）。</li>
+        <li><code>alias</code>：自分で作った見張り役 <code>EnsureAgreed</code> に <code>agreed</code> という短い名前を付ける（住所の表で <code>'agreed'</code> と書けるようにする）。</li>
+        <li><code>append(SecurityHeaders::class)</code>：どのお願いにも通る見張り役の最後に、守りの札を付ける係を足す（<a href="#s11">11章</a>）。</li>
+        <li><code>redirectGuestsTo</code>：ログインが要る住所に、ログインしていない人が来たら、トップ（<code>route('home')</code> ＝ <code>/</code>）へ。ただし ChatGPT・Claude とつなぐときの同意の画面（<code>/oauth/authorize</code>）から来た人だけは、Google のログイン（<code>route('auth.google')</code>）へ直接送ります（<a href="#s13">13章</a>）。</li>
+        <li><code>redirectUsersTo</code>：ログイン前だけの住所（Google へ送り出すなど）に、ログイン済みの人が来たら、最初の画面（<code>Landing::url()</code> ＝ <code>/today</code>）へ。</li>
+        <li><code>trustProxies</code>：本番では CloudFront（https の受付）の後ろで動くので、CloudFront が付ける「本当のアクセス元」の印を信じる（回数制限で使う）。</li>
+      </ul></div>
+    </li>
+  </ol>
+
+  <h3>見張り役（ミドルウェア）</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>見張り役は、受付に届く前に順番に確かめる</h4>
+      <p><dfn>ミドルウェア</dfn>（この解説では「見張り役」）は、お願いが受付（コントローラー）に届く前と、返事が出ていく前に、決まった確認をする係です。何枚も重なっていて、外側から順に通ります。どれか1枚が「ここで止める」と決めると、受付まで届かずに返事（転送やエラー）が返ります。</p>
+      <div class="analogy"><b>たとえると</b>ビルの入口のゲートが何枚も並んでいるようなものです。手荷物検査・入館証の確認・行き先の階の確認…と順番に通り、全部通った人だけが目当ての部屋（受付）に着きます。帰りも同じゲートを逆向きに通るので、出口で「控え」を渡すゲート（守りの札を付ける係）も作れます。</div>
+      <p>推理手帳で通る見張り役は、大きく3段です。名前は Laravel 本体の部品で、<code>src/vendor/laravel/framework</code> にあります。</p>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>1段目：どのお願いも通る（全体）</h4>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Foundation/Configuration/Middleware.php</div><pre><code>public function getGlobalMiddleware()
+{
+    $middleware = $this-&gt;global ?: array_values(array_filter([
+        \Illuminate\Http\Middleware\ValidatePathEncoding::class,
+        \Illuminate\Foundation\Http\Middleware\InvokeDeferredCallbacks::class,
+        $this-&gt;trustHosts ? \Illuminate\Http\Middleware\TrustHosts::class : null,
+        \Illuminate\Http\Middleware\TrustProxies::class,
+        \Illuminate\Http\Middleware\HandleCors::class,
+        \Illuminate\Foundation\Http\Middleware\PreventRequestsDuringMaintenance::class,
+        \Illuminate\Http\Middleware\ValidatePostSize::class,
+        \Illuminate\Foundation\Http\Middleware\TrimStrings::class,
+        \Illuminate\Foundation\Http\Middleware\ConvertEmptyStringsToNull::class,
+    ]));</code></pre></div>
+      <div class="data"><b>主なもの</b><ul>
+        <li><code>TrustProxies</code>：CloudFront の後ろでも、元は https だったことや、本当のアクセス元を読み取る。</li>
+        <li><code>PreventRequestsDuringMaintenance</code>：メンテナンス中なら、ここで止めて知らせの画面を返す。</li>
+        <li><code>ValidatePostSize</code>：送られてきた中身が大きすぎないか。</li>
+        <li><code>TrimStrings</code>・<code>ConvertEmptyStringsToNull</code>：入力の前後の空白を取り、空の欄を「値なし」（<code>null</code>）にする。</li>
+        <li>最後に <code>bootstrap/app.php</code> で足した <code>SecurityHeaders</code>。手元で Laravel に並びを出させると、<code>ValidatePathEncoding → InvokeDeferredCallbacks → TrustProxies → HandleCors → PreventRequestsDuringMaintenance → ValidatePostSize → TrimStrings → ConvertEmptyStringsToNull → SecurityHeaders</code> の順でした。</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>2段目：画面の住所はどれも通る（web のひとまとまり）</h4>
+      <p><code>routes/web.php</code> から読み込んだ住所には、Laravel が <code>web</code> という名前のひとまとまりの見張り役を自動で付けます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Foundation/Configuration/Middleware.php</div><pre><code>'web' =&gt; array_values(array_filter([
+    \Illuminate\Cookie\Middleware\EncryptCookies::class,
+    \Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse::class,
+    \Illuminate\Session\Middleware\StartSession::class,
+    \Illuminate\View\Middleware\ShareErrorsFromSession::class,
+    \Illuminate\Foundation\Http\Middleware\PreventRequestForgery::class,
+    \Illuminate\Routing\Middleware\SubstituteBindings::class,
+    $this-&gt;authenticatedSessions ? 'auth.session' : null,
+])),</code></pre></div>
+      <div class="data"><b>それぞれの役目</b><ul>
+        <li><code>EncryptCookies</code>：Cookie を暗号にしたり、元に戻したりする。</li>
+        <li><code>AddQueuedCookiesToResponse</code>：プログラムの途中で「渡したい」と決めた Cookie を返事に付ける。</li>
+        <li><code>StartSession</code>：番号札（セッションの Cookie）から、その人の預かり箱（<dfn>セッション</dfn>）を開く。ログインしている人の見分けもここから始まる（<a href="#s1">1章</a>）。</li>
+        <li><code>ShareErrorsFromSession</code>：前の入力の誤り（「題名を入れてください」など）を画面で使えるようにする。</li>
+        <li><code>PreventRequestForgery</code>：ほかのサイトから勝手に送られた POST でないかを、合言葉で確かめる（<dfn>CSRF</dfn> の対策。<a href="#s11">11章</a>）。</li>
+        <li><code>SubstituteBindings</code>：住所の中の <code>{case}</code> や <code>{task}</code> を、データベースの行に取り換える（この章の後半）。</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>3段目：住所ごとに付けたもの（auth・agreed・guest・throttle・can）</h4>
+      <p>住所の表で、住所ごとに付ける見張り役です。短い名前（<dfn>エイリアス</dfn>）で書きます。Laravel が最初から持っている名前の表から、推理手帳で使うものを抜き出します。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Foundation/Configuration/Middleware.php</div><pre><code>'auth' =&gt; \Illuminate\Auth\Middleware\Authenticate::class,
+// …（省略）…
+'can' =&gt; \Illuminate\Auth\Middleware\Authorize::class,
+'guest' =&gt; \Illuminate\Auth\Middleware\RedirectIfAuthenticated::class,</code></pre></div>
+      <div class="data"><b>推理手帳で使う住所ごとの見張り役</b><ul>
+        <li><code>auth</code>（<code>Authenticate</code>）：ログインした人だけ通す。ログインしていなければトップ <code>/</code> へ（<a href="#s1">1章</a>）。</li>
+        <li><code>agreed</code>（<code>EnsureAgreed</code>。推理手帳が作ったもの）：利用規約・プライバシーポリシー・年齢の確認に同意した人だけ通す。まだなら <code>/agree</code> へ（<a href="#s1">1章</a>）。</li>
+        <li><code>guest</code>（<code>RedirectIfAuthenticated</code>）：ログインしていない人だけ通す。ログイン済みなら <code>/today</code> へ（<a href="#s1">1章</a>）。</li>
+        <li><code>throttle:名前</code>（<code>ThrottleRequests</code>）：1分あたりの回数を数え、多すぎたら 429 で止める。名前（<code>auth</code>・<code>writes</code>・<code>account</code>・<code>calendar</code>）ごとに上限が違う（<a href="#s11">11章</a>）。</li>
+        <li><code>can:動作,穴の名前</code>（<code>Authorize</code>）：その記録をこの人が見てよいか・直してよいかを、<dfn>Policy</dfn>（権限の係）に聞く。だめなら 403（この章の後半と <a href="#s11">11章</a>）。</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>見張り役は「決まった優先順位」に並べ替えてから動く</h4>
+      <p>2段目と3段目は、書いた順のままではなく、Laravel の優先順位の表で並べ替えてから動きます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Foundation/Http/Kernel.php</div><pre><code>protected $middlewarePriority = [
+    \Illuminate\Foundation\Http\Middleware\HandlePrecognitiveRequests::class,
+    \Illuminate\Cookie\Middleware\EncryptCookies::class,
+    \Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse::class,
+    \Illuminate\Session\Middleware\StartSession::class,
+    \Illuminate\View\Middleware\ShareErrorsFromSession::class,
+    \Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests::class,
+    \Illuminate\Routing\Middleware\ThrottleRequests::class,
+    \Illuminate\Routing\Middleware\ThrottleRequestsWithRedis::class,
+    \Illuminate\Contracts\Session\Middleware\AuthenticatesSessions::class,
+    \Illuminate\Routing\Middleware\SubstituteBindings::class,
+    \Illuminate\Auth\Middleware\Authorize::class,
+];</code></pre></div>
+      <p>表にある見張り役だけがこの順に入れ替わり、表にない見張り役（推理手帳の <code>agreed</code>）は書いた位置に残ります。たとえば「タスクを済ませる」（<code>POST /tasks/{task}/done</code>。<a href="#s3">3章</a>）の住所について、手元で Laravel に並びを出させると、次の順でした。</p>
+      <ol>
+        <li><code>EncryptCookies</code> → <code>AddQueuedCookiesToResponse</code> → <code>StartSession</code> → <code>ShareErrorsFromSession</code> → <code>PreventRequestForgery</code>（ここまで web のひとまとまり）</li>
+        <li><code>Authenticate</code>（<code>auth</code>）：ログインしているか</li>
+        <li><code>ThrottleRequests:writes</code>：回数が多すぎないか</li>
+        <li><code>SubstituteBindings</code>：住所の <code>{task}</code> をタスクの行に替える</li>
+        <li><code>EnsureAgreed</code>（<code>agreed</code>）：同意したか</li>
+        <li><code>Authorize:update,task</code>（<code>can</code>）：そのタスクの持ち主か</li>
+      </ol>
+      <div class="point"><b>ここが大事</b><code>StartSession</code> が <code>auth</code> より前なのは、セッションを開かないと「ログインしているか」が分からないからです。<code>can</code>（<code>Authorize</code>）がいちばん最後なのは、住所の番号を行に替えたあとでないと「この行の持ち主か」を確かめられないからです。回数を数える <code>throttle</code> は行を探すより前なので、ない番号への頼み（404 になるもの）も1回と数えます。</div>
+    </li>
+  </ol>
+
+  <h3>住所の表（routes）の読み方</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>routes/web.php</code> は、機能ごとのファイルを読み込むだけ</h4>
+      <div class="code"><div class="file">src/routes/web.php</div><pre><code>// routes/web/ の .php を名前の順に1つずつ読み込む（新しい機能はファイルを置けば読み込まれる）
+foreach (glob(__DIR__.'/web/*.php') as $file) {
+    require $file;
+}</code></pre></div>
+      <p><code>glob</code> は「この形に合うファイルの名前を集める」関数で、名前の順に並べて返します。<code>require</code> は、そのファイルの中身をここに書いたのと同じように読み込みます。なので、住所の中身は <code>routes/web/</code> の10のファイル（<code>ai.php</code>・<code>auth.php</code>・<code>calendar.php</code>・<code>cases.php</code>・<code>guide.php</code>・<code>legal.php</code>・<code>review.php</code>・<code>settings.php</code>・<code>tasks.php</code>・<code>today.php</code>）にあります。1つのファイルが長くなりすぎないよう（住所のファイルは120行まで）、機能ごとに分けています。</p>
+      <div class="analogy"><b>たとえると</b>ビルの総合案内板です。<code>web.php</code> は「1階は○○、2階は△△」という階ごとの案内板を貼り合わせているだけで、各階の部屋の案内（どの住所がどの受付か）は階ごとの案内板（<code>web/{機能}.php</code>）に書いてあります。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>1行の読み方と、囲み（グループ）</h4>
+      <div class="code"><div class="file">src/routes/web/today.php</div><pre><code>Route::middleware(['auth', 'agreed'])-&gt;group(function () {
+    Route::get('/today', TodayController::class)-&gt;name('today');
+});</code></pre></div>
+      <div class="data"><b>読み方</b><ul>
+        <li><code>Route::get</code>：GET で来たとき（<code>Route::post</code> なら POST、<code>patch</code>・<code>put</code>・<code>delete</code> も同じ）。</li>
+        <li><code>'/today'</code>：住所。</li>
+        <li><code>TodayController::class</code>：受付 <code>src/app/Http/Controllers/Today/TodayController.php</code>。関数の名前を書かないときは、その受付の <code>__invoke()</code>（1つの仕事だけをする受付の決まった名前）を呼ぶ。2つ以上の仕事を持つ受付は <code>[CaseController::class, 'show']</code> のように関数の名前も書く。</li>
+        <li><code>-&gt;name('today')</code>：この住所の <dfn>ルート名</dfn>。プログラムの中では住所を直接書かず、<code>route('today')</code> と名前で書く（住所を変えても1か所で済む）。</li>
+        <li><code>Route::middleware([...])-&gt;group(function () { … })</code>：囲みの中の住所は、全部その見張り役を通る。推理手帳では、ログインが要る住所はみな <code>['auth', 'agreed']</code> の囲みの中にあります。</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>書き込みの住所には回数制限と権限を付ける</h4>
+      <p>記録を書く住所は、さらに <code>throttle:writes</code> の囲みに入れ、住所の中に記録の番号があるときは <code>-&gt;can()</code> で持ち主かを確かめます。</p>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>Route::middleware(['auth', 'agreed'])-&gt;group(function () {
+// …（省略）…
+    Route::get('/cases/{case}', [CaseController::class, 'show'])-&gt;can('view', 'case')-&gt;name('cases.show');
+
+    Route::middleware('throttle:writes')-&gt;group(function () {
+        Route::post('/cases', [CaseController::class, 'store'])-&gt;name('cases.store');
+// …（省略）…
+        // 手がかり（閉じた事件には足せない・直せない・消せない）
+        Route::post('/cases/{case}/clues', [ClueController::class, 'store'])-&gt;can('write', 'case')-&gt;name('clues.store');</code></pre></div>
+      <ul>
+        <li><code>{case}</code> は住所の<dfn>穴（ルートパラメータ）</dfn>。<code>/cases/12</code> が来ると、穴 <code>case</code> に <code>12</code> が入ります。</li>
+        <li><code>-&gt;can('view', 'case')</code> は、見張り役 <code>can:view,case</code> を付けるのと同じです（Laravel 本体の <code>Route::can</code> が <code>$this-&gt;middleware(['can:'.$ability.','.implode(',', Arr::wrap($models))])</code> を呼ぶ）。「穴 <code>case</code> の記録を <code>view</code>（見る）してよいか」を Policy に聞きます。</li>
+        <li><code>-&gt;can('write', 'case')</code> は推理手帳が足した能力で、「持ち主で、事件が捜査中か」を聞きます。閉じた事件に手がかりや見立てを書き込ませないためです（<a href="#s11">11章</a>）。</li>
+      </ul>
+      <p>決まった形の「一覧・作る・直す・消す」は、<code>Route::resource</code> で1行にまとめます。屋根裏の棚の住所はこう書いてあります。</p>
+      <div class="code"><div class="file">src/routes/web/review.php</div><pre><code>Route::resource('attic', AtticNoteController::class)
+    -&gt;only(['index', 'store', 'update', 'destroy'])
+    -&gt;parameters(['attic' =&gt; 'note'])
+    -&gt;middlewareFor('store', 'throttle:writes')
+    -&gt;middlewareFor('update', ['throttle:writes', 'can:update,note'])
+    -&gt;middlewareFor('destroy', ['throttle:writes', 'can:delete,note']);</code></pre></div>
+      <p>これで <code>GET /attic</code>（<code>index</code>）・<code>POST /attic</code>（<code>store</code>）・<code>PUT|PATCH /attic/{note}</code>（<code>update</code>）・<code>DELETE /attic/{note}</code>（<code>destroy</code>）の4つの住所ができます。<code>parameters</code> で穴の名前を <code>{note}</code> にし、<code>middlewareFor</code> で動作ごとに見張り役を付けています。</p>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>穴の番号を記録の行に替える（<code>SubstituteBindings</code>）</h4>
+      <p>穴 <code>case</code> の中身は、まだ <code>12</code> という文字です。受付が欲しいのは事件の表の1行なので、受付に渡す前に、見張り役 <code>SubstituteBindings</code> が番号を行に替えます。この働きを<dfn>ルートモデルバインディング</dfn>（住所とモデルを結びつけること）と呼びます。</p>
+      <p>ふつうは、受付の関数の引数の型と名前から自動で決まります（<code>Task $task</code> なら穴 <code>task</code> の番号で <code>tasks</code> 表を探す）。事件だけは、名前の付け方の都合で、どの表かを自分で教えています。</p>
+      <div class="code"><div class="file">src/app/Providers/AppServiceProvider.php</div><pre><code>// 住所の {case} は「事件」（CaseFile）。case は PHP の予約語なのでモデルの名前と住所の名前がちがう
+Route::model('case', CaseFile::class);</code></pre></div>
+      <p><code>case</code> は PHP の予約語（<code>switch</code> の中で使う言葉）なので、事件のモデルは <code>CaseFile</code>、表は <code>case_files</code> という名前です。住所の穴は読みやすく <code>{case}</code> のままにし、「穴 <code>case</code> は <code>CaseFile</code> で探す」と結びつけています。見張り役はこの結びつきを見て、穴の中身を行に入れ替えます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Routing/Router.php</div><pre><code>public function substituteBindings($route)
+{
+    foreach ($route-&gt;parameters() as $key =&gt; $value) {
+        if (isset($this-&gt;binders[$key])) {
+            $route-&gt;setParameter($key, $this-&gt;performBinding($key, $value, $route));
+        }
+    }
+
+    return $route;
+}</code></pre></div>
+      <p>その番号の行がなければ「見つからない」として 404 の画面になります。他人の事件の番号なら、行は見つかりますが、次の <code>can</code> で止まります（403）。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>case_files</code> の1行（<code>id = 12</code>）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>can</code>：持ち主かを Policy に聞く</h4>
+      <p><code>can:view,case</code> の見張り役（<code>Authorize</code>）は、穴 <code>case</code> に入った行（<code>CaseFile</code>）を持って、その種類の Policy（<code>App\Policies\CaseFilePolicy</code>。モデルの名前＋<code>Policy</code> という名前の決まりで Laravel が自動で見つける）の <code>view</code> を呼びます。推理手帳の Policy はどれも同じ部品 <code>OwnerOnly</code> を使っています。</p>
+      <div class="code"><div class="file">src/app/Policies/Concerns/OwnerOnly.php</div><pre><code>/** 記録の持ち主がこの人かを返す（型をそろえて比べる） */
+protected function owns(User $user, Model $record): bool
+{
+    return (int) $record-&gt;getAttribute('user_id') === (int) $user-&gt;getKey();
+}</code></pre></div>
+      <p>記録の <code>user_id</code>（持ち主の番号）とログイン中の人の番号が同じときだけ許し、違えば 403 で止めます。くわしくは <a href="#s11">11章</a>。</p>
+      <div class="analogy"><b>たとえると</b>貸し金庫の窓口です。番号札で金庫を出してくる（<code>SubstituteBindings</code>）のと、その金庫の名義が本人か確かめる（<code>can</code>）のは別の係で、名義が違えば開けずに断ります。</div>
+    </li>
+  </ol>
+
+  <h3>住所の表の全体：どの住所がどの章か</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>68の住所と、その流れを追う章</h4>
+      <p>住所の表（<code>routes/web/*.php</code>）にある住所の全部です（<code>docker compose exec -T app php artisan route:list</code> で出せます。<code>--except-vendor</code> を付けると、Laravel の部品の受付をそのまま使う同意の画面の3つが外れて65になります）。「見張り役」の欄には、web のひとまとまりのほかに付くものを書きました。<code>auth・agreed</code> は「ログインして同意した人だけ」です。</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>ファイル</th><th>メソッドと住所</th><th>ルート名 → 受付</th><th>見張り役</th><th>章</th></tr></thead>
+        <tbody>
+          <tr><td rowspan="6"><code>auth.php</code></td><td><code>GET /</code></td><td><code>home</code> → <code>HomeController</code></td><td>なし</td><td><a href="#s1">1</a></td></tr>
+          <tr><td><code>GET /auth/google</code></td><td><code>auth.google</code> → <code>Auth\GoogleLoginController@redirect</code></td><td>guest・throttle:auth</td><td><a href="#s1">1</a></td></tr>
+          <tr><td><code>GET /auth/google/callback</code></td><td><code>auth.google.callback</code> → <code>Auth\GoogleLoginController@callback</code></td><td>guest・throttle:auth</td><td><a href="#s1">1</a></td></tr>
+          <tr><td><code>POST /logout</code></td><td><code>logout</code> → <code>Auth\LogoutController</code></td><td>auth</td><td><a href="#s1">1</a></td></tr>
+          <tr><td><code>GET /agree</code></td><td><code>agree.show</code> → <code>Auth\AgreementController@show</code></td><td>auth</td><td><a href="#s1">1</a></td></tr>
+          <tr><td><code>POST /agree</code></td><td><code>agree.store</code> → <code>Auth\AgreementController@store</code></td><td>auth・throttle:writes</td><td><a href="#s1">1</a></td></tr>
+          <tr><td><code>today.php</code></td><td><code>GET /today</code></td><td><code>today</code> → <code>Today\TodayController</code></td><td>auth・agreed</td><td><a href="#s2">2</a></td></tr>
+          <tr><td rowspan="9"><code>tasks.php</code></td><td><code>GET /tasks</code></td><td><code>tasks.index</code> → <code>Tasks\TaskController@index</code></td><td>auth・agreed</td><td><a href="#s3">3</a></td></tr>
+          <tr><td><code>GET /tasks/create</code></td><td><code>tasks.create</code> → <code>Tasks\TaskController@create</code></td><td>auth・agreed</td><td><a href="#s3">3</a></td></tr>
+          <tr><td><code>POST /tasks</code></td><td><code>tasks.store</code> → <code>Tasks\TaskController@store</code></td><td>auth・agreed・throttle:writes</td><td><a href="#s3">3</a></td></tr>
+          <tr><td><code>POST /tasks/draft</code></td><td><code>tasks.draft</code> → <code>Tasks\DraftTaskController</code></td><td>auth・agreed</td><td><a href="#s3">3</a></td></tr>
+          <tr><td><code>GET /tasks/{task}/edit</code></td><td><code>tasks.edit</code> → <code>Tasks\TaskController@edit</code></td><td>auth・agreed・can:update,task</td><td><a href="#s3">3</a></td></tr>
+          <tr><td><code>PUT|PATCH /tasks/{task}</code></td><td><code>tasks.update</code> → <code>Tasks\TaskController@update</code></td><td>auth・agreed・throttle:writes・can:update,task</td><td><a href="#s3">3</a></td></tr>
+          <tr><td><code>DELETE /tasks/{task}</code></td><td><code>tasks.destroy</code> → <code>Tasks\TaskController@destroy</code></td><td>auth・agreed・throttle:writes・can:delete,task</td><td><a href="#s3">3</a></td></tr>
+          <tr><td><code>POST /tasks/{task}/done</code></td><td><code>tasks.done</code> → <code>Tasks\CompleteTaskController</code></td><td>auth・agreed・throttle:writes・can:update,task</td><td><a href="#s3">3</a></td></tr>
+          <tr><td><code>DELETE /tasks/{task}/done</code></td><td><code>tasks.undone</code> → <code>Tasks\ReopenTaskController</code></td><td>auth・agreed・throttle:writes・can:update,task</td><td><a href="#s3">3</a></td></tr>
+          <tr><td rowspan="25"><code>cases.php</code></td><td><code>GET /cases</code></td><td><code>cases.index</code> → <code>Cases\CaseController@index</code></td><td>auth・agreed</td><td><a href="#s4">4</a></td></tr>
+          <tr><td><code>GET /cases/create</code></td><td><code>cases.create</code> → <code>Cases\CaseController@create</code></td><td>auth・agreed</td><td><a href="#s4">4</a></td></tr>
+          <tr><td><code>POST /cases/draft</code></td><td><code>cases.draft</code> → <code>Cases\DraftCaseController</code></td><td>auth・agreed</td><td><a href="#s4">4</a></td></tr>
+          <tr><td><code>GET /cases/{case}</code></td><td><code>cases.show</code> → <code>Cases\CaseController@show</code></td><td>auth・agreed・can:view,case</td><td><a href="#s4">4</a></td></tr>
+          <tr><td><code>POST /cases</code></td><td><code>cases.store</code> → <code>Cases\CaseController@store</code></td><td>auth・agreed・throttle:writes</td><td><a href="#s4">4</a></td></tr>
+          <tr><td><code>PATCH /cases/{case}</code></td><td><code>cases.update</code> → <code>Cases\CaseController@update</code></td><td>auth・agreed・throttle:writes・can:update,case</td><td><a href="#s4">4</a></td></tr>
+          <tr><td><code>DELETE /cases/{case}</code></td><td><code>cases.destroy</code> → <code>Cases\CaseController@destroy</code></td><td>auth・agreed・throttle:writes・can:delete,case</td><td><a href="#s4">4</a></td></tr>
+          <tr><td><code>POST /cases/{case}/close</code></td><td><code>cases.close</code> → <code>Cases\CloseCaseController</code></td><td>auth・agreed・throttle:writes・can:update,case</td><td><a href="#s10">10</a></td></tr>
+          <tr><td><code>DELETE /cases/{case}/close</code></td><td><code>cases.reopen</code> → <code>Cases\ReopenCaseController</code></td><td>auth・agreed・throttle:writes・can:update,case</td><td><a href="#s10">10</a></td></tr>
+          <tr><td><code>POST /cases/{case}/reveal</code></td><td><code>cases.reveal</code> → <code>Cases\RevealHypothesesController</code></td><td>auth・agreed・throttle:writes・can:write,case</td><td><a href="#s8">8</a></td></tr>
+          <tr><td><code>POST /cases/{case}/clues</code></td><td><code>clues.store</code> → <code>Cases\ClueController@store</code></td><td>auth・agreed・throttle:writes・can:write,case</td><td><a href="#s5">5</a></td></tr>
+          <tr><td><code>PATCH /clues/{clue}</code></td><td><code>clues.update</code> → <code>Cases\ClueController@update</code></td><td>auth・agreed・throttle:writes・can:write,clue</td><td><a href="#s5">5</a></td></tr>
+          <tr><td><code>DELETE /clues/{clue}</code></td><td><code>clues.destroy</code> → <code>Cases\ClueController@destroy</code></td><td>auth・agreed・throttle:writes・can:write,clue</td><td><a href="#s5">5</a></td></tr>
+          <tr><td><code>POST /cases/{case}/hypotheses</code></td><td><code>hypotheses.store</code> → <code>Cases\HypothesisController@store</code></td><td>auth・agreed・throttle:writes・can:write,case</td><td><a href="#s5">5</a>・<a href="#s8">8</a></td></tr>
+          <tr><td><code>PATCH /hypotheses/{hypothesis}</code></td><td><code>hypotheses.update</code> → <code>Cases\HypothesisController@update</code></td><td>auth・agreed・throttle:writes・can:write,hypothesis</td><td><a href="#s5">5</a></td></tr>
+          <tr><td><code>DELETE /hypotheses/{hypothesis}</code></td><td><code>hypotheses.destroy</code> → <code>Cases\HypothesisController@destroy</code></td><td>auth・agreed・throttle:writes・can:write,hypothesis</td><td><a href="#s5">5</a></td></tr>
+          <tr><td><code>PUT /hypotheses/{hypothesis}/clues/{clue}</code></td><td><code>fits.update</code> → <code>Cases\FitController@update</code></td><td>auth・agreed・throttle:writes・can:write,hypothesis・can:write,clue</td><td><a href="#s5">5</a></td></tr>
+          <tr><td><code>DELETE /hypotheses/{hypothesis}/clues/{clue}</code></td><td><code>fits.destroy</code> → <code>Cases\FitController@destroy</code></td><td>auth・agreed・throttle:writes・can:write,hypothesis・can:write,clue</td><td><a href="#s5">5</a></td></tr>
+          <tr><td><code>POST /cases/{case}/hints/{rule}</code></td><td><code>hints.dismiss</code> → <code>Cases\DismissHintController</code></td><td>auth・agreed・throttle:writes・can:update,case</td><td><a href="#s5">5</a></td></tr>
+          <tr><td><code>POST /hypotheses/{hypothesis}/predictions</code></td><td><code>predictions.store</code> → <code>Cases\PredictionController@store</code></td><td>auth・agreed・throttle:writes・can:write,hypothesis</td><td><a href="#s6">6</a></td></tr>
+          <tr><td><code>POST /predictions/{prediction}/withdraw</code></td><td><code>predictions.withdraw</code> → <code>Cases\WithdrawPredictionController</code></td><td>auth・agreed・throttle:writes・can:update,prediction</td><td><a href="#s6">6</a></td></tr>
+          <tr><td><code>GET /predictions/{prediction}</code></td><td><code>predictions.show</code> → <code>Cases\PredictionController@show</code></td><td>auth・agreed・can:view,prediction</td><td><a href="#s7">7</a></td></tr>
+          <tr><td><code>POST /predictions/{prediction}/result</code></td><td><code>predictions.resolve</code> → <code>Cases\ResolvePredictionController</code></td><td>auth・agreed・throttle:writes・can:update,prediction</td><td><a href="#s7">7</a></td></tr>
+          <tr><td colspan="4">（予想の文と確かさを直す住所は、わざと作っていません。<a href="#s6">6章</a>）</td></tr>
+          <tr><td colspan="4">（事件・手がかり・見立て・予想の住所は、どれも <code>auth・agreed</code> の囲みの中です。<code>can:write</code> は「持ち主で、事件が捜査中か」で、閉じた事件への書き込みは 403。<a href="#s11">11章</a>）</td></tr>
+          <tr><td rowspan="7"><code>guide.php</code></td><td><code>GET /guide</code></td><td><code>guide.index</code> → <code>Guide\GuideController@index</code></td><td>auth・agreed</td><td><a href="#s12">12</a></td></tr>
+          <tr><td><code>GET /guide/reasoning</code></td><td><code>guide.reasoning</code> → <code>Guide\GuideController@reasoning</code></td><td>auth・agreed</td><td><a href="#s12">12</a></td></tr>
+          <tr><td><code>GET /guide/skills/{key}</code></td><td><code>guide.skills.show</code> → <code>Guide\SkillController@show</code></td><td>auth・agreed</td><td><a href="#s12">12</a></td></tr>
+          <tr><td><code>GET /guide/scenes</code></td><td><code>guide.scenes.index</code> → <code>Guide\SceneController@index</code></td><td>auth・agreed</td><td><a href="#s12">12</a></td></tr>
+          <tr><td><code>GET /guide/scenes/{key}</code></td><td><code>guide.scenes.show</code> → <code>Guide\SceneController@show</code></td><td>auth・agreed</td><td><a href="#s12">12</a></td></tr>
+          <tr><td><code>POST /guide/scenes/{key}/attempt</code></td><td><code>guide.scenes.attempt</code> → <code>Guide\SaveSceneAttemptController</code></td><td>auth・agreed・throttle:writes</td><td><a href="#s12">12</a></td></tr>
+          <tr><td><code>GET /guide/practices</code></td><td><code>guide.practices.index</code> → <code>Guide\PracticeController@index</code></td><td>auth・agreed</td><td><a href="#s4">4</a>・<a href="#s12">12</a></td></tr>
+          <tr><td rowspan="7"><code>review.php</code></td><td><code>GET /review/{week?}</code></td><td><code>review.show</code> → <code>Review\ReviewController@show</code></td><td>auth・agreed</td><td><a href="#s10">10</a></td></tr>
+          <tr><td><code>PUT /review/{week}</code></td><td><code>review.update</code> → <code>Review\ReviewController@update</code></td><td>auth・agreed・throttle:writes</td><td><a href="#s10">10</a></td></tr>
+          <tr><td><code>GET /norbury</code></td><td><code>norbury.index</code> → <code>Review\NorburyController@index</code></td><td>auth・agreed</td><td><a href="#s10">10</a></td></tr>
+          <tr><td><code>GET /attic</code></td><td><code>attic.index</code> → <code>Attic\AtticNoteController@index</code></td><td>auth・agreed</td><td><a href="#s10">10</a></td></tr>
+          <tr><td><code>POST /attic</code></td><td><code>attic.store</code> → <code>Attic\AtticNoteController@store</code></td><td>auth・agreed・throttle:writes</td><td><a href="#s10">10</a></td></tr>
+          <tr><td><code>PUT|PATCH /attic/{note}</code></td><td><code>attic.update</code> → <code>Attic\AtticNoteController@update</code></td><td>auth・agreed・throttle:writes・can:update,note</td><td><a href="#s10">10</a></td></tr>
+          <tr><td><code>DELETE /attic/{note}</code></td><td><code>attic.destroy</code> → <code>Attic\AtticNoteController@destroy</code></td><td>auth・agreed・throttle:writes・can:delete,note</td><td><a href="#s10">10</a></td></tr>
+          <tr><td rowspan="4"><code>settings.php</code></td><td><code>GET /settings</code></td><td><code>settings.show</code> → <code>Settings\SettingsController@show</code></td><td>auth・agreed</td><td><a href="#s8">8</a>・<a href="#s9">9</a>・<a href="#s13">13</a></td></tr>
+          <tr><td><code>PATCH /settings</code></td><td><code>settings.update</code> → <code>Settings\SettingsController@update</code></td><td>auth・agreed・throttle:writes</td><td><a href="#s8">8</a></td></tr>
+          <tr><td><code>GET /settings/export</code></td><td><code>settings.export</code> → <code>Account\ExportUserDataController</code></td><td>auth・agreed・throttle:account</td><td><a href="#s11">11</a></td></tr>
+          <tr><td><code>DELETE /account</code></td><td><code>account.destroy</code> → <code>Account\DeleteAccountController</code></td><td>auth・agreed・throttle:account</td><td><a href="#s11">11</a></td></tr>
+          <tr><td rowspan="4"><code>calendar.php</code></td><td><code>GET /calendar/connect</code></td><td><code>calendar.connect</code> → <code>Calendar\ConnectCalendarController@show</code></td><td>auth・agreed・throttle:calendar</td><td><a href="#s9">9</a></td></tr>
+          <tr><td><code>POST /calendar/connect</code></td><td><code>calendar.redirect</code> → <code>Calendar\ConnectCalendarController@redirect</code></td><td>auth・agreed・throttle:calendar</td><td><a href="#s9">9</a></td></tr>
+          <tr><td><code>GET /calendar/callback</code></td><td><code>calendar.callback</code> → <code>Calendar\ConnectCalendarController@callback</code></td><td>auth・agreed・throttle:calendar</td><td><a href="#s9">9</a></td></tr>
+          <tr><td><code>DELETE /calendar</code></td><td><code>calendar.disconnect</code> → <code>Calendar\DisconnectCalendarController</code></td><td>auth・agreed・throttle:calendar</td><td><a href="#s9">9</a></td></tr>
+          <tr><td rowspan="4"><code>ai.php</code></td><td><code>GET /oauth/authorize</code></td><td><code>passport.authorizations.authorize</code> → Passport の <code>AuthorizationController@authorize</code></td><td>auth・agreed</td><td><a href="#s13">13</a></td></tr>
+          <tr><td><code>POST /oauth/authorize</code></td><td><code>passport.authorizations.approve</code> → Passport の <code>ApproveAuthorizationController@approve</code></td><td>auth・agreed・throttle:writes</td><td><a href="#s13">13</a></td></tr>
+          <tr><td><code>DELETE /oauth/authorize</code></td><td><code>passport.authorizations.deny</code> → Passport の <code>DenyAuthorizationController@deny</code></td><td>auth・agreed・throttle:writes</td><td><a href="#s13">13</a></td></tr>
+          <tr><td><code>DELETE /settings/ai/{app}</code></td><td><code>settings.ai.revoke</code> → <code>Settings\RevokeAiAppController</code></td><td>auth・agreed・throttle:writes</td><td><a href="#s13">13</a></td></tr>
+          <tr><td rowspan="3"><code>legal.php</code></td><td><code>GET /about</code></td><td><code>about</code> → <code>LegalController@about</code></td><td>なし</td><td>—</td></tr>
+          <tr><td><code>GET /privacy</code></td><td><code>privacy</code> → <code>LegalController@privacy</code></td><td>なし</td><td>—</td></tr>
+          <tr><td><code>GET /terms</code></td><td><code>terms</code> → <code>LegalController@terms</code></td><td>なし</td><td>—</td></tr>
+          <tr><td><code>routes/console.php</code></td><td>15分ごと・5分ごと・毎日</td><td><code>PullCalendarChanges</code>・<code>cache:prune-expired</code>・<code>passport:purge</code>・<code>ai:prune-apps</code></td><td>（画面の住所ではない。worker の箱が動かす）</td><td><a href="#s9">9</a>・<a href="#s2">2</a>・<a href="#s13">13</a></td></tr>
+        </tbody>
+      </table></div>
+      <p><code>legal.php</code> の3つは、ログインしていなくても見られる公開ページ（このアプリについて・プライバシーポリシー・利用規約）です。受付は画面を返すだけ（プライバシーポリシーと利用規約は <code>config/legal.php</code> の決まりごとの値も渡す）なので、この解説では1歩ずつは追いません。どれも見張り役は web のひとまとまりと全体の分だけです。</p>
+      <p><code>ai.php</code> の4つは、ChatGPT・Claude とつなぐときに利用者のブラウザで開く住所です。同意の画面（<code>/oauth/authorize</code>）は、通行証を出す Laravel の部品 <dfn>Passport</dfn>（OAuth という「本人に代わって読む許可」の決まりを Laravel で動かす部品）の受付をそのまま使い、ルート名も Passport と同じにしています。</p>
+      <p>このほかに、AI の会社のサーバーが呼ぶ住所が <code>src/routes/ai.php</code> にあります（通行証の出し方の案内 <code>/.well-known/…</code>・自己登録 <code>POST /oauth/register</code>・通行証 <code>POST /oauth/token</code>・窓口 <code>POST /mcp</code>）。こちらは web のひとまとまりの外で、AI とつなぐ部品 <code>laravel/mcp</code> が読み込みます。人のブラウザから来ないので、ログインの Cookie も CSRF の合言葉も使わず、代わりに通行証を確かめます。流れは <a href="#s13">13章</a> で追います。</p>
+    </li>
+  </ol>
+
+  <h3>受付から画面まで：層の分担</h3>
+  <ol class="steps">
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付は薄く、仕事は係に分ける（太らない MVC）</h4>
+      <p>見張り役を全部通ると、住所の表で決めた受付の関数が呼ばれます。推理手帳では、1つのファイルに1つの役目だけを持たせ、受付（コントローラー）を薄く保っています。役目の分け方と行数の上限は <code>.claude/rules/architecture.md</code> にあり、<code>bin/check</code> が機械でも確かめます。</p>
+      <div class="data"><b>層と置き場所</b><ul>
+        <li><b>受付（Controller）</b><code>src/app/Http/Controllers/{機能}/</code>：受け取る → 係を呼ぶ → 画面か転送を返す。1つの動作は10行くらいが目安。決まりそのものは持たない。</li>
+        <li><b>形の検証（FormRequest）</b><code>src/app/Http/Requests/{機能}/</code>：送られてきた値の形を確かめる（必須か・何文字までか・選べる値か）。だめなら受付まで届かずに元の画面へ戻す（入力とエラーを持って）。</li>
+        <li><b>権限（Policy）</b><code>src/app/Policies/</code>：この人がこの記録を見てよいか・直してよいか（持ち主か）。</li>
+        <li><b>用事（Action）</b><code>src/app/Actions/{機能}/</code>：1つの用事（手がかりを足す・答え合わせをする）を1つのクラスで。呼び出し口は <code>handle()</code> だけ。いくつもの表に書くときは、全部書くか全部書かないかのまとまり（<dfn>トランザクション</dfn>）にする。</li>
+        <li><b>読み出しのまとめ（Query）</b><code>src/app/Queries/{機能}/</code>：画面に出す一覧や集計を組み立てる。書き込みはしない。</li>
+        <li><b>外とのやりとり（Service）</b><code>src/app/Services/{相手}/</code>：Google カレンダーなど。テストのときに偽物に差し替えられるよう、窓口の型（<code>src/app/Contracts/</code>）越しに使う。ワトソンのひとことや週の集計のような「決まった規則の計算」もここ。</li>
+        <li><b>表（Model）</b><code>src/app/Models/</code>：データベースの1つの表を、プログラムから扱う形にしたもの（<code>CaseFile</code> は <code>case_files</code> 表、<code>Task</code> は <code>tasks</code> 表）。</li>
+        <li><b>列挙（Enum）</b><code>src/app/Enums/</code>：状態や種類（手がかりの「見た・聞いた・なかった」など）。画面の言葉は <code>config/suiri.php</code> から引く。</li>
+        <li><b>後回しの仕事（Job）</b><code>src/app/Jobs/</code>：Google への書き出し・取り込み。worker の箱が片づける。</li>
+        <li><b>画面（Blade）と部品</b><code>src/resources/views/{機能}/</code> と <code>src/resources/views/components/{分類}/</code>：HTML の型紙。画面は部品（<code>&lt;x-case-step.clue-card&gt;</code> など）を並べるだけ。</li>
+        <li><b>設定値と文言</b><code>src/config/suiri.php</code>（ワトソンは <code>watson.php</code>、決まりごとのページは <code>legal.php</code>、ChatGPT・Claude とつなぐ窓口は <code>ai_connect.php</code>）：数字・文言・選択肢。コードに直書きしない。</li>
+      </ul></div>
+      <div class="analogy"><b>たとえると</b>役所の窓口です。窓口の人（受付）は書類を受け取り、記入漏れの確認係（FormRequest）・本人確認係（Policy）・担当課（Action）・資料室（Query）に回し、できあがった書類を決まった様式（Blade）に書いて渡します。窓口の人自身は、決まりを覚えていなくてもよいのです。</div>
+      <figure class="shot"><img data-img="request-flow.svg" alt="手がかりを足したときの1つの操作の旅の図"><figcaption>1つの操作の旅：事件の画面で手がかりを書いて「これでOK」を押したとき（<a href="#s5">5章</a> でくわしく追う）</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>薄い受付の例：手がかりを足す</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/ClueController.php</div><pre><code>/** 手がかりを足して、事件の詳細の手がかりのところへ戻す */
+public function store(StoreClueRequest $request, CaseFile $case, AddClue $addClue): RedirectResponse
+{
+    $clue = $addClue-&gt;handle($case, $request-&gt;validated('kind'), $request-&gt;validated('body'));
+
+    return $this-&gt;backToCase($case, '手がかりを足しました。', [$clue-&gt;body], 'clues');
+}</code></pre></div>
+      <p>引数は Laravel が用意します。</p>
+      <ul>
+        <li><code>StoreClueRequest $request</code>：形の検証の係。引数にあるだけで、関数が動く前に検証が済みます。通った値だけを <code>validated('kind')</code> で取り出します。</li>
+        <li><code>CaseFile $case</code>：見張り役 <code>SubstituteBindings</code> が穴 <code>{case}</code> を替えておいた事件の行。持ち主かは <code>can</code> で確かめ済み。</li>
+        <li><code>AddClue $addClue</code>：手がかりを足す用事。Laravel がその場で作って渡します（<dfn>依存性の注入</dfn>：必要な道具を自分で作らず、外から渡してもらうしくみ）。</li>
+      </ul>
+      <p>受付がしているのは「用事を呼んで、事件の画面へ転送する」だけです。続きは <a href="#s5">5章</a> で追います。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>画面の言葉は config から引く（列挙と <code>label()</code>）</h4>
+      <p>手がかりの種類のような「決まった選択肢」は列挙（<dfn>Enum</dfn>）で表し、データベースには英語の値（<code>seen</code>）を入れ、画面の言葉（「見た」）は <code>config/suiri.php</code> から引きます。仕事の場面では言い方を変えられるよう、言葉をコードに直書きしません。</p>
+      <div class="code"><div class="file">src/app/Enums/ClueKind.php</div><pre><code>/** 手がかりの種類（見た・聞いた・なかった）。仕事の場面では言い方が変わる。clues.kind */
+enum ClueKind: string
+{
+    use HasLabel;
+
+    case Seen = 'seen';
+    case Heard = 'heard';
+    case Absent = 'absent';</code></pre></div>
+      <div class="code"><div class="file">src/app/Enums/Concerns/HasLabel.php</div><pre><code>/** 画面に出す言葉を返す。場面を渡すと、その場面の言い方にする（仕事の場面など） */
+public function label(?Scene $scene = null): string
+{
+    return Label::enum(static::labelGroup(), $this-&gt;value, $scene);
+}</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>画面の骨組みと、JavaScript は「使いやすくする」ためだけに足すこと</h4>
+      <p>ログインしたあとの画面は、どれも同じ骨組み（レイアウト）<code>&lt;x-layouts.app&gt;</code> の中に中身をはめこんで作ります。上に画面の名前と設定のアイコンの帯、スマホでは下に固定のナビ（今日・タスク・事件・手引き・ふりかえり）、パソコンでは左に縦のナビが付きます。</p>
+      <div class="code"><div class="file">src/resources/views/components/layouts/app.blade.php</div><pre><code>&lt;meta name="csrf-token" content="{{ csrf_token() }}"&gt;
+&lt;title&gt;{{ $title }}｜{{ config('app.name') }}&lt;/title&gt;
+{{-- …（省略）… --}}
+@vite(['resources/css/app.css', 'resources/js/app.js'])
+{{-- …（省略）… --}}
+&lt;main class="mx-auto {{ $width }} px-4 pt-4 pb-32 md:pt-6 md:pb-12"&gt;
+  &lt;x-ui.flash /&gt;
+  {{ $slot }}
+  &lt;x-layouts.footer class="mt-12" /&gt;
+&lt;/main&gt;</code></pre></div>
+      <ul>
+        <li><code>{{ … }}</code> は「値を画面にはめこむ」書き方です。中の文字は、HTML の記号として働かないように自動で置き換えられます（<code>&lt;</code> は <code>&amp;lt;</code> に）。利用者が書いた文に <code>&lt;script&gt;</code> と書いてあっても、プログラムとしては動きません。</li>
+        <li><code>@vite</code> は、ビルドした CSS と JavaScript のファイルを読み込む行を作ります。</li>
+        <li><code>&lt;x-ui.flash /&gt;</code> は、転送のときに渡したお知らせ（「手がかりを足しました。」など）を出す部品です。</li>
+        <li><code>{{ $slot }}</code> の所に、画面ごとの中身が入ります。</li>
+        <li><code>{{ $width }}</code> は中身の幅です。ふだんは <code>max-w-3xl</code>（スマホで読みやすい幅）で、左右2列に分ける事件の画面だけ、パソコンで広げます（<code>&lt;x-layouts.app title="…" wide&gt;</code>）。</li>
+      </ul>
+      <div class="code"><div class="file">src/resources/js/app.js</div><pre><code>/*
+  画面の動きの入口。ここは読み込むだけにして、動きは resources/js/parts/{部品}.js に1部品1ファイルで書く。
+  土台の部品（消す前の確認など）は JavaScript なしで動く（&lt;details&gt; を使う）。
+*/
+import './parts/suggest-chips.js';
+import './parts/minute-chips.js';
+import './parts/stepper.js';
+import './parts/ai-copy.js';</code></pre></div>
+      <p><code>app.js</code> は4つの部品の動きを読み込むだけです。どれも「使いやすくするために足した動き」で、保存はしません。</p>
+      <ul>
+        <li><code>suggest-chips.js</code>：提案のチップ（手がかりの問いかけ・別の説明の型・予想の穴埋め・確かめる日の候補）を押すと、入力欄に書き出しが入るだけ。送るのは本人です（<a href="#s5">5章</a>・<a href="#s6">6章</a>）。</li>
+        <li><code>minute-chips.js</code>：「何分かかりそう？」のよく使う分のボタンを押すと、分の欄に数が入る（<a href="#s3">3章</a>）。</li>
+        <li><code>stepper.js</code>：事件を作る画面で、1つのフォームの段を1問ずつ見せ、「つぎへ」で進める。送るのは最後の1回だけ（<a href="#s4">4章</a>）。</li>
+        <li><code>ai-copy.js</code>：写すボタンを押すと、欄の文を端末のクリップボードに写す。アプリからはどこにも送らない（<a href="#s13">13章</a>）。</li>
+      </ul>
+      <p>どの動きも、JavaScript が動かないときはボタンが隠れたままで、ふつうのフォームとして書いて送れます。推理手帳の画面の土台は、ふつうのフォームとリンクです。ボタンを押すとフォームが送られ、サーバーが記録を書いて転送し、ブラウザが新しい画面を開き直す、という1往復の繰り返しです。「消す前の確認」も、開け閉めできる HTML の部品 <code>&lt;details&gt;</code> で作っています。</p>
+      <div class="code"><div class="file">src/resources/views/components/ui/confirm.blade.php</div><pre><code>&lt;details {{ $attributes-&gt;class(['group']) }}&gt;
+{{-- …（省略）… --}}
+    &lt;form method="POST" action="{{ $action }}" class="mt-3"&gt;
+      @csrf
+      @method($method)
+      {{ $slot }}
+      &lt;x-ui.button variant="danger"&gt;{{ $confirmLabel }}&lt;/x-ui.button&gt;
+    &lt;/form&gt;
+  &lt;/div&gt;
+&lt;/details&gt;</code></pre></div>
+      <p><code>@csrf</code> は合言葉の隠し欄 <code>_token</code> を、<code>@method($method)</code> は隠し欄 <code>_method</code>（たとえば <code>DELETE</code>）を、フォームの中に作ります。</p>
+      <div class="point"><b>ここが大事</b>どの章でも、ブラウザの段は「フォームを送る」か「リンクを開く」です。サーバーの返事が転送（302）なら、ブラウザはすぐに転送先へ GET を送り直し、その返事の HTML を表示します。<a href="#s1">1章</a> からは、この往復を1歩ずつ追います。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>画面を待たせない仕事は worker の箱へ</h4>
+      <p>Google カレンダーへの書き出しのように、外のサービスを待つ仕事は、お願いの途中ではしません。「この仕事をあとでして」という札（<dfn>Job</dfn>）を <code>jobs</code> 表に積むだけにして、すぐに返事を返し、worker の箱の <code>queue:work</code> があとで片づけます。決まった時刻の仕事は <code>routes/console.php</code> に書いてあります。</p>
+      <div class="code"><div class="file">src/routes/console.php</div><pre><code>Schedule::job(new PullCalendarChanges)-&gt;cron('*/'.config('suiri.calendar.pull_every_minutes').' * * * *');
+
+// 期限の過ぎたキャッシュの行を5分ごとに消す（今日の予定の題名と時刻を、覚えておく5分を過ぎて表に残さないため）
+Schedule::command('cache:prune-expired')-&gt;everyFiveMinutes();</code></pre></div>
+      <p>タスクを保存すると書き出しの仕事が積まれるところは <a href="#s3">3章</a>、その仕事の中身と15分ごとの取り込みは <a href="#s9">9章</a>、今日の予定を5分だけ覚えておくところは <a href="#s2">2章</a> で追います。</p>
+      <div class="analogy"><b>たとえると</b>クリーニング店の受付です。服を預かったら引換券を渡してすぐに帰ってもらい（返事）、洗うのは奥の工場（worker）があとでします。客は洗い上がるまで店で待たなくてよいのです。</div>
+    </li>
+  </ol>
+
+  <div class="recap"><b>この章のまとめ</b><ol>
+    <li>どの行動も「お願い（リクエスト）」と「返事（レスポンス）」の1往復。推理手帳の返事は、ほとんどが HTML か転送。</li>
+    <li>サーバーは web・app・db・worker の4つの箱。web がファイルならそのまま返し、ほかは <code>public/index.php</code> から Laravel へ。</li>
+    <li>見張り役は「全体 → web のひとまとまり → 住所ごと（auth・agreed・guest・throttle・can）」。Laravel の優先順位の表で並べ替えてから動き、<code>can</code> は住所の番号を行に替えたあとに動く。</li>
+    <li><code>routes/web.php</code> は <code>routes/web/{機能}.php</code> を読み込むだけ。ログインが要る住所は <code>['auth', 'agreed']</code> の囲み、書き込みは <code>throttle:writes</code>、記録の番号がある住所は <code>-&gt;can()</code>。AI の会社のサーバーが呼ぶ住所だけは別の <code>routes/ai.php</code> で、web のひとまとまりの外（<a href="#s13">13章</a>）。</li>
+    <li>受付は薄く、形の検証（FormRequest）・権限（Policy）・用事（Action）・読み出し（Query）・外とのやりとり（Service）・画面の部品に分ける。外を待つ仕事は Job にして worker の箱へ。</li>
+  </ol></div>
+</section>

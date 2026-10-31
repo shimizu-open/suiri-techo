@@ -1,0 +1,709 @@
+<section class="story" id="s6">
+  <h2><span class="no">6</span>もしそうなら：予想を立てる</h2>
+  <p class="userstory">見立てを立てた人として、その見立てが本当かどうかを、あとで確かめられる形にしておきたい。だから、事件の画面の「もしそうなら、何が見える？」のカードで、1問ずつ「〜が見えるはず」・どのくらい自信があるか・いつ確かめるかに答えて保存する。</p>
+  <p class="summary">この章で追う道筋：「もしそうなら、何が見える？」のカード（<code>case-step/predict-card</code>。1問ずつ・穴埋めの型と確かめる日の候補のチップ）→ <code>POST /hypotheses/{hypothesis}/predictions</code> → 見張り役（web のひとまとまり → <code>auth</code> → <code>throttle:writes</code> → <code>SubstituteBindings</code> → <code>agreed</code> → <code>can:write,hypothesis</code>）→ 形の検証 <code>StorePredictionRequest</code> → 受付 <code>PredictionController::store</code> → 用事 <code>MakePrediction</code>（<code>predictions</code> 表に1行 ＋ 確かめるタスクを <code>tasks</code> 表に1行）→ 見張り係 <code>TaskObserver</code> がカレンダーへの書き出しを予約 → 事件の画面へ転送 → 「〇月〇日に確かめよう」のカード。後半で「予想の文と確かさが書き換えられない仕組み」と「取り下げ」（<code>POST /predictions/{prediction}/withdraw</code>）も追います。</p>
+
+  <ol class="steps">
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>「もしそうなら、何が見える？」のカードが出るとき</h4>
+      <p>事件の画面（<code>GET /cases/{case}</code>）は、いまやることのカードを1枚だけ出します（<a href="#s5">5章</a>）。予想を立てるカードが出るのは、次のどれかのときです。</p>
+      <ul>
+        <li>いまの一手（<code>NextStep</code>）が <code>predict</code>：生きている（「消えた」でない）見立てがあり、答え合わせ待ちの予想がない。対象は有力な見立て、なければ最初の見立てです。</li>
+        <li>○× のカードの「次へ：もしそうならを考える」か「とばす」、見直しのカードの「もしそうならを立てる」を押した：住所が <code>?open=predict-12</code>（12 は見立ての番号）になり、その見立ての予想のカードを頼みます。</li>
+      </ul>
+      <p>机の部品 <code>case-step/desk</code> は、<code>?open=predict-12</code> の見立てを、<b>生きている見立ての中から</b>探します（<code>$asked</code>）。相棒モードで見せ合う前なら探しません（見せ合う前は、見立てを隠して書く段なので予想はまだ。<a href="#s8">8章</a>）。閉じた事件なら、何を頼まれても閉じたカードです。見つかれば、カードの種類は <code>predict</code> です。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/desk.blade.php</div><pre><code>@php($asked = $case-&gt;hidesHypotheses() ? null : $alive-&gt;firstWhere('id', $openId('predict-') ?? $openId('fit-')))
+{{-- …（省略）… --}}
+    $asked !== null =&gt; 'predict',</code></pre></div>
+      <div class="code"><div class="file">src/resources/views/components/case-step/now.blade.php</div><pre><code>@case('predict')
+  &lt;x-case-step.predict-card :case="$case" :hypothesis="$target" :kid="$kid" :number="$number" :total="$total" :note="$note"
+    :prompt="$prompts['prediction'] ?? null" :template="$suggest['templates'][$target-&gt;id] ?? null" :dates="$suggest['dates'] ?? []"
+    :attic="$suggest['attic'] ?? []" :attic-options="$atticOptions" :today="$today" :check-default="$checkDefault" /&gt;
+  @break</code></pre></div>
+      <p>だから「消えた」見立てや、他人の見立ての番号を <code>?open=</code> に書いても、予想のカードにはなりません（いま見えている見立ての中にないため）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>カードに入る値は、事件の画面を作るときに用意してある（<code>CaseBoardQuery</code>）</h4>
+      <p>カードに入る「確かめる日の初めの値」「選べる屋根裏の知識」「書き出しの提案」は、事件の画面を作るときに、組み立て係 <code>CaseBoardQuery</code> がまとめて用意しています。</p>
+      <div class="code"><div class="file">src/app/Queries/Cases/CaseBoardQuery.php</div><pre><code>$suggest = $this-&gt;suggestions-&gt;for($case, $user, $visible, $kid, $today);
+$attic = $user-&gt;atticNotes()-&gt;latest('id')-&gt;limit(config('suiri.cases.attic_options'))-&gt;pluck('rule', 'id')-&gt;all();
+// …（省略）…
+// 予想で選べる屋根裏の知識。提案した知識が新しい順の件数から外れていても選べるよう、後ろに足す
+'atticOptions' =&gt; $attic + collect($suggest['attic'])-&gt;pluck('rule', 'id')-&gt;all(),
+'suggest' =&gt; $suggest,
+// …（省略）…
+'open' =&gt; $open,
+'today' =&gt; $today,
+'checkDefault' =&gt; today()-&gt;addDays(config('suiri.cases.check_after_days'))-&gt;toDateString(),</code></pre></div>
+      <ul>
+        <li><code>atticOptions</code>：この人の屋根裏の棚（わかった一般則の置き場）から、新しい順に50件まで（<code>config/suiri.php</code> の <code>attic_options</code>）。<code>pluck('rule', 'id')</code> で「番号 =&gt; 決まりの文」の形にします。<code>$user-&gt;atticNotes()</code> から読むので、他人の棚の知識は最初から入りません。</li>
+        <li><code>checkDefault</code>：確かめる日の初めの値。今日から <code>check_after_days</code>（1）日後、つまり明日です。</li>
+        <li><code>suggest</code>：入力欄の書き出しの提案（AI なし。要件定義書の 4-10）。予想のカードには、穴埋めの型（<code>templates</code>）・確かめる日の候補（<code>dates</code>）・屋根裏の棚の候補（<code>attic</code>）が渡ります。押すと欄に入るだけで、保存は本人がします（<a href="#s5">5章</a>の提案のチップと同じ部品）。</li>
+        <li><code>open</code>：住所の <code>?open=predict-12</code>（前の手順）。</li>
+      </ul>
+      <div class="code"><div class="file">src/app/Queries/Cases/SuggestionsQuery.php</div><pre><code>// 予想を立てる欄が出る見立て（見せ合ったあとの、消えていない見立て）
+$predictable = $case-&gt;hidesHypotheses() ? collect() : $visible-&gt;reject-&gt;isEliminated();
+// …（省略）…
+'templates' =&gt; $predictable-&gt;mapWithKeys(fn ($h) =&gt; [$h-&gt;id =&gt; $this-&gt;starters-&gt;predictionTemplate($h-&gt;body, $case-&gt;scene, $kid)])-&gt;all(),
+// 予想を立てる欄が1つもなければ、確かめる日の候補は要らない（カレンダーも読まない）
+'dates' =&gt; $predictable-&gt;isEmpty() ? [] : $this-&gt;dates-&gt;for($case, $user, $today),</code></pre></div>
+      <p>穴埋めの型は、見立ての本文を入れた「もし『…』が正しいなら、＿＿のときは＿＿のはず」です（仕事の場面は「次回＿＿のときは」、親子の人は短い言い方）。</p>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'default' =&gt; 'もし『:hypothesis』が正しいなら、＿＿のときは＿＿のはず',
+// …（省略）…
+'blank' =&gt; '＿＿',                // 穴埋めの印（予想の文にこれが残っていたら、保存の前に書き換えてもらう）</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>カードは1問ずつ：書くまで次の問いを隠す</h4>
+      <p>予想のカード（部品 <code>case-step/predict-card</code>）は、問いを3つ持っています。① 見えるはずのこと → ② どのくらい自信ある？ → ③ いつ確かめる？。一度に全部を見せると多く感じるので、<b>前の問いに答えるまで、次の問いを隠します</b>。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/predict-card.blade.php</div><pre><code>&lt;form method="POST" action="{{ route('predictions.store', $hypothesis) }}" class="group/predict space-y-5"&gt;
+  @csrf
+  &lt;input type="hidden" name="form_key" value="predict-{{ $hypothesis-&gt;id }}"&gt;
+  {{-- …（省略）… --}}
+    &lt;x-ui.textarea id="f-step-statement" name="statement" :label="$t('predict.label')" rows="2" required
+      :maxlength="config('suiri.limits.prediction_statement')" :placeholder="$t('predict.placeholder')" /&gt;
+    &lt;x-case.suggest-chips :items="filled($template) ? [['label' =&gt; $t('predict.template'), 'text' =&gt; $template]] : []" target="f-step-statement" /&gt;
+  {{-- …（省略）… --}}
+  {{-- ② と ③：見えるはずのことを書くまで隠す --}}
+  &lt;div class="space-y-5 group-has-[textarea[name=statement]:placeholder-shown]/predict:hidden"&gt;
+    &lt;x-case-step.confidence :label="$t('predict.confidence')" :kid="$kid" /&gt;
+    {{-- ③：自信を選ぶまで隠す --}}
+    &lt;div class="space-y-4 group-not-has-[input[name=confidence]:checked]/predict:hidden"&gt;</code></pre></div>
+      <ul>
+        <li>カードの上には、もとの見立ての本文を引用して出します（何についての予想かを見失わないため）。</li>
+        <li>「型を使う」のチップを押すと、欄に穴埋めの型が入ります。＿＿ の所を自分の言葉に書き換えて使います。</li>
+        <li><code>route('predictions.store', $hypothesis)</code>：送り先の住所 <code>/hypotheses/12/predictions</code> を、ルート名から作ります（<a href="#s0">0章</a>）。</li>
+        <li><code>@csrf</code>：ほかのサイトからのニセの送信でないことを示す合言葉の隠し欄（<a href="#s11">11章</a>）。</li>
+      </ul>
+      <p>隠す仕組みは JavaScript ではなく CSS です。<dfn>:has</dfn> は「中に〜を持っている箱」を選ぶ CSS の書き方で、Tailwind の <code>group-has-[…]/predict:hidden</code> は「名前 <code>predict</code> の箱（フォーム）が、中に〜を持っている間は隠す」という意味になります。</p>
+      <ul>
+        <li><code>textarea[name=statement]:placeholder-shown</code>：文の欄に、まだうすい例の文（placeholder）が見えている＝何も書いていない間は、② と ③ を隠します。</li>
+        <li><code>group-not-has-[input[name=confidence]:checked]</code>：自信の札がどれも選ばれていない間は、③ を隠します。</li>
+      </ul>
+      <p>:has が使えない古い端末では、隠す決まりが効かず、3つの問いが縦に全部並びます（それでも書いて送れます）。主なボタンは、いつもカードの下にあります。</p>
+      <div class="analogy"><b>たとえると</b>アンケートの用紙を1枚ずつめくって渡されるようなものです。1問目に答えると2問目が見え、2問目に答えると3問目が見えます。</div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>② どのくらい自信ある？（確かさの札）</h4>
+      <p><dfn>確かさ</dfn>は「この予想が当たると思う度合い」です。部品 <code>case-step/confidence</code> が、50％から95％まで5刻みの大きな札を並べます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/confidence.blade.php</div><pre><code>@foreach (config('suiri.confidence.choices') as $value =&gt; $choice)
+  &lt;label class="cursor-pointer"&gt;
+    &lt;input type="radio" name="confidence" value="{{ $value }}" required class="peer sr-only" @checked((int) old('confidence') === $value)&gt;
+    {{-- …（省略）… --}}
+      &lt;span class="text-lg font-bold"&gt;{{ $value }}%&lt;/span&gt;
+      &lt;span class="mt-0.5 text-xs"&gt;{{ $kid ? $choice['kid'] : $choice['hint'] }}&lt;/span&gt;</code></pre></div>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'confidence' =&gt; [
+    'min' =&gt; 50,
+    'max' =&gt; 95,
+    'step' =&gt; 5,
+    'choices' =&gt; [
+        50 =&gt; ['hint' =&gt; '五分五分', 'kid' =&gt; 'はんぶん はんぶん'],
+        // …（省略）…
+        95 =&gt; ['hint' =&gt; 'ほぼ間違いない', 'kid' =&gt; 'ぜったいに近い'],
+    ],
+],</code></pre></div>
+      <ul>
+        <li>札の中身は、ラジオボタン（<code>sr-only</code> で見えなくしたもの）と、その上の数と目安の言葉です。札を押すと、中のラジオボタンが選ばれます。</li>
+        <li>100％ を置かないのは、「絶対」と思いこまずに、外れる見込みを少しでも残して考えるためです。</li>
+        <li>初めはどの札も選ばれていません（自分で選んでもらうため）。入力の誤りで戻ったときだけ、前に選んだ札を選んでおきます（<code>old('confidence')</code>）。</li>
+      </ul>
+    </li>
+
+    <li class="step">
+      <span class="who js">画面のプログラム</span>
+      <h4>③ いつ確かめる？（大きな日付と、すぐ選べる日のボタン）</h4>
+      <p>部品 <code>case-step/check-date</code> が、大きな日付の欄と、その下に「明日」「3日後」「1週間後」のボタンを並べます。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/check-date.blade.php</div><pre><code>&lt;input id="f-step-check-on" type="date" name="check_on" required min="{{ $today }}" value="{{ old('check_on', $checkDefault) }}"
+{{-- …（省略）… --}}
+@foreach ($dates as $date)
+  &lt;button type="button" data-suggest data-date="{{ $date['date'] }}" data-time="{{ $date['time'] ?? '' }}" @class([</code></pre></div>
+      <ul>
+        <li>日付の欄の初めの値は明日（<code>$checkDefault</code>）。<code>min="{{ $today }}"</code> で、ブラウザの日付選びでも今日より前を選べないようにしています（ただし、ブラウザの制限は書き換えられるので、本当の守りはサーバーの検証です。あとの手順）。</li>
+        <li>ボタンは <a href="#s5">5章</a>の提案のチップと同じ印 <code>data-suggest</code> を持ち、押すと <code>suggest-chips.js</code> が日付（時刻があれば時刻も）を欄に入れます。送信はしません。</li>
+      </ul>
+      <p>候補を作るのは係 <code>CheckDateSuggestionsQuery</code> です。すぐ選べる日のほかに、カレンダーとつないでいる人には「次の『◯◯』の日」も出します。</p>
+      <div class="code"><div class="file">src/app/Queries/Cases/CheckDateSuggestionsQuery.php</div><pre><code>$alive = $case-&gt;hypotheses-&gt;filter(fn ($h) =&gt; ! $h-&gt;isEliminated())-&gt;pluck('body')-&gt;all();
+$grams = WordOverlap::grams($case-&gt;title, ...$case-&gt;clues-&gt;pluck('body')-&gt;all(), ...$alive);
+// カレンダーとつないでいない・切れた人、事件に言葉のかけらがないときは、予定を読まずに何も出さない
+if (! $user-&gt;calendarConnection?-&gt;isActive() || $grams === []) {
+    return [];
+}
+
+return collect($this-&gt;calendar-&gt;upcoming($user, (int) config('suiri.suggest.check_dates.calendar_days')))
+    -&gt;map(fn (array $event) =&gt; $event + ['score' =&gt; WordOverlap::score($grams, $event['title'])])
+    -&gt;filter(fn (array $event) =&gt; $event['score'] &gt; 0)</code></pre></div>
+      <ul>
+        <li>事件のなぞ・手がかり・消えていない見立てから、言葉のかけら（漢字2文字・カタカナと英数字3文字。<code>App\Support\WordOverlap</code>）を集めます。</li>
+        <li>これから14日分の自分の予定（<code>CalendarAgenda::upcoming</code>）のうち、題名にそのかけらが重なる予定だけを、重なりの多い順に3件まで選び、「次の『朝の電車』の日（11/4 火）」のようなボタンにします。押すと、その日と始まる時刻が入ります。</li>
+        <li>予定の題名は画面に出すだけで、どこにも保存しません。カレンダーとつないでいない人には、問い合わせもしません。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む（つないでいる人だけ）：Google カレンダーの、これからの自分の予定の題名と日時（窓口 <code>CalendarAgenda</code>。<a href="#s9">9章</a>）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>「この日に確かめる」を押す（保存したら直せないことを先に知らせる）</h4>
+      <p>③ の下には、時刻と「前にわかったことを使う」（屋根裏の知識を選ぶ欄。棚に知識があるときだけ）をたたんだ1行と、保存したら直せないことの知らせがあります。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/predict-card.blade.php</div><pre><code>&lt;x-ui.field type="time" name="check_at" id="f-step-check-at" :label="$t('predict.check_at')" /&gt;
+{{-- …（省略）… --}}
+&lt;select id="f-step-attic" name="attic_note_id" class="{{ $input }}"&gt;
+{{-- …（省略）… --}}
+&lt;p class="rounded-xl bg-mark px-4 py-3 text-sm leading-relaxed"&gt;{{ $t('predict.lock') }}&lt;/p&gt;
+{{-- …（省略）… --}}
+&lt;x-ui.big-button tone="prediction" icon="calendar"&gt;{{ $t('predict.button') }}&lt;/x-ui.big-button&gt;</code></pre></div>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'lock' =&gt; '保存すると、この文と自信は直せないよ。考えが変わったら、新しく立てよう。',
+'button' =&gt; 'この日に確かめる',</code></pre></div>
+      <ul>
+        <li>屋根裏の知識を選ぶと「この知識とこの手がかりから、この予想」と結べます。棚の候補のチップ（「前にわかったこと：…」）を押すと、その知識が選ばれます。</li>
+        <li>主なボタン「この日に確かめる」を押すと、フォームが送られます。</li>
+      </ul>
+      <figure class="shot"><img data-img="screen-case-step-predict.png" alt="予想を立てるカードで3つの問いに答えたところ。見えるはずのことの欄、自信の札、いつ確かめる？の大きな日付と明日・3日後・1週間後、保存すると直せない知らせ、「この日に確かめる」"><figcaption>3つの問いに答えたところ（スマホ）。主なボタンの下に、言葉の一言の説明の吹き出し</figcaption></figure>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>送る：<code>POST /hypotheses/12/predictions</code>（見立ての番号が 12 のとき）</li>
+        <li>送る：<code>_token</code>（合言葉）・<code>form_key=predict-12</code>・<code>statement</code>（例：前の駅の乗り降りのせいなら、前の駅を出る時刻の表示も3分ほど遅れているはず）・<code>confidence=75</code>・<code>check_on=2026-10-31</code>・<code>check_at=07:40</code>・（あれば）<code>attic_note_id</code></li>
+        <li>送る：クッキー（セッションの番号札。<a href="#s1">1章</a>）</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>住所の表で行き先を決める（<code>routes/web/cases.php</code>）</h4>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>Route::middleware(['auth', 'agreed'])-&gt;group(function () {
+    // …（省略）…
+    Route::middleware('throttle:writes')-&gt;group(function () {
+        // …（省略）…
+        Route::post('/hypotheses/{hypothesis}/predictions', [PredictionController::class, 'store'])-&gt;can('write', 'hypothesis')-&gt;name('predictions.store');</code></pre></div>
+      <p>この1行は、<code>auth</code>・<code>agreed</code> の囲みと、<code>throttle:writes</code> の囲みの中にあります。住所の <code>{hypothesis}</code> は<dfn>穴（ルートパラメータ）</dfn>で、<code>/hypotheses/12/predictions</code> なら穴に <code>12</code> が入ります。行き先は <code>PredictionController</code> の <code>store</code> 関数です。最後の <code>-&gt;can('write', 'hypothesis')</code> は「この見立てに書き込んでよい人か（持ち主で、事件が捜査中か）」を確かめる見張り役を足す書き方です（あとの手順）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4>見張り役が並ぶ順番</h4>
+      <p>Laravel は見張り役を決まった優先順位に並べ替えてから動かします（<a href="#s0">0章</a>）。この住所で実際に動く順を Laravel に出させると、次のとおりでした。</p>
+      <ol>
+        <li><code>EncryptCookies</code>・<code>AddQueuedCookiesToResponse</code>・<code>StartSession</code>・<code>ShareErrorsFromSession</code>：クッキーとセッションの準備（<a href="#s1">1章</a>）</li>
+        <li><code>PreventRequestForgery</code>：合言葉 <code>_token</code> を確かめる（<a href="#s11">11章</a>）</li>
+        <li><code>Authenticate</code>（<code>auth</code>）：ログインしているか（<a href="#s1">1章</a>）</li>
+        <li><code>ThrottleRequests:writes</code>：書きこみが1分に60回を超えていないか（<a href="#s11">11章</a>）</li>
+        <li><code>SubstituteBindings</code>：穴の <code>12</code> を見立ての行に取り換える</li>
+        <li><code>EnsureAgreed</code>（<code>agreed</code>）：利用規約などに同意しているか（<a href="#s1">1章</a>）</li>
+        <li><code>Authorize:write,hypothesis</code>（<code>can</code>）：この見立ての持ち主で、事件が捜査中か</li>
+      </ol>
+      <div class="point"><b>ここが大事</b>持ち主かどうかの確かめ（<code>Authorize</code>）は、いちばん最後です。持ち主を確かめるには見立ての行が要るので、穴を行に取り換える <code>SubstituteBindings</code> より後でなければなりません。</div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>SubstituteBindings</code>：穴の <code>12</code> を見立ての行に替える</h4>
+      <p>受付の関数は <code>store(StorePredictionRequest $request, Hypothesis $hypothesis, …)</code> のように、引数で <code>Hypothesis</code>（見立ての表 <code>hypotheses</code> の1行を表すモデル）を欲しがっています。<code>SubstituteBindings</code> は、穴の名前 <code>hypothesis</code> と引数の名前 <code>$hypothesis</code> が同じなのを見て、<code>hypotheses</code> 表から <code>id = 12</code> の行を読み、穴の中身をその行に入れ替えます。この働きを<dfn>ルートモデルバインディング</dfn>（住所とモデルを結びつけること）と呼びます。</p>
+      <ul>
+        <li>そんな番号の見立てがなければ、ここで「404（見つからない）」になり、受付まで届きません。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul><li>読む：<code>hypotheses</code> の1行（<code>id = 12</code>）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who mw">見張り役</span>
+      <h4><code>can:write,hypothesis</code>：この見立ての持ち主で、事件が捜査中か（Policy）</h4>
+      <p>ルートの <code>-&gt;can('write', 'hypothesis')</code> は、Laravel の中で「<code>can:write,hypothesis</code> という見張り役を足す」に置き換わります。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Routing/Route.php</div><pre><code>public function can($ability, $models = [])
+{
+    $ability = enum_value($ability);
+
+    return empty($models)
+        ? $this-&gt;middleware(['can:'.$ability])
+        : $this-&gt;middleware(['can:'.$ability.','.implode(',', Arr::wrap($models))]);
+}</code></pre></div>
+      <p>その見張り役 <code>Authorize</code> は、穴 <code>hypothesis</code> の中身（もう見立ての行になっている）を取り出し、門番（<code>Gate</code>）に「この人は、この見立てに <code>write</code>（書き込む）してよいか」と聞きます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Auth/Middleware/Authorize.php</div><pre><code>public function handle($request, Closure $next, $ability, ...$models)
+{
+    $this-&gt;gate-&gt;authorize($ability, $this-&gt;getGateArguments($request, $models));
+
+    return $next($request);
+}</code></pre></div>
+      <p>門番は、モデルの名前から決まりの係 <dfn>Policy</dfn>（だれが何をしてよいかを決める係）を見つけます。<code>Hypothesis</code> なら <code>HypothesisPolicy</code> です。中身は「持ち主だけ」の共通部品 <code>OwnerOnly</code> と、「捜査中の事件にだけ書き込める」の共通部品 <code>WritesOpenCase</code> を使うだけです。</p>
+      <div class="code"><div class="file">src/app/Policies/HypothesisPolicy.php</div><pre><code>class HypothesisPolicy
+{
+    use OwnerOnly, WritesOpenCase;
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Policies/Concerns/WritesOpenCase.php</div><pre><code>public function write(User $user, Model $record): Response
+{
+    // 持ち主でなければ断る（他人の記録は、閉じているかどうかを知らせずに 403）
+    if (! $this-&gt;owns($user, $record)) {
+        return Response::deny();
+    }
+
+    $case = $record instanceof CaseFile ? $record : $record-&gt;getAttribute('caseFile');
+
+    // 事件が捜査中なら通し、閉じていれば開き直すよう伝えて断る
+    return $case-&gt;isOpen() ? Response::allow() : Response::deny(config('suiri.cases.closed_message'));
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Policies/Concerns/OwnerOnly.php</div><pre><code>/** 記録の持ち主がこの人かを返す（型をそろえて比べる） */
+protected function owns(User $user, Model $record): bool
+{
+    return (int) $record-&gt;getAttribute('user_id') === (int) $user-&gt;getKey();
+}</code></pre></div>
+      <p>まず見立ての行の <code>user_id</code> と、ログイン中の人の <code>id</code> が同じかを <code>owns</code> で見ます。違えば「403（してはいけない）」です。次に、見立ての事件（<code>caseFile</code>）が捜査中かを見て、閉じた（解決・迷宮入り）事件なら「事件を開き直してください」の文つきで 403 にします。予想を立てるのは「その見立てに書き足すこと」なので、見立ての <code>write</code> の権利で確かめています。</p>
+      <div class="analogy"><b>たとえると</b>ロッカーに物を入れる前に、係の人が「このロッカーの鍵の名札が、あなたの名前と同じか」を見るようなものです。番号を書き換えて他人のロッカーを指しても、名札が違うので開けられません。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>形の検証の係 <code>StorePredictionRequest</code> が呼ばれる順番</h4>
+      <p>受付の関数の引数に <code>StorePredictionRequest</code> と書いてあるので、Laravel は受付を呼ぶ前にこの係を作り、送られてきた中身を確かめさせます。<dfn>FormRequest</dfn>（形の検証の係）は、次の順に動きます。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Validation/ValidatesWhenResolvedTrait.php</div><pre><code>public function validateResolved()
+{
+    $this-&gt;prepareForValidation();
+
+    if (! $this-&gt;passesAuthorization()) {
+        $this-&gt;failedAuthorization();
+    }
+
+    $instance = $this-&gt;getValidatorInstance();
+    // …（省略）…
+    if ($instance-&gt;fails()) {
+        $this-&gt;failedValidation($instance);
+    }
+
+    $this-&gt;passedValidation();
+}</code></pre></div>
+      <ol>
+        <li><code>prepareForValidation</code>：確かめる前の下ごしらえ。</li>
+        <li><code>passesAuthorization</code>：この係の <code>authorize()</code> を呼ぶ。<code>false</code> なら <code>failedAuthorization</code> で「403」。</li>
+        <li><code>rules()</code> の決まりで中身を確かめる。合わなければ <code>failedValidation</code> で、入力の間違いを持って元の画面へ戻す。</li>
+      </ol>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4><code>StorePredictionRequest</code> の中身：見せ合ったあとか・文・確かさ・確かめる日</h4>
+      <div class="code"><div class="file">src/app/Http/Requests/Cases/StorePredictionRequest.php</div><pre><code>/** 相棒モードなら見せ合ったあとの事件だけ予想を立てられる（持ち主か・捜査中かはルートの -&gt;can('write', 'hypothesis') で確かめ済み） */
+public function authorize(): bool
+{
+    return ! $this-&gt;route('hypothesis')-&gt;caseFile-&gt;hidesHypotheses();
+}
+
+/** 送る前に、文の前後の空白を取る */
+protected function prepareForValidation(): void
+{
+    $this-&gt;merge(['statement' =&gt; trim((string) $this-&gt;input('statement'))]);
+}
+
+/**
+ * 項目ごとの決まり（確かさの選択肢は config/suiri.php の confidence.choices）。
+ * 文に穴埋めの印（＿＿。予想の穴埋めの提案 S-3 が入れる）が残っていたら通さない（保存後は直せないため、書き換えてから保存してもらう）
+ */
+public function rules(): array
+{
+    return [
+        'statement' =&gt; ['required', 'string', 'max:'.config('suiri.limits.prediction_statement'), 'not_regex:/'.preg_quote(config('suiri.suggest.blank'), '/').'/u'],
+        'confidence' =&gt; ['required', 'integer', Rule::in(array_keys(config('suiri.confidence.choices')))],
+        'check_on' =&gt; ['required', 'date_format:Y-m-d', 'after_or_equal:today'],
+        'check_at' =&gt; ['nullable', 'date_format:H:i'],
+        'attic_note_id' =&gt; ['nullable', 'integer', Rule::exists('attic_notes', 'id')-&gt;where('user_id', $this-&gt;user()-&gt;id)],
+    ];
+}</code></pre></div>
+      <ul>
+        <li><b>authorize</b>：見立ての事件（<code>caseFile</code>）が相棒モードの見せ合う前でないときだけ通します（見せ合う前なら 403）。持ち主か・事件が捜査中かは、もう前の見張り役（<code>write</code>）で確かめ済みです。画面では閉じた事件に予想のカードを出しませんが、住所を直接打って送られることもあるので、見張り役がサーバーでも止めます。</li>
+        <li><b>statement</b>（予想の文）：必ず要る。前後の空白を取ったうえで300字まで（<code>config/suiri.php</code> の <code>limits.prediction_statement</code>。表の列の長さと同じ）。さらに <code>not_regex</code>（この形を含んでいたら通さない）で、穴埋めの印 <code>＿＿</code> が残った文を断ります。「型を使う」で入れた型を書き換えずに保存すると、あとで直せないまま「＿＿」の予想が残ってしまうからです。</li>
+        <li><b>confidence</b>（確かさ）：<code>Rule::in</code> で、設定の選択肢の数（50・55・…・95）のどれかだけを受け付けます。72 や 100 は通りません。</li>
+        <li><b>check_on</b>（確かめる日）：<code>2026-10-31</code> の形で、今日以降（<code>after_or_equal:today</code>）。アプリの時計は日本時間（<code>config/app.php</code> の <code>timezone</code> が <code>Asia/Tokyo</code>）なので、「今日」は日本の今日です。</li>
+        <li><b>check_at</b>（確かめる時刻）：なくてもよい。あれば <code>07:40</code> の形。</li>
+        <li><b>attic_note_id</b>（使う屋根裏の知識）：なくてもよい。あれば <code>attic_notes</code> 表に「その番号で、しかも <code>user_id</code> がこの人」の行があるときだけ通します。他人の棚の知識の番号を送っても使えません。</li>
+      </ul>
+      <p>どれかが合わなければ、Laravel は入力の間違いと前の入力をセッションに預けて、送る前に開いていた住所（<code>/cases/12?open=predict-12</code> か <code>/cases/12</code>）へ転送します。同じ予想のカードがもう一度出て、文の欄・自信の札・確かめる日には前に入れた値（<code>old(…)</code>）が戻り、誤りのある欄の下に誤りの文が出ます。文が入っているので、隠していた ② と ③ も最初から見えます。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>受付 <code>PredictionController::store</code>：用事に頼んで、事件の画面へ戻す</h4>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/PredictionController.php</div><pre><code>/** 予想を立てて（確かめるタスクも作って）、その見立てのところへ戻す */
+public function store(StorePredictionRequest $request, Hypothesis $hypothesis, MakePrediction $makePrediction): RedirectResponse
+{
+    $prediction = $makePrediction-&gt;handle($hypothesis, $request-&gt;validated());
+
+    return $this-&gt;backToCase(
+        $hypothesis-&gt;caseFile,
+        '予想を立てました。確かめる日（'.Carbon::parse($prediction-&gt;check_on)-&gt;isoFormat('M月D日').'）のタスクを作りました。',
+        [$prediction-&gt;statement],
+        'hyp-'.$hypothesis-&gt;id,
+    );
+}</code></pre></div>
+      <p>受付（コントローラー）は薄く作る決まりなので、すること2つだけです。</p>
+      <ol>
+        <li>用事の係 <code>MakePrediction</code> に、見立てと「確かめ済みの入力」（<code>$request-&gt;validated()</code>）を渡して、予想を作ってもらう。<code>validated()</code> は <code>rules()</code> に書いた項目だけを返すので、<code>user_id</code> などを勝手に足して送られても、ここには入りません。</li>
+        <li>事件の画面へ戻す（手順18）。</li>
+      </ol>
+      <p><code>MakePrediction $makePrediction</code> の引数は、Laravel がその場で作って渡します（<a href="#s0">0章</a>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>用事 <code>MakePrediction</code>：予想とタスクを「ひとまとまり」で書く</h4>
+      <div class="code"><div class="file">src/app/Actions/Cases/MakePrediction.php</div><pre><code>/** 予想と確かめるタスクを作って、予想を返す。$data は statement・confidence・check_on・check_at・attic_note_id */
+public function handle(Hypothesis $hypothesis, array $data): Prediction
+{
+    return DB::transaction(function () use ($hypothesis, $data) {
+        $prediction = $hypothesis-&gt;predictions()-&gt;create([
+            'case_file_id' =&gt; $hypothesis-&gt;case_file_id,
+            'user_id' =&gt; $hypothesis-&gt;user_id,
+            'statement' =&gt; $data['statement'],
+            'confidence' =&gt; (int) $data['confidence'],
+            'check_on' =&gt; $data['check_on'],
+            'check_at' =&gt; $data['check_at'] ?? null,
+            'attic_note_id' =&gt; $data['attic_note_id'] ?? null,
+        ]);</code></pre></div>
+      <p><code>DB::transaction(function () { … })</code> の中に書いたデータベースへの書きこみは、<dfn>トランザクション</dfn>（全部まとめて成功させるか、全部なかったことにするかの、ひとまとまり）になります。</p>
+      <div class="analogy"><b>たとえると</b>銀行の振りこみです。「Aさんの口座から引く」と「Bさんの口座に足す」の片方だけが起きると困ります。どちらも終わってはじめて「確定」の判を押し、途中で失敗したら両方を取り消します。</div>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Database/Concerns/ManagesTransactions.php</div><pre><code>public function transaction(Closure $callback, $attempts = 1)
+{
+    for ($currentAttempt = 1; $currentAttempt &lt;= $attempts; $currentAttempt++) {
+        $this-&gt;beginTransaction();
+        // …（省略）…
+        try {
+            $callbackResult = $callback($this);
+        }
+        // …（省略）…
+        catch (Throwable $e) {
+            $this-&gt;handleTransactionException(
+                $e, $currentAttempt, $attempts
+            );
+
+            continue;
+        }
+        // …（省略）…
+                $this-&gt;getPdo()-&gt;commit();</code></pre></div>
+      <p>始め（<code>beginTransaction</code>）→ 中身を動かす → 途中で例外が起きたら取り消し（<code>handleTransactionException</code> の中で rollback）→ 最後まで行けたら確定（<code>commit</code>）、の順です。ここでは「予想の行」と「確かめるタスクの行」の2つを書くので、片方だけが残ることがありません。</p>
+      <p><code>$hypothesis-&gt;predictions()-&gt;create([...])</code> は「この見立ての予想として1行作る」書き方で、<code>hypothesis_id</code> には自動で 12 が入ります。事件の番号と持ち主は、見立ての行から写します。</p>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4><code>predictions</code> 表に1行できる</h4>
+      <p>予想の表は、移行（表を作る手順のファイル）でこう決めてあります。</p>
+      <div class="code"><div class="file">src/database/migrations/2026_10_31_000008_create_predictions_table.php</div><pre><code>$table-&gt;foreignId('hypothesis_id')-&gt;constrained()-&gt;cascadeOnDelete(); // どの見立てから導いたか
+$table-&gt;foreignId('user_id')-&gt;constrained()-&gt;cascadeOnDelete();
+$table-&gt;foreignId('attic_note_id')-&gt;nullable()-&gt;constrained()-&gt;nullOnDelete(); // 使った屋根裏の知識（任意）
+$table-&gt;string('statement', 300); // 「〜が見えるはず」。保存後は書き換えない
+$table-&gt;unsignedTinyInteger('confidence'); // 確かさ 50〜95（5刻み）。保存後は書き換えない
+$table-&gt;date('check_on'); // 確かめる日
+$table-&gt;string('check_at', 5)-&gt;nullable(); // 確かめる時刻 HH:MM（任意）
+$table-&gt;string('result', 10)-&gt;nullable(); // hit・miss・unclear・void。null は答え合わせ待ち
+// …（省略）…
+$table-&gt;timestamp('resolved_at')-&gt;nullable(); // 答え合わせした日時
+$table-&gt;timestamp('withdrawn_at')-&gt;nullable(); // 取り下げた日時
+$table-&gt;timestamps(); // created_at が「書いた日時」</code></pre></div>
+      <p>作る直前には、モデル <code>Prediction</code> の「作る直前の決まり」（<code>creating</code>）も動きます。事件と持ち主が渡されていなければ、見立てと事件から写す、という念のための決まりです（この道では <code>MakePrediction</code> が渡しているので、そのまま使われます）。</p>
+      <div class="code"><div class="file">src/app/Models/Prediction.php</div><pre><code>static::creating(function (self $prediction) {
+    // 事件が渡されていなければ、見立ての事件を写す（$hypothesis-&gt;predictions()-&gt;create() で作ったとき）
+    if ($prediction-&gt;case_file_id === null) {
+        $prediction-&gt;case_file_id = Hypothesis::whereKey($prediction-&gt;hypothesis_id)-&gt;value('case_file_id');
+    }
+    // 持ち主が渡されていなければ、事件の持ち主を写す
+    if ($prediction-&gt;user_id === null) {
+        $prediction-&gt;user_id = CaseFile::whereKey($prediction-&gt;case_file_id)-&gt;value('user_id');
+    }
+});</code></pre></div>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>書く：<code>predictions</code> に1行（<code>hypothesis_id=12</code>・<code>case_file_id</code>・<code>user_id</code>・<code>statement</code>・<code>confidence=75</code>・<code>check_on=2026-10-31</code>・<code>check_at=07:40</code>・<code>result=null</code>（答え合わせ待ち）・<code>created_at</code>＝書いた日時）</li>
+      </ul></div>
+      <div class="point"><b>ここが大事</b><code>created_at</code>（書いた日時）は、答え合わせの画面で必ず見せます（<a href="#s7">7章</a>）。「結果を知る前に、いつ、何と書いたか」が残っていることが、あとからの考えで自分の予想を書き換えない（後知恵を防ぐ）ための土台です。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>確かめるタスクを作る（<code>kind = verify</code>）</h4>
+      <p>同じトランザクションの中で、続けてタスクを1つ作ります。予想を「確かめる日にやること」として、ふだんのタスクの一覧と今日の画面に出すためです。</p>
+      <div class="code"><div class="file">src/app/Actions/Cases/MakePrediction.php</div><pre><code>$hypothesis-&gt;user-&gt;tasks()-&gt;create([
+    'title' =&gt; Str::limit(
+        str_replace(':statement', $prediction-&gt;statement, config('suiri.cases.verify_task_title')),
+        config('suiri.limits.task_title') - 1,
+        '…',
+    ), // 長さは見た目の幅で数えるので、日本語ならおよそ半分の字数で切れる
+    'kind' =&gt; TaskKind::Verify,
+    'due_on' =&gt; $prediction-&gt;check_on,
+    'starts_at' =&gt; $prediction-&gt;check_at,
+    'prediction_id' =&gt; $prediction-&gt;id,
+]);
+$hypothesis-&gt;caseFile-&gt;touch();
+
+return $prediction;</code></pre></div>
+      <ul>
+        <li><b>title</b>（題名）：設定の型 <code>'確かめる：:statement'</code> の <code>:statement</code> を予想の文に置きかえ、タスクの題名の上限（100）に収まるよう <code>Str::limit</code> で切って「…」を付けます。</li>
+        <li><b>kind</b>（種類）：<code>TaskKind::Verify</code>（確かめる）。ふつうのタスクは <code>Normal</code> です。</li>
+        <li><b>due_on・starts_at</b>（期日・開始時刻）：予想の確かめる日と時刻をそのまま写します。</li>
+        <li><b>prediction_id</b>：どの予想から作ったか。このつながりで、タスクから答え合わせの画面へ行けます（<a href="#s7">7章</a>）。</li>
+        <li><code>$hypothesis-&gt;caseFile-&gt;touch()</code>：事件の <code>updated_at</code>（最後に動いた日時）を今にします。事件の一覧で、最近さわった事件が上に来るようにするためです。</li>
+      </ul>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'verify_task_title' =&gt; '確かめる：:statement', // 予想から作る確かめるタスクの題名（:statement に予想の文が入る。100字で切る）</code></pre></div>
+      <div class="code"><div class="file">src/app/Enums/TaskKind.php</div><pre><code>enum TaskKind: string
+{
+    use HasLabel;
+
+    case Normal = 'normal';
+    case Verify = 'verify';</code></pre></div>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>書く：<code>tasks</code> に1行（<code>user_id</code>・<code>title='確かめる：前の駅の…'</code>・<code>kind='verify'</code>・<code>due_on</code>・<code>starts_at</code>・<code>prediction_id</code>）</li>
+        <li>書く：<code>case_files</code> のこの事件の <code>updated_at</code></li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>見張り係 <code>TaskObserver</code> が、カレンダーへの書き出しを予約する</h4>
+      <p>タスクを保存すると、タスクを見張る係 <code>TaskObserver</code> が自動で動きます（<a href="#s3">3章</a> でくわしく追います）。<dfn>オブザーバー</dfn>（見張り係）は、モデルが「作られた・直された・消された」ときに呼ばれる係で、<code>CalendarServiceProvider</code> が <code>Task::observe(TaskObserver::class)</code> で結んでいます。予想の用事は Google のことを何も知らなくてよい、という分け方です。</p>
+      <div class="code"><div class="file">src/app/Observers/TaskObserver.php</div><pre><code>/** タスクを作ったら、期日があるときだけ書き出す */
+public function created(Task $task): void
+{
+    // 期日のない（いつかの）タスクは予定にしない
+    if (blank($task-&gt;due_on)) {
+        return;
+    }
+
+    $this-&gt;push($task);
+}
+// …（省略）…
+private function push(Task $task): void
+{
+    // カレンダーとつないでいない（切れた）人のタスクなら、何もしない
+    if (! $this-&gt;connected($task)) {
+        return;
+    }
+
+    $this-&gt;safely($task, fn () =&gt; PushTaskToCalendar::dispatch($task-&gt;id)-&gt;afterCommit());</code></pre></div>
+      <ul>
+        <li>確かめるタスクには必ず期日（確かめる日）があるので、カレンダーとつないでいる人なら、書き出しの仕事 <code>PushTaskToCalendar</code> を積みます。つないでいない人なら何もしません。</li>
+        <li><code>-&gt;afterCommit()</code>：「トランザクションが確定してから積む」という意味です。今はまだ <code>MakePrediction</code> のトランザクションの途中なので、確定（commit）するまで仕事は待たされます。もし途中で失敗して取り消しになったら、仕事も積まれません（存在しないタスクを書き出そうとしない）。</li>
+        <li>仕事を実際に片づけるのは worker の箱です。その先は <a href="#s9">9章</a>。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>読む：<code>calendar_connections</code>（この人がつないでいるか）</li>
+        <li>書く（つないでいる人だけ）：<code>tasks.calendar_event_id</code>（保存の直前に決める予定の ID）と、<code>jobs</code> 表に書き出しの仕事1件（確定のあと）</li>
+      </ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>事件の画面へ戻す（ワトソンの W-5 の確かめつき）</h4>
+      <p>受付の最後の <code>backToCase</code> は、事件の受付が共通で使う部品 <code>RedirectsToCase</code> の関数です（くわしくは <a href="#s5">5章</a>）。</p>
+      <div class="code"><div class="file">src/app/Http/Controllers/Cases/Concerns/RedirectsToCase.php</div><pre><code>$alert = app(WatsonNotes::class)-&gt;alertFor(...$texts);
+$url = route('cases.show', array_filter(['case' =&gt; $case, 'turn' =&gt; $turn, 'open' =&gt; $this-&gt;backOpen()]));</code></pre></div>
+      <ul>
+        <li><code>alertFor(...$texts)</code>：保存した予想の文に、ほかの人がわかる情報らしきもの（名前・電話番号など）がないかを、ワトソンの決まった規則で調べます（W-5）。あれば次の画面で、カードの上に警告を出します（保存は止めません）。</li>
+        <li>予想のカードは隠し欄 <code>back_open</code> を送らないので、<code>?open=</code> は付きません。警告がなければ、住所の終わりに <code>#hyp-12</code> を付けます。</li>
+        <li><code>-&gt;with('status', …)</code>：「予想を立てました。確かめる日（10月31日）のタスクを作りました。」のお知らせを、次の1回の画面だけに出すようセッションに預けます。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul><li>返す：<code>302</code>（転送）、行き先 <code>/cases/{case}#hyp-12</code></li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>「〇月〇日に確かめよう」のカードが出る（直すボタンはない）</h4>
+      <p>ブラウザは転送先をもう一度開き、事件の画面ができ直します。答え合わせ待ちの予想ができたので、いまの一手は <code>wait</code>（確かめる日を待つ）になり、カードは部品 <code>case-step/wait-card</code> です（確かめる日が今日なら、すぐ答え合わせのカード。<a href="#s7">7章</a>）。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/wait-card.blade.php</div><pre><code>&lt;x-ui.step-card :step="$number" :total="$total" icon="calendar" tone="check" :title="$t('wait.title', ['date' =&gt; $day-&gt;isoFormat('M月D日（ddd）')])"
+  :hint="$t($calendarConnected ? 'wait.calendar' : 'wait.no_calendar')"&gt;
+  {{-- …（省略）… --}}
+      &lt;p class="leading-relaxed break-words"&gt;{{ $prediction-&gt;statement }}&lt;/p&gt;
+      &lt;p class="mt-1 text-sm text-muted"&gt;{{ $t('wait.confidence', ['value' =&gt; $prediction-&gt;confidence]) }}&lt;/p&gt;
+  {{-- …（省略）… --}}
+    &lt;a href="{{ route('predictions.show', $prediction) }}" class="inline-flex min-h-12 items-center font-semibold"&gt;{{ $t('wait.early') }}&lt;/a&gt;</code></pre></div>
+      <ul>
+        <li>カレンダーの紙のような大きな日付と、立てた予想の文・自信を出します。カレンダーとつないでいれば「カレンダーに入れたよ」、なければ「やることに入れたよ」と知らせます（<code>calendarConnected</code> は <code>CaseBoardQuery</code> が用意）。</li>
+        <li>下に小さく「先に答え合わせをする」（答え合わせの画面へ。<a href="#s7">7章</a>）と「取り下げる」（あとの手順）。</li>
+        <li>文と確かさを直すボタンは、どこにも置いていません。</li>
+      </ul>
+      <p>進み具合の「もしそうなら 1つ」を開くと、「10月31日に確かめる：（予想の文）」が並びます。同時に、タスクの一覧と今日の画面には「確かめる：…」のタスクが、確かめる日に出るようになります（<a href="#s2">2章</a>・<a href="#s3">3章</a>）。</p>
+      <figure class="shot"><img data-img="screen-case-step-wait.png" alt="確かめる日を待っているときの事件の画面。緑のカード「11月5日（木）に確かめよう」に、カレンダーの紙の形の日付と予想の文・自信、「先に答え合わせをする」「取り下げる」"><figcaption>確かめる日を待っているとき（仕事の場面の事件。スマホ）</figcaption></figure>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>書き換えられない仕組み その1：直す住所がそもそもない</h4>
+      <p>予想の文と確かさは、保存したあとに書き換えられないようにしています。結果を知ってから「本当はこう思っていた」と直せてしまうと、自分の予想がどれくらい当たるのかを正しく振り返れないからです（後知恵を防ぐ決まり）。守りは何重にもしてあります。</p>
+      <p>1つめは、直すための住所を作っていないことです。住所の表の説明にも書いてあります。</p>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>| 予想の文と確かさを直すルートは作らない（後知恵を防ぐ決まり）</code></pre></div>
+      <p>予想の住所は「立てる」「答え合わせの画面」「答え合わせ」「取り下げ」の4つだけです。<code>/predictions/{prediction}</code> には GET（見る）しかないので、そこへ PATCH（直して）を送っても「405（そのやり方は受け付けない）」で止まります。テストでも確かめています。</p>
+      <div class="code"><div class="file">src/tests/Feature/Cases/PredictionTest.php</div><pre><code>/** 予想の文と確かさを直すルートはなく、モデルで書き換えようとしても止まることを確かめる */
+public function test_statement_and_confidence_are_frozen(): void
+{
+    [$user, , , , $prediction] = $this-&gt;board(true);
+
+    $this-&gt;assertFalse(Route::has('predictions.update'));
+    $this-&gt;assertFalse(Route::has('predictions.edit'));
+    $this-&gt;actingAs($user)-&gt;patch('/predictions/'.$prediction-&gt;id, ['statement' =&gt; '後知恵', 'confidence' =&gt; 95])-&gt;assertStatus(405);
+
+    $this-&gt;expectException(LogicException::class);
+    $prediction-&gt;update(['statement' =&gt; '後知恵']);
+}</code></pre></div>
+    </li>
+
+    <li class="step">
+      <span class="who db">データベース</span>
+      <h4>書き換えられない仕組み その2：モデルが保存の直前に止める</h4>
+      <p>住所がなくても、将来だれかがプログラムの中から予想を直す用事を書いてしまうかもしれません。そこで、モデル <code>Prediction</code> 自身が「直す直前」（<code>updating</code>）に確かめます。</p>
+      <div class="code"><div class="file">src/app/Models/Prediction.php</div><pre><code>/** 保存後に書き換えてはいけない列 */
+public const FROZEN = ['statement', 'confidence'];
+// …（省略）…
+static::updating(function (self $prediction) {
+    // 文か確かさを書き換えようとしていたら止める（考えが変わったら新しい予想を立てる決まり）
+    if ($prediction-&gt;isDirty(self::FROZEN)) {
+        throw new LogicException('予想の文と確かさは、保存したあとに書き換えられません。');
+    }
+});</code></pre></div>
+      <p>Laravel のモデルは、すでにある行を保存するとき、データベースに書く前に必ず <code>updating</code> の知らせを出します。</p>
+      <div class="code"><div class="file">src/vendor/laravel/framework/src/Illuminate/Database/Eloquent/Model.php</div><pre><code>protected function performUpdate(Builder $query)
+{
+    // If the updating event returns false, we will cancel the update operation so
+    // developers can hook Validation systems into their models and cancel this
+    // operation if the model does not pass validation. Otherwise, we update.
+    if ($this-&gt;fireModelEvent('updating') === false) {
+        return false;
+    }</code></pre></div>
+      <ul>
+        <li><code>isDirty(['statement', 'confidence'])</code>：読みこんだときの値から、文か確かさが変わっているか（<dfn>dirty</dfn>＝書きかけで、まだ保存していない変更がある）を調べます。</li>
+        <li>変わっていれば <code>LogicException</code>（プログラムの使い方の誤り）を投げて、保存そのものを止めます。トランザクションの中なら、それまでの書きこみも全部取り消されます。</li>
+        <li>答え合わせ（結果を入れる）や取り下げ（日時を入れる）は、文と確かさに触らないので、この見張りを通ります（<a href="#s7">7章</a>）。</li>
+      </ul>
+      <div class="point"><b>ここが大事</b>モデルの <code>#[Fillable([...])]</code>（まとめて書きこんでよい列の一覧）には <code>statement</code> と <code>confidence</code> も入っています。作るとき（<code>create</code>）に要るからです。なので「書きこめる列を絞る」では守れず、「作ったあとの変更だけを止める」<code>updating</code> の見張りで守っています。</div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>書き換えられない仕組み その3：確かめるタスクの側の入口</h4>
+      <p>確かめるタスクは、ふつうのタスクと同じ「直す」画面（<a href="#s3">3章</a>）で開けます。そこからも予想の中身が変わらないよう、タスクの入口にも決まりを入れています。タスクのモデルには、判断を1か所にまとめた関数が2つあります。</p>
+      <div class="code"><div class="file">src/app/Models/Task.php</div><pre><code>public function answeredByPrediction(): bool
+{
+    return $this-&gt;isVerify() &amp;&amp; $this-&gt;prediction_id !== null;
+}
+// …（省略）…
+public function checksPendingPrediction(): bool
+{
+    return $this-&gt;answeredByPrediction() &amp;&amp; $this-&gt;prediction?-&gt;isPending() === true;
+}</code></pre></div>
+      <ul>
+        <li><code>answeredByPrediction</code>：予想から作った確かめるタスクで、もとの予想が残っているか。</li>
+        <li><code>checksPendingPrediction</code>：そのうえで、予想がまだ答え合わせ待ちか。</li>
+      </ul>
+      <p>タスクを直す送信の係は、確かめるタスクなら題名の決まりを外します。決まりにない項目は <code>validated()</code> に入らないので、題名（予想の文の写し）を送られても受け取りません。</p>
+      <div class="code"><div class="file">src/app/Http/Requests/Tasks/UpdateTaskRequest.php</div><pre><code>// 予想から作った確かめるタスクなら、題名の決まりを外す（送られても受け取らず、題名は予想の文の写しのまま）
+if ($task-&gt;answeredByPrediction()) {
+    unset($rules['title']);
+}
+// 答え合わせ待ちの予想を確かめるタスクなら、期日を必須にする（予想の確かめる日を空にしない）
+if ($task-&gt;checksPendingPrediction()) {
+    $rules['due_on'] = ['required', 'date_format:Y-m-d'];
+}</code></pre></div>
+      <p>期日（確かめる日）は直せます。予定が変わることはあるからです。直すと、用事 <code>UpdateTask</code> が <code>SyncPredictionCheck</code> を呼び、予想の確かめる日・時刻だけを写します。</p>
+      <div class="code"><div class="file">src/app/Actions/Tasks/SyncPredictionCheck.php</div><pre><code>$prediction = $task-&gt;prediction;
+$prediction-&gt;fill(['check_on' =&gt; $task-&gt;due_on, 'check_at' =&gt; $task-&gt;starts_at]);
+
+// 予想の確かめる日・時刻がもう同じなら、保存しない
+if (! $prediction-&gt;isDirty(['check_on', 'check_at'])) {
+    return false;
+}
+
+$prediction-&gt;save();</code></pre></div>
+      <p>写すのは <code>check_on</code> と <code>check_at</code> だけで、文と確かさには触りません。専用カレンダーで予定を動かされたときも、取り込みの用事が同じ <code>SyncPredictionCheck</code> を使います（<a href="#s9">9章</a>）。</p>
+      <p>さらに、確かめるタスクは丸を押して済みにしたり戻したりできず（答え合わせで自動で済みになるため）、答え合わせ待ちのあいだは消せません（消すと答え合わせ待ちの予想だけが残るため）。</p>
+      <div class="code"><div class="file">src/app/Http/Requests/Tasks/CompleteTaskRequest.php</div><pre><code>/** 予想につながった確かめるタスクでなければ送ってよい（持ち主かどうかはルートで確かめ済み） */
+public function authorize(): bool
+{
+    return ! $this-&gt;route('task')-&gt;answeredByPrediction();
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Http/Requests/Tasks/DeleteTaskRequest.php</div><pre><code>/** 答え合わせ待ちの予想を確かめるタスクでなければ、消してよい */
+public function authorize(): bool
+{
+    return ! $this-&gt;route('task')-&gt;checksPendingPrediction();
+}
+
+/** 消せないときは 403 にし、予想の取り下げを使うよう案内する */
+protected function failedAuthorization(): void
+{
+    throw new AuthorizationException('このタスクは予想を確かめるためのものなので、消せません。確かめるのをやめるときは、予想を取り下げてください。');
+}</code></pre></div>
+      <p>未完了に戻す係 <code>ReopenTaskRequest</code> も、<code>CompleteTaskRequest</code> と同じ形で確かめるタスクを断ります。画面の側でも、確かめるタスクの丸は押せない印（虫めがね）にしてあります（部品 <code>task/check</code>）。</p>
+    </li>
+
+    <li class="step">
+      <span class="who browser">ブラウザ</span>
+      <h4>考えが変わったら：「取り下げる」を押す</h4>
+      <p>文を直せない代わりに、予想を<dfn>取り下げる</dfn>ことができます。待つカードの「取り下げる」は、消す前の確認と同じ部品 <code>ui/confirm</code>（<code>&lt;details&gt;</code> で、JavaScript なし）です。</p>
+      <div class="code"><div class="file">src/resources/views/components/case-step/wait-card.blade.php</div><pre><code>&lt;x-ui.confirm :action="route('predictions.withdraw', $prediction)" method="POST" :label="$t('wait.withdraw')" :confirm-label="$t('wait.withdraw')"
+  :message="$t('wait.withdraw_message')" /&gt;</code></pre></div>
+      <div class="code"><div class="file">src/config/suiri.php</div><pre><code>'withdraw_message' =&gt; '取り下げると、確かめるやることも消えるよ。予想の文は記録に残るよ。',</code></pre></div>
+      <p>押すと確認の文が開き、もう一度「取り下げる」を押すと送ります。確かめるタスクの直す画面（<a href="#s3">3章</a>）にも、同じ取り下げの入口があります。</p>
+      <div class="data"><b>このとき動くデータ</b><ul><li>送る：<code>POST /predictions/{prediction}/withdraw</code>（中身は <code>_token</code> だけ）</li></ul></div>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>取り下げの住所と検証：答え合わせ待ちだけ</h4>
+      <div class="code"><div class="file">src/routes/web/cases.php</div><pre><code>Route::post('/predictions/{prediction}/withdraw', WithdrawPredictionController::class)-&gt;can('update', 'prediction')-&gt;name('predictions.withdraw');</code></pre></div>
+      <p>見張り役の並びは立てるときと同じで、最後の持ち主の確かめが <code>can:update,prediction</code>（<code>PredictionPolicy</code>。中身は同じ <code>OwnerOnly</code>）になります。予想を立てるときの <code>write</code>（捜査中の事件だけ）ではなく <code>update</code>（持ち主かだけ）なので、事件を閉じたあとでも取り下げられます（残っている確かめるタスクを片づけられるように）。行き先がクラス名だけなのは、受付が <code>__invoke</code> の1つだけを持つ「1つの用の受付」だからです。</p>
+      <div class="code"><div class="file">src/app/Http/Requests/Cases/WithdrawPredictionRequest.php</div><pre><code>/** 答え合わせ待ちの予想かを確かめる（持ち主かはルートで確かめ済み） */
+public function authorize(): bool
+{
+    return $this-&gt;route('prediction')-&gt;isPending();
+}</code></pre></div>
+      <div class="code"><div class="file">src/app/Models/Prediction.php</div><pre><code>/** 答え合わせ待ち（まだ結果がなく、取り下げてもいない）かを返す */
+public function isPending(): bool
+{
+    return $this-&gt;result === null &amp;&amp; $this-&gt;withdrawn_at === null;
+}</code></pre></div>
+      <p>答え合わせ済み・取り下げ済みの予想は 403 で断ります。外れたあとで取り下げられると、ノーベリ帳（外れの記録）と確かさの答え合わせの数（<a href="#s10">10章</a>）が食い違ってしまうからです。</p>
+    </li>
+
+    <li class="step">
+      <span class="who server">サーバー</span>
+      <h4>用事 <code>WithdrawPrediction</code>：取り下げた日時を入れ、確かめるタスクを消す</h4>
+      <div class="code"><div class="file">src/app/Actions/Cases/WithdrawPrediction.php</div><pre><code>public function handle(Prediction $prediction): bool
+{
+    return DB::transaction(function () use ($prediction) {
+        // 保存されている今の状態を、ほかの書き込みを待たせて読み直す（同時の答え合わせと食い違わないように）
+        $current = Prediction::whereKey($prediction-&gt;getKey())-&gt;lockForUpdate()-&gt;first();
+
+        // もう答え合わせ済み・取り下げ済み（または消えた）なら、何もしない
+        if ($current === null || ! $current-&gt;isPending()) {
+            return false;
+        }
+
+        $prediction-&gt;update(['withdrawn_at' =&gt; now()]);
+
+        $task = $prediction-&gt;task;
+        // 確かめるタスクがまだ済んでいなければ消す（済んだものは記録として残す）
+        if ($task !== null &amp;&amp; ! $task-&gt;isDone()) {
+            $task-&gt;delete();
+        }
+
+        return true;
+    });
+}</code></pre></div>
+      <ul>
+        <li><code>lockForUpdate()</code>：この予想の行に<dfn>鍵（行のロック）</dfn>をかけて読み直します。トランザクションが終わるまで、ほかの書きこみはこの行を待たされます。別の画面で同時に答え合わせが送られても、どちらか先の1つだけが通ります。</li>
+        <li>受付の検証でも確かめていますが、ここでもう一度 <code>isPending()</code> を確かめます（最後の守り）。</li>
+        <li><code>update(['withdrawn_at' =&gt; now()])</code>：取り下げた日時だけを入れます。文と確かさは残るので、手順21の <code>updating</code> の見張りも通ります。</li>
+        <li>まだ済んでいない確かめるタスクは <code>delete()</code> で消します。すると <code>TaskObserver</code> の <code>deleted</code> が動き、カレンダーの予定を消す仕事 <code>RemoveTaskFromCalendar</code> を（確定のあとに）積みます（<a href="#s9">9章</a>）。</li>
+      </ul>
+      <div class="data"><b>このとき動くデータ</b><ul>
+        <li>読む（鍵をかけて）・書く：<code>predictions</code> のこの行（<code>withdrawn_at</code>）</li>
+        <li>消す：<code>tasks</code> の確かめるタスクの行（済んでいなければ）</li>
+      </ul></div>
+      <p>受付 <code>WithdrawPredictionController</code> は、終わったら「予想を取り下げました。確かめるタスクも消しました。」のお知らせを付けて、<code>backToCase</code> で事件の画面へ戻します（場所の印 <code>#hyp-…</code>）。進み具合の「もしそうなら」には「取り下げた：（予想の文）」と残り、答え合わせ待ちの予想がなくなったので、いまの一手はまた「予想を立てる」に戻ります。</p>
+    </li>
+  </ol>
+
+  <div class="recap"><b>この章のまとめ</b><ol>
+    <li>予想を立てるカードは、いまの一手が <code>predict</code> のときか、<code>?open=predict-{id}</code> で頼まれたときに出る。対象は捜査中の事件の、見せ合う前でない・消えていない見立てだけ。</li>
+    <li>カードは1問ずつ（見えるはずのこと → 自信 → 確かめる日）。次の問いは CSS の <code>:has</code> で、前の問いに答えるまで隠す。穴埋めの型と確かめる日の候補（すぐ選べる日・言葉の重なる自分の予定）は、押すと欄に入るだけ。</li>
+    <li><code>POST /hypotheses/{hypothesis}/predictions</code> は、ログイン・同意・回数制限・持ち主で捜査中か（<code>HypothesisPolicy::write</code>）を通ってから、<code>StorePredictionRequest</code> が見せ合ったあとか・文（穴埋めの印が残っていないか）・確かさ（50〜95 の5刻み）・確かめる日（今日以降）・自分の棚の知識だけかを確かめる。</li>
+    <li><code>MakePrediction</code> が、1つのトランザクションで「予想の行」と「確かめるタスク（<code>kind=verify</code>）」を作る。<code>TaskObserver</code> が、つないでいる人なら確定のあとにカレンダーへの書き出しの仕事を積む（<a href="#s9">9章</a>）。</li>
+    <li>保存のあとは「〇月〇日に確かめよう」のカードになる。文と確かさは、直す住所がない・モデルの <code>updating</code> が止める・タスクの側からも題名を受け取らず確かめる日だけを写す、の何重もの守りで書き換えられない。</li>
+    <li>考えが変わったら取り下げる。答え合わせ待ちの予想だけ、行に鍵をかけて取り下げ、済んでいない確かめるタスクを消す。</li>
+  </ol></div>
+</section>

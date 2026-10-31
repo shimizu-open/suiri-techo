@@ -1,0 +1,5 @@
+#!/bin/sh
+# git のコミット前チェック（AI でも人でも、コミットのたびに必ず動く）。
+# 決まり（太らない MVC・言葉・行数の上限・コメントの抜け）・秘密の値・整形・テスト（・ドキュメントのリンクと HTML 版）を確かめ、通らなければコミットしない。
+# 有効にする：git config core.hooksPath .githooks（クローンしたら1回だけ）
+exec "$(git rev-parse --show-toplevel)/bin/check" staged

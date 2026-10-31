@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="800" viewBox="0 0 1240 800" font-family="'Hiragino Sans','Noto Sans JP','Yu Gothic','Meiryo',sans-serif"><title>1つの操作の旅：手がかりを足す</title><defs><marker id="ah1d1d24" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#1d1d24"/></marker></defs><rect width="1240" height="800" fill="#ffffff"/>
+<text x="24" y="38" font-size="19" fill="#1f2d4a" font-weight="bold" text-anchor="start">1つの操作の旅：事件の詳細で手がかりを書いて「これでOK」を押したとき（POST /cases/12/clues）</text>
+<rect x="20" y="70" width="270" height="190" rx="10" fill="#fffaf0" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M20 80 a10 10 0 0 1 10 -10 h250 a10 10 0 0 1 10 10 v20 h-270 z" fill="#1f2d4a"/>
+<text x="155.0" y="91" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">① ブラウザ</text>
+<text x="32" y="118" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">x-case-step.clue-card のフォーム</text>
+<text x="32" y="139" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">POST /cases/12/clues</text>
+<text x="32" y="160" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">送るもの：kind（種類）・</text>
+<text x="32" y="181" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">body（本文）・form_key・</text>
+<text x="32" y="202" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">_token（CSRF の合言葉）</text>
+<rect x="330" y="70" width="270" height="190" rx="10" fill="#fffaf0" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M330 80 a10 10 0 0 1 10 -10 h250 a10 10 0 0 1 10 10 v20 h-270 z" fill="#1f2d4a"/>
+<text x="465.0" y="91" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">② web（nginx）</text>
+<text x="342" y="118" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">ファイルではないので</text>
+<text x="342" y="139" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">public/index.php に回す</text>
+<text x="342" y="160" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">.php は app:9000 へ渡す</text>
+<text x="342" y="181" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">（infra/nginx/default.conf）</text>
+<rect x="640" y="70" width="270" height="190" rx="10" fill="#fffaf0" stroke="#8a6a2a" stroke-width="2"/>
+<path d="M640 80 a10 10 0 0 1 10 -10 h250 a10 10 0 0 1 10 10 v20 h-270 z" fill="#8a6a2a"/>
+<text x="775.0" y="91" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">③ ルート</text>
+<text x="652" y="118" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">routes/web.php が</text>
+<text x="652" y="139" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">routes/web/cases.php を読む</text>
+<text x="652" y="160" font-size="13" fill="#1d1d24" font-weight="bold" text-anchor="start">clues.store に当たる</text>
+<text x="652" y="181" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">→ ClueController@store</text>
+<rect x="950" y="70" width="270" height="190" rx="10" fill="#fffaf0" stroke="#8a6a2a" stroke-width="2"/>
+<path d="M950 80 a10 10 0 0 1 10 -10 h250 a10 10 0 0 1 10 10 v20 h-270 z" fill="#8a6a2a"/>
+<text x="1085.0" y="91" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">④ ミドルウェア（関所）</text>
+<text x="962" y="118" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">セッション・CSRF の確かめ</text>
+<text x="962" y="139" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">auth（ログインしている？）</text>
+<text x="962" y="160" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">agreed（同意した？）</text>
+<text x="962" y="181" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">throttle:writes（1分60回）</text>
+<text x="962" y="202" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">{case} → CaseFile を探す</text>
+<rect x="20" y="320" width="270" height="190" rx="10" fill="#fffaf0" stroke="#8c1c2b" stroke-width="2"/>
+<path d="M20 330 a10 10 0 0 1 10 -10 h250 a10 10 0 0 1 10 10 v20 h-270 z" fill="#8c1c2b"/>
+<text x="155.0" y="341" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">⑤ Policy（権限）</text>
+<text x="32" y="368" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">-&gt;can('write', 'case')</text>
+<text x="32" y="389" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">CaseFilePolicy（OwnerOnly）</text>
+<text x="32" y="410" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">事件の user_id が</text>
+<text x="32" y="431" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">ログイン中の人と同じ？</text>
+<text x="32" y="452" font-size="13" fill="#8c1c2b" font-weight="normal" text-anchor="start">違えば 403 で止まる</text>
+<rect x="330" y="320" width="270" height="190" rx="10" fill="#fffaf0" stroke="#8c1c2b" stroke-width="2"/>
+<path d="M330 330 a10 10 0 0 1 10 -10 h250 a10 10 0 0 1 10 10 v20 h-270 z" fill="#8c1c2b"/>
+<text x="465.0" y="341" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">⑥ FormRequest（形）</text>
+<text x="342" y="368" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">StoreClueRequest</text>
+<text x="342" y="389" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">本文の前後の空白を取る</text>
+<text x="342" y="410" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">kind：見た・聞いた・なかった</text>
+<text x="342" y="431" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">body：必須・500字まで</text>
+<text x="342" y="452" font-size="13" fill="#8c1c2b" font-weight="normal" text-anchor="start">だめなら元の画面へ戻す</text>
+<rect x="640" y="320" width="270" height="190" rx="10" fill="#fffaf0" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M640 330 a10 10 0 0 1 10 -10 h250 a10 10 0 0 1 10 10 v20 h-270 z" fill="#1f2d4a"/>
+<text x="775.0" y="341" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">⑦ 受付（コントローラー）</text>
+<text x="652" y="368" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">ClueController::store</text>
+<text x="652" y="389" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">確かめ済みの値だけを</text>
+<text x="652" y="410" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">AddClue に渡す</text>
+<text x="652" y="431" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">終わったら backToCase で</text>
+<text x="652" y="452" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">事件の詳細へ戻す</text>
+<rect x="950" y="320" width="270" height="190" rx="10" fill="#fffaf0" stroke="#1e5b3e" stroke-width="2"/>
+<path d="M950 330 a10 10 0 0 1 10 -10 h250 a10 10 0 0 1 10 10 v20 h-270 z" fill="#1e5b3e"/>
+<text x="1085.0" y="341" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">⑧ Action（用事）</text>
+<text x="962" y="368" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">AddClue::handle</text>
+<text x="962" y="389" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">$case-&gt;clues()-&gt;create()</text>
+<text x="962" y="410" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">$case-&gt;touch()</text>
+<text x="962" y="431" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">（事件の「最近さわった」</text>
+<text x="962" y="452" font-size="13" fill="#5a5a66" font-weight="normal" text-anchor="start">日時を新しくする）</text>
+<rect x="20" y="570" width="270" height="190" rx="10" fill="#fffaf0" stroke="#1e5b3e" stroke-width="2"/>
+<path d="M20 580 a10 10 0 0 1 10 -10 h250 a10 10 0 0 1 10 10 v20 h-270 z" fill="#1e5b3e"/>
+<text x="155.0" y="591" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">⑨ Model → DB</text>
+<text x="32" y="618" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">Clue モデル</text>
+<text x="32" y="639" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">user_id は事件から写す</text>
+<text x="32" y="660" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">（CopiesOwnerFromCase）</text>
+<text x="32" y="681" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">MySQL の clues 表に1行</text>
+<rect x="330" y="570" width="270" height="190" rx="10" fill="#fffaf0" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M330 580 a10 10 0 0 1 10 -10 h250 a10 10 0 0 1 10 10 v20 h-270 z" fill="#1f2d4a"/>
+<text x="465.0" y="591" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">⑩ 返事（転送）</text>
+<text x="342" y="618" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">WatsonNotes::alertFor</text>
+<text x="342" y="639" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">（ほかの人がわかる情報？）</text>
+<text x="342" y="660" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">302 → /cases/12#clues</text>
+<text x="342" y="681" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">お知らせ「手がかりを</text>
+<text x="342" y="702" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">足しました。」</text>
+<rect x="640" y="570" width="270" height="190" rx="10" fill="#fffaf0" stroke="#1f2d4a" stroke-width="2"/>
+<path d="M640 580 a10 10 0 0 1 10 -10 h250 a10 10 0 0 1 10 10 v20 h-270 z" fill="#1f2d4a"/>
+<text x="775.0" y="591" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">⑪ 画面</text>
+<text x="652" y="618" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">GET /cases/12</text>
+<text x="652" y="639" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">CaseController@show</text>
+<text x="652" y="660" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">→ CaseBoardQuery</text>
+<text x="652" y="681" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">→ cases/board.blade.php</text>
+<text x="652" y="702" font-size="13" fill="#1d1d24" font-weight="normal" text-anchor="start">→ x-case-step.desk など</text>
+<path d="M290 165.0 L330 165.0" fill="none" stroke="#1d1d24" stroke-width="2" marker-end="url(#ah1d1d24)"/>
+<path d="M600 165.0 L640 165.0" fill="none" stroke="#1d1d24" stroke-width="2" marker-end="url(#ah1d1d24)"/>
+<path d="M910 165.0 L950 165.0" fill="none" stroke="#1d1d24" stroke-width="2" marker-end="url(#ah1d1d24)"/>
+<path d="M1085.0 260 L1085.0 290 L155.0 290 L155.0 320" fill="none" stroke="#1d1d24" stroke-width="2" marker-end="url(#ah1d1d24)"/>
+<path d="M290 415.0 L330 415.0" fill="none" stroke="#1d1d24" stroke-width="2" marker-end="url(#ah1d1d24)"/>
+<path d="M600 415.0 L640 415.0" fill="none" stroke="#1d1d24" stroke-width="2" marker-end="url(#ah1d1d24)"/>
+<path d="M910 415.0 L950 415.0" fill="none" stroke="#1d1d24" stroke-width="2" marker-end="url(#ah1d1d24)"/>
+<path d="M1085.0 510 L1085.0 540 L155.0 540 L155.0 570" fill="none" stroke="#1d1d24" stroke-width="2" marker-end="url(#ah1d1d24)"/>
+<path d="M290 665.0 L330 665.0" fill="none" stroke="#1d1d24" stroke-width="2" marker-end="url(#ah1d1d24)"/>
+<path d="M600 665.0 L640 665.0" fill="none" stroke="#1d1d24" stroke-width="2" marker-end="url(#ah1d1d24)"/>
+<rect x="950" y="570" width="270" height="190" rx="10" fill="#f6f6f8" stroke="#5a5a66" stroke-width="2" stroke-dasharray="6 4"/>
+<path d="M950 580 a10 10 0 0 1 10 -10 h250 a10 10 0 0 1 10 10 v20 h-270 z" fill="#5a5a66"/>
+<text x="1085.0" y="591" font-size="14" fill="#ffffff" font-weight="bold" text-anchor="middle">止まるとき（受付まで届かない）</text>
+<text x="962" y="618" font-size="12" fill="#1d1d24" font-weight="normal" text-anchor="start">419：CSRF の合言葉が古い</text>
+<text x="962" y="638" font-size="12" fill="#1d1d24" font-weight="normal" text-anchor="start">429：書き込みが多すぎる</text>
+<text x="962" y="658" font-size="12" fill="#1d1d24" font-weight="normal" text-anchor="start">404：その番号の事件がない</text>
+<text x="962" y="678" font-size="12" fill="#1d1d24" font-weight="normal" text-anchor="start">403：ほかの人の事件</text>
+<text x="962" y="698" font-size="12" fill="#1d1d24" font-weight="normal" text-anchor="start">入力の誤り：元の画面に</text>
+<text x="962" y="718" font-size="12" fill="#1d1d24" font-weight="normal" text-anchor="start">エラーと入力を持って戻る</text>
+<text x="24" y="790" font-size="13" fill="#1f2d4a" font-weight="normal" text-anchor="start">どの返事にも SecurityHeaders（bootstrap/app.php で全部に付ける）が守りの札を付けます。ログイン中の返事は Cache-Control: private, no-store で取り置かせません。</text>
+</svg>
